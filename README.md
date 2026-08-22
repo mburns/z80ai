@@ -53,8 +53,24 @@ Get running in under 5 minutes:
 
 - **CP/M**: `iz-cpm CHAT.COM`
 - **ZX Spectrum**: `fuse --tape CHAT.TAP`, then `LOAD "" CODE` and `RANDOMIZE USR 32768`
+- **Agon Light / eZ80**: copy `CHAT.bin` to the SD card and run it by name
 
 For building from source or training your own models, see [TRAINING.md](TRAINING.md).
+
+## Building
+
+`build.py` is one front end for every target. By default it picks the fastest
+weight layout that still fits the machine:
+
+```bash
+python build.py --model examples/guess/model.npz --output GUESS.COM
+python build.py --model examples/guess/model.npz --target zx   --output GUESS.TAP
+python build.py --model examples/guess/model.npz --target ez80 --output GUESS.bin
+```
+
+The individual builders (`buildz80com.py`, `buildfastz80com.py`,
+`buildz80tap.py`, `buildez80.py`) still work standalone if you want a specific
+layout.
 
 ## Features
 
@@ -65,19 +81,46 @@ For building from source or training your own models, see [TRAINING.md](TRAINING
 - **Autoregressive generation**: Outputs text character-by-character
 - **No floating point**: Everything is integer math with fixed-point scaling
 - **Interactive chat mode**: Just run `CHAT` with no arguments
+- **Tested against a real CPU emulator**: every build is executed instruction by
+  instruction and compared to a NumPy reference model - see [TESTING.md](TESTING.md)
 
 ## Platform Support
 
 Z80-μLM runs on multiple Z80-based platforms:
 
 - **CP/M**: Original target platform. Generates `.COM` files using `buildz80com.py`
+  (packed weights) or `buildfastz80com.py` (index lists, ~9x faster, slightly larger)
 - **ZX Spectrum 48K**: Full support via `buildz80tap.py`. See [ZX-SPECTRUM.md](ZX-SPECTRUM.md) for details
   - Generates `.TAP` files for emulators or real hardware
   - Uses ZX Spectrum ROM routines for I/O
   - Memory optimized for 48K systems
   - Compatible with most ZX Spectrum emulators
+- **Agon Light / eZ80 (ADL mode)**: `buildez80.py`. See [EZ80.md](EZ80.md)
+  - 24-bit addressing, so the 64KB ceiling on model size is gone
+  - 24-bit accumulators, which cannot overflow the way the Z80's 16-bit ones can
+  - No 256-neuron layer limit
 
 For ZX Spectrum builds, use `run-zx.sh` in example directories or see the [ZX Spectrum guide](ZX-SPECTRUM.md).
+
+## How fast is it?
+
+`bench.py` runs a target in the emulator and counts what one generated character
+costs. For the shipped 256→256→192→128→11 `guess` model:
+
+| target | size | instructions | Z80 T-states | seconds |
+|---|---|---|---|---|
+| CP/M, packed weights | 38,920 | 3,004,037 | 26,843,795 | 6.71 @ 4 MHz |
+| CP/M, index lists | 43,520 | 319,515 | 1,992,905 | 0.50 @ 4 MHz |
+| ZX Spectrum | 38,981 | 4,245,425 | 41,169,261 | 11.76 @ 3.5 MHz |
+| Agon eZ80 | 146,581 | 923,194 | — | — |
+
+```bash
+python bench.py --model examples/guess/model.npz --target com fast ez80
+```
+
+eZ80 T-states are omitted rather than quoted misleadingly: its per-instruction
+timings differ substantially from the Z80's, so instruction count is the honest
+cross-architecture comparison.
 
 ## Interaction Style
 
@@ -167,15 +210,18 @@ MULADD:
 NEG:
     cp 0FFh
     jr z, NEG1       ; weight=-1
-    ; weight=-2: subtract twice
+    ; weight=-2: subtract twice, clearing carry before each
     ld hl, (ACC)
+    or a
     sbc hl, de
+    or a             ; the SBC above may have borrowed
     sbc hl, de
     ld (ACC), hl
     ret
 NEG1:
     ; weight=-1: subtract once
     ld hl, (ACC)
+    or a
     sbc hl, de
     ld (ACC), hl
     ret
@@ -191,6 +237,34 @@ rr l         ; ACC = ACC / 4
 ```
 
 That's the entire neural network: unpack weight, multiply-accumulate, shift. Repeat ~100K times per character generated.
+
+## Recent fixes
+
+Building the emulator-backed test suite surfaced four bugs in the generated
+code. If you have an older build, rebuild it:
+
+- **`MULADD` borrow** (`buildz80com.py`, `buildz80tap.py`) — a weight of `-2` was
+  applied as two consecutive `SBC HL,DE` without clearing carry in between, so
+  every `-2` weight subtracted one too many whenever the first subtraction
+  borrowed. Affected every inference on both CP/M and ZX builds.
+- **ZX Spectrum keyboard** (`buildz80tap.py`) — the buffer-full check did
+  `PUSH AF / CP B / POP AF / JR NC`, and `POP AF` restored the flags from
+  *before* the compare. `JR NC` therefore tested the preceding `CP 32`, which is
+  never carry for a printable character, so every keystroke was discarded. The
+  `.TAP` build could not accept input at all.
+- **Packed-weight row alignment** — weights were packed as one flat stream while
+  the unpack loop reloads a byte at every 4th weight *of each neuron*. Any layer
+  whose input width was not a multiple of four desynchronised from row 1 onward.
+- **`align()`** — `if overage < boundary` is always true, so aligning an
+  already-aligned address inserted a whole extra boundary of padding.
+
+Two more in the Python:
+
+- `feedme.AutoregressiveModel._forward_int` truncated toward zero when shifting
+  down; `SRA H / RR L` floors. The reported integer accuracy was optimistic for
+  every negative accumulator.
+- Layers were discovered with a lexical sort, so a model with ten or more layers
+  would have run `fc10` immediately after `fc1`.
 
 ---
 

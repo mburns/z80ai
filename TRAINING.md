@@ -157,15 +157,21 @@ The input is split evenly: the first 128 values encode the user's query using tr
 
 **Modifying the Architecture:**
 
-To change layer sizes, edit line 382 in `feedme.py`:
-```python
-hidden_sizes = [256, 192, 128]  # Three hidden layers
+Pass `--hidden-sizes` on the command line:
+```bash
+python feedme.py --hidden-sizes 256,192,128 --file training-data.txt
 ```
 
 Trade-offs:
 - **Wider layers** → More capacity, larger .COM file, slower Z80 inference
 - **Deeper layers** → Better feature extraction, but diminishing returns
 - **Fewer layers** → Faster inference, less expressive
+
+**Layer width limits:** the Z80 backends count neurons in the `B` register, so
+`DJNZ` caps a layer at 256. Anything wider builds only for eZ80
+(`buildez80.py`), which terminates each neuron with a sentinel instead of
+counting — see [EZ80.md](EZ80.md). `feedme.py` prints a note when you cross that
+line, and the Z80 builders raise rather than silently mis-assemble the model.
 
 To change bucket counts, modify the encoder instantiations:
 ```python
