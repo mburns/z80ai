@@ -63,7 +63,7 @@ about both. That caps accuracy before training starts:
 | dataset | responses | ceiling |
 |---|---:|---:|
 | `examples/guess/` | 4 | 97.8% |
-| `examples/tinychat/` | 21 | 100% |
+| `examples/tinychat/` | 11 | 100% |
 
 Without this number a model that has learned everything learnable looks like it
 is underperforming, and the fix looks like "train longer" when it is "fix the
@@ -140,7 +140,7 @@ large and it is not a constant:
 |---|---:|---:|
 | `examples/guess/` | 96.2% | 81.3% |
 | `examples/smalltalk/` | 96.7% | 80.6% |
-| `examples/tinychat/` | 81.7% | 28.4% |
+| `examples/tinychat/` | 84.0% | 40.0% |
 
 **`ValRsp` is not `ValMacro`.** Overall response accuracy weights every pair
 equally, so a dominant answer inflates it. `guess` is 58% `NO`: answering `NO`

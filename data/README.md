@@ -82,7 +82,7 @@ Held-out, whole responses, on the shipped models:
 |---|---:|---:|---:|
 | `examples/smalltalk/` | 3.5% / 5.3% | 59.4% / 62.1% | **80.6% / 80.7%** |
 | `examples/guess/` | 57.7% / 25.0% | 76.6% / 48.4% | **81.3% / 86.5%** |
-| `examples/tinychat/` | 20.4% / 5.0% | 20.9% / 6.2% | 28.4% / 26.6% |
+| `examples/tinychat/` | 23.4% / 9.1% | 25.9% / 14.3% | **40.0% / 44.4%** |
 
 Each cell is **overall / macro**, and the difference between them is the point.
 Overall weights every pair equally, so a dominant answer inflates it: `guess` is
@@ -99,10 +99,12 @@ Read `guess` with that in mind. On overall the keyword table looks close —
 | keyword table | 99.3% | 46.1% | 48.2% | **0.0%** |
 | model | 80.6% | 71.0% | 94.5% | **100%** |
 
-`tinychat` is the row to worry about. Collapsing its 502 replies onto 21 lifted
-macro from 10.7% to 26.6% and made the data sound — no contradictions, no
-duplicates, a 100% ceiling — but overall barely moved, and it clears a constant
-guesser by only eight points.
+`tinychat` shows what vocabulary size is worth. Collapsing its 502 replies onto
+11 took macro from 10.7% to 44.4% — but the intermediate stop at 21 replies only
+reached 26.6%, and 21 was already a defensible reading of what the corpus
+distinguishes. The right size is a property of how much data you have, not of
+how many distinctions the writer felt like making; see
+[examples/tinychat/](../examples/tinychat/) for the sweep.
 
 Two numbers explain why, and `lint.py` now prints both:
 
@@ -110,7 +112,7 @@ Two numbers explain why, and `lint.py` now prints both:
 |---|---:|---:|
 | `examples/smalltalk/` | 149 | 0.74 |
 | `examples/guess/` | 7,180 | 0.58 |
-| `examples/tinychat/` | 96 | 0.54 |
+| `examples/tinychat/` | 187 | 0.55 |
 
 **Phrasing redundancy** is how similar each query is to the nearest other query
 wanting the same answer — how many ways the data says each thing. A model

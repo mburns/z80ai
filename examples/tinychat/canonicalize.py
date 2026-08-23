@@ -34,11 +34,9 @@ from libdata import parse_pair
 
 SOURCE = Path(__file__).with_name('source-data.txt.gz')
 
-#: The vocabulary.  Chosen to span what the corpus actually says while sharing
-#: letters - the charset is the output layer, and every distinct character costs
-#: 128 weights.  Keeping the chat register is the point: this is a toy with a
-#: voice, not an intent classifier.
-VOCAB = [
+#: The intermediate vocabulary: what the corpus distinguishes, before asking
+#: whether it has the evidence to support the distinction.
+FINE = [
     'OK', 'YES', 'NO', 'MAYBE', 'IDK',          # the core four plus a hedge
     'WHAT?', 'WHY?', 'HOW?', 'WHO?',            # asking back
     'IS IT?', 'R U?', 'DO U?', 'AM I?',         # reflecting it at you
@@ -46,6 +44,28 @@ VOCAB = [
     'GOOD', 'NICE', 'SAME', 'OOF', 'LOL',       # reactions
     'GO ON',                                    # a prompt for more
 ]
+
+#: ...and the further collapse to what 1,817 training pairs can actually carry.
+#: Measured on held-out real queries, holding everything else fixed:
+#:
+#:      replies   per class   overall   macro
+#:           21          87     29.9%   16.8%
+#:           16         114     28.9%   20.4%
+#:           12         151     31.8%   27.0%
+#:           11         165     37.8%   41.8%
+#:            8         227     39.3%   32.7%
+#:
+#: Eleven is the turn. Below it overall keeps creeping up but only because the
+#: majority class is growing - by eight replies a constant guesser already
+#: scores 25.9% - and macro falls away again.
+MERGE = {
+    'SAME': 'OK', 'LOL': 'OK', 'GOOD': 'OK', 'NICE': 'OK', 'OOF': 'OK',
+    'HOW?': 'WHAT?', 'WHO?': 'WHAT?', 'GO ON': 'WHAT?',
+    'AM I?': 'R U?',
+    'IS IT?': 'DO U?',
+}
+
+VOCAB = [r for r in FINE if r not in MERGE]
 
 #: Two-character queries carry almost no trigram signal, and several of them
 #: hash to the same bucket vector while wanting different replies - '??' and
@@ -123,16 +143,23 @@ DROP = re.compile(r'^[\d ]+$|^(MEOW|WOOF|MOO|QUACK|BEEP|BOOP|LA LA|LA LA LA|'
                   r'NO SHAPE|NO COLOR|NOT LONG|LOTS|PICK ONE|TRY AGAIN)$')
 
 
-def canonical(reply: str) -> str | None:
-    """The vocabulary entry for ``reply``, or None if it should be dropped."""
+def canonical(reply: str, merge: bool = True) -> str | None:
+    """The vocabulary entry for ``reply``, or None if it should be dropped.
+
+    ``merge=False`` stops at the 21-reply intermediate, which is what the
+    ``--fine`` flag reports and what the sweep above was measured against.
+    """
     if DROP.match(reply):
         return None
-    if reply in VOCAB:
-        return reply
-    for pattern, target in RULES:
-        if re.search(pattern, reply):
-            return target
-    return None
+    fine = reply if reply in FINE else None
+    if fine is None:
+        for pattern, target in RULES:
+            if re.search(pattern, reply):
+                fine = target
+                break
+    if fine is None:
+        return None
+    return MERGE.get(fine, fine) if merge else fine
 
 
 def load_source() -> list[tuple[str, str]]:

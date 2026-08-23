@@ -45,7 +45,7 @@ The intents are CLINC's; the replies are ours. Regenerate with:
 
 ## Why it is here
 
-`tinychat` does the same job on hand-written data and answers 28.4% of held-out
+`tinychat` does the same job on hand-written data and answers 40.0% of held-out
 queries correctly. Its vocabulary has since been cleaned up, which was not
 enough: what it lacks is *phrasings per answer*, and that is exactly what
 crowdsourced data provides. This example is the control.

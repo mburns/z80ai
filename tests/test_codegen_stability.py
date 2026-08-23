@@ -38,13 +38,13 @@ GOLDEN = {
     "GUESS.bin": (buildez80, "guess",
                   "8eb986d2c73574344be128c66a9a71e08727bcc948d4afe8d35451f35c3db751"),
     # Changed when tinychat's 502 replies were collapsed onto a 21-word
-    # vocabulary; the model is retrained on the canonicalized data.
+    # vocabulary and then onto 11; the model is retrained on it.
     "CHAT.COM": (buildz80com, "tinychat",
-                 "22b53d001ac679633aa2490229af91303b4d3dfa569d2251210a81e8b6847e7c"),
+                 "b51cd50ca41940b95ff6e01484451628032aadcf3e8161a5ce50fa2ec10a53ca"),
     "CHAT-FAST.COM": (buildfastz80com, "tinychat",
-                      "124e15d11ace998b3f669af6f2cbd3b705a689ba42018ad2c0709dfcc8ef7b6d"),
+                      "d9e50bee9c4ac0ded9651cddf88d40d403dc8506a7b38bb205e135f3ba45bc10"),
     "CHAT.bin": (buildez80, "tinychat",
-                 "f97df19f7e07d2c979a2ce981294b9823836625227591ca114bd78e52e50287a"),
+                 "436e4b0af7ea36432648f25bb64bdecbb26dcc7f9c7db1930b944fe4ad26f1d8"),
     "TALK.COM": (buildz80com, "smalltalk",
                  "75842adb7a8ec135d54f71bc082aaf4fef62691def1306ed4242f59808353e51"),
     "TALK-FAST.COM": (buildfastz80com, "smalltalk",
@@ -61,7 +61,7 @@ GOLDEN_TAP = {
     "GUESS.TAP": ("guess",
                   "f357b874901daec1f8ced9df2b0ff529471eef04a7d1256165d232ad48b46d86"),
     "CHAT.TAP": ("tinychat",
-                 "2283521cbd6d343ae870a560c0386eca66177d066de448b44d30abef049f9f09"),
+                 "5ca0ea49959b7e194f1acf1d90b9d90b9224484ed0ccb068e92e092fc2a159e3"),
     "TALK.TAP": ("smalltalk",
                  "4db2e3f77b05b85165cee46fc16151cfa4a615a81b059ac8b2b5d9f647d58213"),
 }
