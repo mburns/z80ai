@@ -1380,11 +1380,15 @@ def main() -> None:
                         help='Maximum characters generated per response')
     parser.add_argument('--kernel', '-k', default='auto', choices=['auto', *KERNELS],
                         help='Layer kernel (default: auto = fastest that fits)')
+    parser.add_argument('--phrases', default='PHRASES.DAT',
+                        help='Name the phrasebook binary loads its replies '
+                             'from, and the file written beside it. Two '
+                             'phrasebooks in one directory need two names')
     args = parser.parse_args()
 
     print("Building eZ80 CHAT.bin...\n")
     b = build_autoreg(args.model, max_output_len=args.max_output_len,
-                      kernel=args.kernel)
+                      kernel=args.kernel, phrases_file=args.phrases)
 
     b.report_labels(KEY_LABELS)
 

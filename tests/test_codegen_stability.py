@@ -67,22 +67,34 @@ GOLDEN = {
                      "522cfbfc438141e44c55f036764d32d1d50c8df66475c3f9e57aa1d9c97ef637"),
     "TALK.bin": (buildez80, "smalltalk",
                  "8370a5fe7731f33f607a3664223b31ce0f064d1b6699700f31feacca5c976937"),
-    # New: the phrasebook build. One forward pass over 128 query buckets, one
-    # argmax over 151 replies, and the text printed from the SD card rather
-    # than spelled - so no GENLOOP, no context window, and no column kernel
-    # (its query hoisting amortizes over the steps of a response, and there is
-    # one). `auto` lands on `row`; `column` would need 552KB and not fit.
-    "CLINC.bin": (buildez80, "clinc150",
-                  "f87d431ada3d297bf02dcdbf5c359ff1371a9fab82b7678b05277918c98ed6ce"),
 }
 
-#: The companion files a phrasebook binary loads. Pinned for the same reason
-#: the images are: the offset table lives in one file and the text it indexes
-#: in the same one, and a build that changed either without the other would
-#: print the wrong reply rather than fail.
-GOLDEN_COMPANION = {
-    "PHRASES.DAT": ("clinc150",
-                    "daaee683934dbad65c27986de6d9f83608ec49345a641ee53bdd07ee2f3930b4"),
+#: The phrasebook builds, which are two files each: the image, and the replies
+#: it loads off the SD card. Both are pinned, because the offset table is in
+#: one and the text it indexes is in the same one - a build that changed either
+#: without the other would print the wrong reply rather than fail.
+#:
+#: One forward pass over 128 query buckets, one argmax, and the text printed
+#: from the card rather than spelled: no GENLOOP, no context window, and no
+#: column kernel, whose query hoisting amortizes over the steps of a response
+#: and there is one. `auto` lands on `row`.
+#:
+#: The file name is part of the image - the binary carries the string it asks
+#: MOS for - so these hashes move if it is renamed.
+#:
+#: artifact -> (example, model file, companion name, image sha256, companion sha256)
+GOLDEN_PHRASEBOOK = {
+    # 151 replies. `column` would need 552KB and not fit in Agon SRAM.
+    "CLINC.bin": (
+        "clinc150", "model.npz", "CLINC.DAT",
+        "a27cc8803409200a02a583e91df44e2787f75f21b44d9755b8e0865cfdaa30d1",
+        "daaee683934dbad65c27986de6d9f83608ec49345a641ee53bdd07ee2f3930b4"),
+    # smalltalk's 19 intents answered in sentences rather than spelled: 87.2%
+    # macro against the character decoder's 80.7%, on the same labels.
+    "TALK-PHR.bin": (
+        "smalltalk", "phrasebook.npz", "TALK-PHR.DAT",
+        "7bf2c0d56f463e0a943e5470a739d4cf4e172533d37a13444f9e19d91b21fbd7",
+        "1c2035adfad893479834c767a80e3ab1094b8d3bc35bb477cb69a38c23b04431"),
 }
 
 # The .TAP hashes cover the container, not the raw image, so they are checked
@@ -133,15 +145,28 @@ def test_generated_tap_is_unchanged(artifact, examples_dir):
     )
 
 
-@pytest.mark.parametrize("companion", sorted(GOLDEN_COMPANION))
-def test_generated_companion_file_is_unchanged(companion, examples_dir):
-    example, expected = GOLDEN_COMPANION[companion]
-    builder = buildez80.build_autoreg(model_path(examples_dir, example))
-    got = hashlib.sha256(builder.phrase_blob).hexdigest()
-    assert got == expected, (
-        f"{companion} changed: {got}\n"
-        f"If that was intended, update GOLDEN_COMPANION in this file and say "
+@pytest.mark.parametrize("artifact", sorted(GOLDEN_PHRASEBOOK))
+def test_generated_phrasebook_is_unchanged(artifact, examples_dir):
+    example, model, companion, expected_bin, expected_dat = \
+        GOLDEN_PHRASEBOOK[artifact]
+
+    path = os.path.join(examples_dir, example, model)
+    if not os.path.exists(path):
+        pytest.skip(f"{example}/{model} not present")
+
+    builder = buildez80.build_autoreg(path, phrases_file=companion)
+    got_bin = hashlib.sha256(builder.build()).hexdigest()
+    got_dat = hashlib.sha256(builder.phrase_blob).hexdigest()
+
+    assert got_bin == expected_bin, (
+        f"{artifact} changed: {got_bin}\n"
+        f"If that was intended, update GOLDEN_PHRASEBOOK in this file and say "
         f"why in the commit message."
+    )
+    assert got_dat == expected_dat, (
+        f"{companion} changed: {got_dat}\n"
+        f"The replies moved without the image moving, which means the offset "
+        f"table and the text it indexes were built apart."
     )
 
 
@@ -149,5 +174,8 @@ def test_every_shipped_artifact_is_covered():
     """build-examples.sh and the release list must not outgrow this file."""
     import verify_artifacts
 
-    assert set(verify_artifacts.ARTIFACTS) == set(GOLDEN) | set(GOLDEN_TAP)
-    assert set(verify_artifacts.COMPANIONS.values()) == set(GOLDEN_COMPANION)
+    assert set(verify_artifacts.ARTIFACTS) == (
+        set(GOLDEN) | set(GOLDEN_TAP) | set(GOLDEN_PHRASEBOOK))
+    assert set(verify_artifacts.COMPANIONS) == set(GOLDEN_PHRASEBOOK)
+    for artifact, companion in verify_artifacts.COMPANIONS.items():
+        assert GOLDEN_PHRASEBOOK[artifact][2] == companion, artifact
