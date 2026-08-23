@@ -22,21 +22,41 @@ from __future__ import annotations
 
 import argparse
 import importlib
+from typing import NamedTuple
 
 from libhost import AgonHost, CPMHost, ZXHost
 
-# module, description, clock Hz, is an eZ80 target, extra build_autoreg kwargs
+
+class Target(NamedTuple):
+    """One benchmarkable build: which backend, on what machine, how fast."""
+
+    module: str
+    description: str
+    #: Machine clock in Hz, for turning T-states into seconds.
+    clock: int
+    #: eZ80 targets report no T-states: their per-instruction timings differ
+    #: from a Z80's, so quoting Z80 cycles for them would mislead.
+    is_ez80: bool
+    #: Which kernel to ask the backend for, when it offers a choice.
+    kernel: str | None = None
+
+    def build_kwargs(self) -> dict[str, str]:
+        return {"kernel": self.kernel} if self.kernel else {}
+
+
 TARGETS = {
-    "com": ("buildz80com", "CP/M, packed 2-bit weights", 4_000_000, False, {}),
-    "fast": ("buildfastz80com", "CP/M, per-value index lists", 4_000_000, False, {}),
-    "col": ("buildcolz80com", "CP/M, column-major index lists", 4_000_000, False, {}),
-    "tap": ("buildz80tap", "ZX Spectrum, packed weights", 3_500_000, False, {}),
-    "ez80-compact": ("buildez80", "Agon eZ80, one byte per weight",
-                     18_432_000, True, {"kernel": "compact"}),
-    "ez80-row": ("buildez80", "Agon eZ80, unrolled weight-major",
-                 18_432_000, True, {"kernel": "row"}),
-    "ez80": ("buildez80", "Agon eZ80, unrolled column-major",
-             18_432_000, True, {"kernel": "column"}),
+    "com": Target("buildz80com", "CP/M, packed 2-bit weights", 4_000_000, False),
+    "fast": Target("buildfastz80com", "CP/M, per-value index lists",
+                   4_000_000, False),
+    "col": Target("buildcolz80com", "CP/M, column-major index lists",
+                  4_000_000, False),
+    "tap": Target("buildz80tap", "ZX Spectrum, packed weights", 3_500_000, False),
+    "ez80-compact": Target("buildez80", "Agon eZ80, one byte per weight",
+                           18_432_000, True, "compact"),
+    "ez80-row": Target("buildez80", "Agon eZ80, unrolled weight-major",
+                       18_432_000, True, "row"),
+    "ez80": Target("buildez80", "Agon eZ80, unrolled column-major",
+                   18_432_000, True, "column"),
 }
 
 
@@ -44,15 +64,17 @@ def _host(target: str, query: str, org: int) -> AgonHost | CPMHost | ZXHost:
     """Build the host for ``target``, loading at the address the build uses."""
     if target == "tap":
         return ZXHost(stdin=[query, "!"], org=org)
-    if TARGETS[target][3]:
+    if TARGETS[target].is_ez80:
         return AgonHost(stdin=[query, "!"])
     return CPMHost(cmdline=query)
 
 
 def measure(target: str, model_path: str, query: str = "HELLO") -> dict:
     """Cycle and instruction counts for one forward pass of ``target``."""
-    module = importlib.import_module(TARGETS[target][0])
-    builder = module.build_autoreg(model_path, max_output_len=1, **TARGETS[target][4])
+    spec = TARGETS[target]
+    module = importlib.import_module(spec.module)
+    builder = module.build_autoreg(model_path, max_output_len=1,
+                                   **spec.build_kwargs())
     image = builder.build()
 
     # Always take the load address from the builder: hardcoding it here meant
@@ -77,8 +99,8 @@ def measure(target: str, model_path: str, query: str = "HELLO") -> dict:
         "bytes": len(image),
         "tstates": cpu.tstates - start_t,
         "instructions": cpu.instructions - start_i,
-        "clock": TARGETS[target][2],
-        "is_ez80": TARGETS[target][3],
+        "clock": spec.clock,
+        "is_ez80": spec.is_ez80,
     }
 
 

@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
-sys.path.insert(0, __file__.rsplit("/", 2)[0])
+# Run as a script from anywhere: the repo root holds libez80. rsplit("/") here
+# assumed a POSIX path and an invocation that spelled one out.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from libez80 import AGON_LOAD_ADDR, EZ80Builder, agon_header
 
