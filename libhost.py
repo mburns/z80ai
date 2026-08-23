@@ -20,7 +20,14 @@ from typing import ClassVar
 # Entry points and memory maps come from the target modules rather than being
 # restated: the emulator's idea of where BDOS sits and the code generator's have
 # to agree, and the surest way to guarantee that is to have only one of them.
+from libcpc import CPC_HIMEM
+from libcpc import KM_WAIT_CHAR as CPC_KM_WAIT_CHAR
+from libcpc import ORG_ADDR as CPC_ORG_ADDR
+from libcpc import SCR_SET_MODE as CPC_SCR_SET_MODE
+from libcpc import TXT_OUTPUT as CPC_TXT_OUTPUT
 from libcpm import BDOS, CPM_CMDLINE, TPA, TPA_TOP
+from libnext import NEXT_REG_CPU_SPEED, NEXT_REG_SELECT, NEXT_REG_VALUE
+from libnext import SPEEDS as NEXT_SPEEDS
 from libz80emu import Z80, Z80Error
 from libzx import ORG_ADDR as ZX_DEFAULT_ORG
 from libzx import ZX_CHAN_OPEN, ZX_CLS, ZX_KEY_INPUT, ZX_PRINT_A, ZX_RAM_TOP
@@ -222,6 +229,135 @@ def run_zx(
     max_cycles: int = 2_000_000_000,
 ) -> tuple[str, ZXHost]:
     host = ZXHost(stdin=stdin, org=org)
+    return host.run(image, max_cycles=max_cycles), host
+
+
+# --- ZX Spectrum Next --------------------------------------------------------
+
+
+class NextHost(ZXHost):
+    """A Spectrum whose Next registers are watched rather than ignored.
+
+    The Next is Spectrum-compatible, so the ROM stubs are inherited whole. What
+    is added is the select/value port pair: recording the writes is what lets a
+    test assert the build really asks for 28MHz, which is otherwise invisible -
+    the emulator has one clock and does not speed up.
+    """
+
+    def __init__(self, stdin: list[str] | None = None,
+                 org: int = ZX_DEFAULT_ORG) -> None:
+        super().__init__(stdin=stdin, org=org)
+        #: Next register number -> the last value written to it.
+        self.registers: dict[int, int] = {}
+        self._selected: int | None = None
+        self.cpu.io_write = self._io_write
+
+    def _io_write(self, port: int, value: int) -> None:
+        if port == NEXT_REG_SELECT:
+            self._selected = value
+        elif port == NEXT_REG_VALUE and self._selected is not None:
+            self.registers[self._selected] = value
+
+    @property
+    def cpu_speed(self) -> str | None:
+        """The clock the program asked for, as a key of ``libnext.SPEEDS``."""
+        value = self.registers.get(NEXT_REG_CPU_SPEED)
+        if value is None:
+            return None
+        return next((k for k, v in NEXT_SPEEDS.items() if v == value), None)
+
+
+def run_next(
+    image: bytes,
+    stdin: list[str] | None = None,
+    org: int = ZX_DEFAULT_ORG,
+    max_cycles: int = 2_000_000_000,
+) -> tuple[str, NextHost]:
+    host = NextHost(stdin=stdin, org=org)
+    return host.run(image, max_cycles=max_cycles), host
+
+
+# --- Amstrad CPC -------------------------------------------------------------
+
+
+class CPCHost:
+    """Stubs for the firmware jumpblock entries the CPC build calls.
+
+    The jumpblock lives in RAM on a real CPC, so a program reaches the firmware
+    by CALLing a fixed address rather than through a ROM.  That makes the shim
+    the same shape as the Spectrum's: hook the addresses, answer, RET.
+    """
+
+    def __init__(self, stdin: list[str] | None = None,
+                 org: int = CPC_ORG_ADDR) -> None:
+        self.cpu = Z80()
+        self.output: list[str] = []
+        self.stdin = list(stdin or [])
+        self.org = org
+        self.finished = False
+        self.mode: int | None = None
+        # A CPC program is entered below the firmware workspace, so unlike the
+        # Spectrum there is no room under the image: park the stack and the
+        # exit trampoline just below HIMEM instead.
+        self._stack = CPC_HIMEM - 0x20
+        self._exit = CPC_HIMEM - 0x40
+        for addr, fn in (
+            (CPC_TXT_OUTPUT, self._txt_output),
+            (CPC_KM_WAIT_CHAR, self._km_wait_char),
+            (CPC_SCR_SET_MODE, self._scr_set_mode),
+        ):
+            self.cpu.hooks[addr] = fn
+        self.cpu.sp = self._stack
+
+    def _txt_output(self, cpu: Z80) -> bool:
+        self.output.append(chr(cpu.a))
+        cpu.pc = cpu._pop()
+        return True
+
+    def _scr_set_mode(self, cpu: Z80) -> bool:
+        self.mode = cpu.a
+        cpu.pc = cpu._pop()
+        return True
+
+    def _km_wait_char(self, cpu: Z80) -> bool:
+        if not self.stdin:
+            self.finished = True
+            cpu.halted = True
+            return True
+        line = self.stdin[0]
+        if line == "":
+            self.stdin.pop(0)
+            cpu.a = 13
+        else:
+            self.stdin[0] = line[1:]
+            cpu.a = ord(line[0])
+        cpu.pc = cpu._pop()
+        return True
+
+    def run(self, image: bytes, max_cycles: int = 2_000_000_000) -> str:
+        if self.org + len(image) > CPC_HIMEM:
+            raise Z80Error(
+                f"image of {len(image):,} bytes does not fit below HIMEM "
+                f"at {self.org:#06x}"
+            )
+        self.cpu.load(self.org, image)
+        self.cpu.pc = self.org
+        # RUN" calls the program; returning drops onto a HALT.
+        self.cpu.poke(self._exit, 0x76)
+        self.cpu.sp = self._stack
+        self.cpu.poke(self._stack, self._exit & 0xFF)
+        self.cpu.poke(self._stack + 1, (self._exit >> 8) & 0xFF)
+        self.cpu.run(max_cycles=max_cycles)
+        return "".join(self.output)
+
+
+def run_cpc(
+    image: bytes,
+    stdin: list[str] | None = None,
+    org: int = CPC_ORG_ADDR,
+    max_cycles: int = 2_000_000_000,
+) -> tuple[str, CPCHost]:
+    host = CPCHost(stdin=stdin, org=org)
     return host.run(image, max_cycles=max_cycles), host
 
 

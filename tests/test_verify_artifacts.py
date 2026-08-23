@@ -88,11 +88,16 @@ def test_agon_images_are_checked_against_sram_not_the_16mb_address_space():
         va.check_fits(va.AGON_LOAD, usable + 1, top, "the top of Agon SRAM")
 
 
+#: Every platform run_artifact knows how to boot. An artifact naming anything
+#: else would reach its `unknown platform` fallback only at release time.
+PLATFORMS = {"cpm", "zx", "next", "cpc", "agon", "agon-phrasebook"}
+
+
 def test_every_known_artifact_names_a_model_that_exists(examples_dir):
     import os
 
     for name, (model_path, platform) in va.ARTIFACTS.items():
-        assert platform in {"cpm", "zx", "agon", "agon-phrasebook"}, name
+        assert platform in PLATFORMS, name
         assert os.path.exists(os.path.join(os.path.dirname(examples_dir), model_path)), (
             f"{name} refers to a missing model {model_path}"
         )
@@ -106,6 +111,20 @@ def test_every_phrasebook_artifact_declares_its_companion():
             assert name in va.COMPANIONS, name
     for name in va.COMPANIONS:
         assert va.ARTIFACTS[name][1] == "agon-phrasebook", name
+
+
+def test_an_unknown_platform_is_refused(tmp_path):
+    """The fallback in run_artifact, reached before a release rather than during."""
+    path = tmp_path / "X.BIN"
+    path.write_bytes(b"\x00" * 256)
+    with pytest.raises(va.VerificationError, match="unknown platform"):
+        va.run_artifact(str(path), "commodore", "HELLO")
+
+
+@pytest.mark.parametrize("platform", sorted(PLATFORMS))
+def test_every_platform_is_reachable_from_the_artifact_table(platform):
+    """A platform nothing ships is a code path nothing exercises."""
+    assert any(p == platform for _model, p in va.ARTIFACTS.values()), platform
 
 
 def test_verify_reports_nothing_for_an_empty_directory(tmp_path):

@@ -112,17 +112,20 @@ Get running in under 5 minutes:
 
 **2. Install an emulator:**
 
-| Platform | CP/M (.COM files) | ZX Spectrum (.TAP files) |
-|----------|-------------------|--------------------------|
-| **Linux** | [iz-cpm](https://github.com/ivanizag/iz-cpm/releases) | `apt install fuse-emulator-gtk` |
-| **Windows** | [iz-cpm](https://github.com/ivanizag/iz-cpm/releases) | [Fuse](https://fuse-emulator.sourceforge.net/) |
-| **macOS** | [iz-cpm](https://github.com/ivanizag/iz-cpm/releases) | `brew install fuse-emulator` |
+| Platform | CP/M (.COM files) | ZX Spectrum (.TAP files) | Amstrad CPC (.BIN files) |
+|----------|-------------------|--------------------------|--------------------------|
+| **Linux** | [iz-cpm](https://github.com/ivanizag/iz-cpm/releases) | `apt install fuse-emulator-gtk` | [Arnold](http://www.cpctech.org.uk/arnold.html) |
+| **Windows** | [iz-cpm](https://github.com/ivanizag/iz-cpm/releases) | [Fuse](https://fuse-emulator.sourceforge.net/) | [WinAPE](http://www.winape.net/) |
+| **macOS** | [iz-cpm](https://github.com/ivanizag/iz-cpm/releases) | `brew install fuse-emulator` | [RetroVirtualMachine](https://www.retrovirtualmachine.org/) |
 
 **3. Run:**
 
 - **CP/M**: `iz-cpm CHAT.COM` — or `CHAT-COL.COM`, the same model with the
   fastest weight layout (24x quicker per character, 8KB larger)
 - **ZX Spectrum**: `fuse --tape CHAT.TAP`, then `CLEAR 24575`, `LOAD "" CODE` and `RANDOMIZE USR 24576`
+- **ZX Spectrum Next**: `CHAT-NEXT.TAP`, loaded the same way — 8x quicker, because
+  it clocks the CPU to 28MHz. It also runs on a plain 48K machine
+- **Amstrad CPC**: put `CHAT-CPC.BIN` on a disc image and `RUN"CHAT-CPC.BIN"`
 - **Agon Light / eZ80**: copy `CHAT.bin` to the SD card and run it by name — or
   `CLINC.bin`, which answers 150 intents in full sentences and needs
   `PHRASES.DAT` copied beside it
@@ -137,11 +140,14 @@ weight layout that still fits the machine:
 ```bash
 python build.py --model examples/guess/model.npz --output GUESS.COM
 python build.py --model examples/guess/model.npz --target zx   --output GUESS.TAP
+python build.py --model examples/guess/model.npz --target next --output GUESS.TAP
+python build.py --model examples/guess/model.npz --target cpc  --output GUESS.BIN
 python build.py --model examples/guess/model.npz --target ez80 --output GUESS.bin
 ```
 
 The individual builders (`buildz80com.py`, `buildfastz80com.py`,
-`buildcolz80com.py`, `buildz80tap.py`, `buildez80.py`) still work standalone if
+`buildcolz80com.py`, `buildz80tap.py`, `buildnext.py`, `buildcpc.py`,
+`buildez80.py`) still work standalone if
 you want a specific layout, as does `--target cpm-column`, `cpm-fast` or
 `cpm-packed`.
 
@@ -182,6 +188,15 @@ Z80-μLM runs on multiple Z80-based platforms:
   - Uses ZX Spectrum ROM routines for I/O
   - Memory optimized for 48K systems
   - Compatible with most ZX Spectrum emulators
+- **ZX Spectrum Next**: `buildnext.py`. See [SPECTRUM-NEXT.md](SPECTRUM-NEXT.md)
+  - The Spectrum image plus fourteen bytes that set the Next's clock to 28MHz —
+    8x the generated characters per second
+  - Still loads and runs on a real 48K Spectrum, at 3.5MHz: nothing there
+    decodes the clock ports
+- **Amstrad CPC 464/664/6128**: `buildcpc.py`. See [AMSTRAD-CPC.md](AMSTRAD-CPC.md)
+  - Generates a binary with an AMSDOS header — `RUN"CHAT.BIN"`
+  - Uses the firmware jumpblock for I/O, and assembles at `&0040` because a CPC
+    leaves only 42,555 bytes below HIMEM for a ~40KB model
 - **Agon Light / eZ80 (ADL mode)**: `buildez80.py`. See [EZ80.md](EZ80.md)
   - 24-bit addressing, so the 64KB ceiling on model size is gone
   - 24-bit accumulators, which cannot overflow the way the Z80's 16-bit ones can

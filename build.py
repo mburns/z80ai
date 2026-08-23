@@ -35,9 +35,19 @@ kernels:
 the 16MB ADL can address. `ez80-column`, `ez80-row` and `ez80-compact` force
 one.
 
+The remaining targets have no layout to choose, because only the packed one
+fits the RAM they leave a program:
+
+  zx    ZX Spectrum 48K .TAP, loaded at 6000h
+  next  the same .TAP with the Next's clock register set to 28MHz. Still runs
+        on a 48K Spectrum, at 3.5MHz, since nothing there decodes that port
+  cpc   Amstrad CPC binary with an AMSDOS header, loaded at 0040h
+
 Usage:
     python build.py --model examples/guess/model.npz --output GUESS.COM
-    python build.py --model model.npz --target zx  --output CHAT.TAP
+    python build.py --model model.npz --target zx   --output CHAT.TAP
+    python build.py --model model.npz --target next --output CHAT.TAP
+    python build.py --model model.npz --target cpc  --output CHAT.BIN
     python build.py --model model.npz --target ez80 --output CHAT.bin
 """
 
@@ -89,6 +99,24 @@ def build_zx(model: str, max_output_len: int) -> tuple[Z80Builder, str]:
     return buildz80tap.build_autoreg(model, max_output_len=max_output_len), "packed"
 
 
+def build_next(model: str, max_output_len: int) -> tuple[Z80Builder, str]:
+    """Build a Next .TAP. Same image as the Spectrum's, clocked at 28MHz."""
+    import buildnext
+
+    return buildnext.build_autoreg(model, max_output_len=max_output_len), "packed"
+
+
+def build_cpc(model: str, max_output_len: int) -> tuple[Z80Builder, str]:
+    """Build an Amstrad CPC binary.
+
+    No layout choice to make: a CPC has ~42.5KB between the restart vectors and
+    HIMEM, and only the packed layout fits in it.
+    """
+    import buildcpc
+
+    return buildcpc.build_autoreg(model, max_output_len=max_output_len), "packed"
+
+
 def build_ez80(model: str, max_output_len: int,
                kernel: str = "auto") -> tuple[Z80Builder, str]:
     """Build an Agon .bin, choosing the fastest kernel that fits Agon SRAM."""
@@ -108,8 +136,8 @@ def main() -> None:
     parser.add_argument("--output", "-o", required=True, help="Output file")
     parser.add_argument("--target", "-t", default="auto",
                         choices=["auto", "cpm", "cpm-column", "cpm-fast",
-                                 "cpm-packed", "zx", "ez80", "ez80-column",
-                                 "ez80-row", "ez80-compact"],
+                                 "cpm-packed", "zx", "next", "cpc", "ez80",
+                                 "ez80-column", "ez80-row", "ez80-compact"],
                         help="Platform and weight layout (default: auto = cpm)")
     parser.add_argument("--max-output-len", type=int, default=MAX_OUTPUT_LEN,
                         help="Maximum characters generated per response")
@@ -123,20 +151,29 @@ def main() -> None:
                                     target.split("-", 1)[1])
     elif target == "zx":
         builder, layout = build_zx(args.model, args.max_output_len)
+    elif target == "next":
+        builder, layout = build_next(args.model, args.max_output_len)
+    elif target == "cpc":
+        builder, layout = build_cpc(args.model, args.max_output_len)
     else:
         kernel = target.split("-", 1)[1] if "-" in target else "auto"
         builder, layout = build_ez80(args.model, args.max_output_len, kernel)
 
-    if target == "zx":
+    # Flat-binary targets write the image as assembled; the rest wrap it in the
+    # container their machine loads, named after the output file.
+    name = os.path.basename(args.output).split(".")[0]
+    if target in ("zx", "next"):
         import libzx
 
-        image = builder.build()
-        name = os.path.basename(args.output).split(".")[0]
-        tap = libzx.build_tap(image, builder.org, name)
-        with open(args.output, "wb") as fh:
-            fh.write(tap)
-        print(f"\nWrote {len(tap):,} bytes to {args.output}")
+        wrapped = libzx.build_tap(builder.build(), builder.org, name)
+    elif target == "cpc":
+        import libcpc
+
+        wrapped = libcpc.build_binary(builder.build(), builder.org, name)
     else:
+        wrapped = None
+
+    if wrapped is None:
         builder.save(args.output)
         # A phrasebook build produces two files: the binary and the replies it
         # loads from the card. Writing them together is what keeps the offset
@@ -145,6 +182,10 @@ def main() -> None:
             import buildez80
 
             buildez80.write_phrase_file(builder, args.output)
+    else:
+        with open(args.output, "wb") as fh:
+            fh.write(wrapped)
+        print(f"\nWrote {len(wrapped):,} bytes to {args.output}")
 
     size = len(builder.code)
     print(f"Target: {target}  layout: {layout}  size: {size:,} bytes "

@@ -24,7 +24,7 @@ import argparse
 import importlib
 from typing import NamedTuple
 
-from libhost import AgonHost, CPMHost, ZXHost
+from libhost import AgonHost, CPCHost, CPMHost, NextHost, ZXHost
 
 
 class Target(NamedTuple):
@@ -51,6 +51,9 @@ TARGETS = {
     "col": Target("buildcolz80com", "CP/M, column-major index lists",
                   4_000_000, False),
     "tap": Target("buildz80tap", "ZX Spectrum, packed weights", 3_500_000, False),
+    "next": Target("buildnext", "ZX Spectrum Next, packed weights",
+                   28_000_000, False),
+    "cpc": Target("buildcpc", "Amstrad CPC, packed weights", 4_000_000, False),
     "ez80-compact": Target("buildez80", "Agon eZ80, one byte per weight",
                            18_432_000, True, "compact"),
     "ez80-row": Target("buildez80", "Agon eZ80, unrolled weight-major",
@@ -60,10 +63,14 @@ TARGETS = {
 }
 
 
-def _host(target: str, query: str, org: int) -> AgonHost | CPMHost | ZXHost:
+def _host(target: str, query: str, org: int) -> AgonHost | CPCHost | CPMHost | ZXHost:
     """Build the host for ``target``, loading at the address the build uses."""
     if target == "tap":
         return ZXHost(stdin=[query, "!"], org=org)
+    if target == "next":
+        return NextHost(stdin=[query, "!"], org=org)
+    if target == "cpc":
+        return CPCHost(stdin=[query, "!"], org=org)
     if TARGETS[target].is_ez80:
         return AgonHost(stdin=[query, "!"])
     return CPMHost(cmdline=query)
