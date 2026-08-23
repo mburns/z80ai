@@ -7,6 +7,8 @@ for Z80 development.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 
 def _byte(val: int) -> int:
     """Range-check an immediate that has to fit in one byte.
@@ -123,6 +125,33 @@ class Z80Builder:
         with open(filename, 'wb') as f:
             f.write(image)
         print(f"Wrote {len(image)} bytes to {filename}")
+
+    def report_labels(self, labels: Sequence[str]) -> None:
+        """Print the resolved address of whichever ``labels`` this build has.
+
+        For cross-referencing a disassembly.  Missing labels are skipped rather
+        than an error, so backends that emit different routines can be handed
+        one list.  Addresses are as wide as the target's, so an eZ80 build
+        prints the six digits its 24-bit addresses need.
+        """
+        digits = 2 * self.addr_size
+        print("\nKey addresses:")
+        for name in labels:
+            if name in self.labels:
+                print(f"  {name}: {self.labels[name]:0{digits}X}h")
+
+    def save_and_report(self, filename: str, labels: Sequence[str] = ()) -> None:
+        """Print key addresses, write the image, and report its size.
+
+        The tail the flat-binary builders' ``main`` functions share.  The .TAP
+        and Agon builds report their own container and load-address details, so
+        they call :meth:`report_labels` and write the file themselves.
+        """
+        self.report_labels(labels)
+        self.save(filename)
+        size = len(self.code)
+        print(f"\nTotal size: {size} bytes ({size / 1024:.1f} KB)")
+        print(f"Saved to {filename}")
 
     # === Z80 Instructions ===
 

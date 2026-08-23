@@ -135,3 +135,40 @@ def test_debug_helpers_assemble_cleanly():
     b.build()  # resolves without raising
     for label in ("PRHEX", "PRNYB", "DBGBUF", "PRCRLF", "PRMSG", "PRDEC"):
         assert label in b.labels
+
+
+def test_report_labels_skips_the_ones_this_build_does_not_have(capsys):
+    """One list serves every backend, so absent labels are normal, not an error."""
+    b = Z80Builder(org=0x0100)
+    b.label("HERE")
+    b.ret()
+    b.report_labels(("HERE", "ELSEWHERE"))
+    out = capsys.readouterr().out
+    assert "HERE: 0100h" in out
+    assert "ELSEWHERE" not in out
+
+
+def test_report_labels_prints_addresses_as_wide_as_the_target(capsys):
+    """An eZ80 label at 040000h needs six digits; four would truncate it."""
+    from libez80 import AGON_LOAD_ADDR, EZ80Builder
+
+    b = EZ80Builder()
+    b.label("START")
+    b.ret()
+    b.report_labels(("START",))
+    assert f"START: {AGON_LOAD_ADDR:06X}h" in capsys.readouterr().out
+
+
+def test_save_and_report_writes_the_image_and_reports_its_size(tmp_path, capsys):
+    b = Z80Builder(org=0x0100)
+    b.label("START")
+    b.jp("START")
+    path = tmp_path / "OUT.COM"
+
+    b.save_and_report(str(path), ("START",))
+
+    assert path.read_bytes() == b.build()
+    out = capsys.readouterr().out
+    assert "START: 0100h" in out
+    assert f"Total size: {len(b.code)} bytes" in out
+    assert str(path) in out

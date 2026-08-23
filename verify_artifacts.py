@@ -22,13 +22,12 @@ import os
 import sys
 
 import libinfer
+from libcpm import TPA as CPM_TPA
+from libcpm import TPA_TOP as CPM_TPA_TOP
 from libez80 import AGON_LOAD_ADDR as AGON_LOAD
 from libez80 import AGON_SRAM_TOP, AGON_STACK_MARGIN
 from libhost import run_agon, run_cpm, run_zx
-
-CPM_TPA = 0x0100
-CPM_TPA_TOP = 0xE400  # where a stock CP/M 2.2 BDOS starts
-ZX_RAM_TOP = 0x10000  # one past the last byte of RAM on a 48K machine
+from libzx import TAP_FLAG_DATA, TAP_FLAG_HEADER, ZX_RAM_TOP
 
 #: artifact name -> (model path, platform)
 ARTIFACTS = {
@@ -81,7 +80,8 @@ def parse_tap(data: bytes) -> tuple[bytes, int]:
         blocks.append(body)
         pos += 2 + length
 
-    if len(blocks) != 2 or blocks[0][0] != 0x00 or blocks[1][0] != 0xFF:
+    if (len(blocks) != 2 or blocks[0][0] != TAP_FLAG_HEADER
+            or blocks[1][0] != TAP_FLAG_DATA):
         raise VerificationError("expected one header block and one data block")
 
     header = blocks[0]

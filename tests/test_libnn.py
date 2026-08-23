@@ -198,7 +198,10 @@ def test_emit_weights_rejects_mismatched_weight_and_bias_lists():
 # --- typing ------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("module_name", ["libnn", "libz80", "libinfer", "libez80"])
+@pytest.mark.parametrize(
+    "module_name",
+    ["libnn", "libz80", "libinfer", "libez80", "libcpm", "libzx", "loadmodel"],
+)
 def test_public_functions_are_annotated(module_name):
     """These are the modules a backend author writes against."""
     import importlib

@@ -42,23 +42,13 @@ import argparse
 
 import numpy as np
 
+import libcpm
 import libinfer
 import libnn
-from buildz80com import (
-    BDOS,
-    BDOS_CONSOLE_OUT,
-    BDOS_PRINT_STRING,
-    BDOS_READ_LINE,
-    CHAT_BUFFER_SIZE,
-    CPM_CMDLINE,
-    CPMPlatform,
-)
-from libinfer import discover_layers, validate_z80_layers
+from libcpm import CPMPlatform
+from libinfer import MAX_OUTPUT_LEN, validate_z80_layers
 from libz80 import Z80Builder
-from loadmodel import load_model_params
 
-#: Maximum characters to generate before giving up on ever seeing an EOS.
-MAX_OUTPUT_LEN = 50
 #: The three weight values that reach the inner loop; zero is what we skip.
 WEIGHT_VALUES = (-2, -1, 1)
 
@@ -397,63 +387,6 @@ def emit_inference(layer_sizes: list[int]):
     return emit
 
 
-def _emit_entry(b: Z80Builder) -> None:
-    """Emit START and the chat loop: identical in behaviour to the other builds."""
-    b.label("START")
-    b.ld_hl_nn(CPM_CMDLINE)
-    b.ld_a_hl()
-    b.or_a()
-    b.jp_z("CHAT")
-
-    b.call("TOKENIZE")
-    b.call("CLEAR_CTX")
-    b.call("GENERATE")
-    b.rst(0)  # warm boot, back to CP/M
-
-    b.label("CHAT")
-    b.label("CHAT_LOOP")
-    b.ld_de_label("CRLF")
-    b.ld_c_n(BDOS_PRINT_STRING)
-    b.call_addr(BDOS)
-    for ch in "> ":
-        b.ld_e_n(ord(ch))
-        b.ld_c_n(BDOS_CONSOLE_OUT)
-        b.call_addr(BDOS)
-
-    b.ld_de_label("CHATBUF")
-    b.ld_c_n(BDOS_READ_LINE)
-    b.call_addr(BDOS)
-
-    b.ld_de_label("CRLF")
-    b.ld_c_n(BDOS_PRINT_STRING)
-    b.call_addr(BDOS)
-
-    b.ld_a_mem_label("CHATLEN")
-    b.or_a()
-    b.jr_z("CHAT_LOOP")
-
-    b.ld_a_mem_label("CHATDAT")
-    b.cp_n(ord("!"))
-    b.jp_z("CHAT_EXIT")
-
-    b.ld_a_mem_label("CHATLEN")
-    b.ld_hl_nn(CPM_CMDLINE)
-    b.ld_hl_a()
-    b.ld_hl_label("CHATDAT")
-    b.ld_de_nn(CPM_CMDLINE + 1)
-    b.ld_c_a()
-    b.ld_b_n(0)
-    b.ldir()
-
-    b.call("TOKENIZE")
-    b.call("CLEAR_CTX")
-    b.call("GENERATE")
-    b.jr("CHAT_LOOP")
-
-    b.label("CHAT_EXIT")
-    b.rst(0)
-
-
 def build_autoreg(
     model_path: str = "command_model_autoreg.pt",
     max_output_len: int = MAX_OUTPUT_LEN,
@@ -471,34 +404,23 @@ def build_autoreg(
         ValueError: If a layer is too wide for an 8-bit neuron index, or the
             model's input is not the usual query/context split.
     """
-    print(f"Loading model from {model_path}...")
-    params, arch, charset = load_model_params(model_path)
-    position_bands = arch.get("position_bands", libinfer.FLAT)
-
-    eos_idx = len(charset) - 1
-    print(f"Charset ({len(charset)} chars): {charset[:-1]!r} + EOS")
-
-    layer_names, layer_sizes = discover_layers(params)
-    num_layers = len(layer_names)
-    output_size = layer_sizes[-1]
-
-    print(f"Architecture: {' → '.join(map(str, layer_sizes))}")
-    print(f"Input: {layer_sizes[0]} (128 query + 128 context)")
-    print(f"Output: {output_size} characters")
+    model = libinfer.load_for_build(model_path)
+    layer_sizes = model.layer_sizes
+    num_layers, output_size = model.num_layers, model.output_size
 
     validate_z80_layers(layer_sizes)
     libnn.validate_hoistable(layer_sizes)
 
-    records = [column_records(params[f"{n}_weight"]) for n in layer_names]
-    biases = [np.asarray(params[f"{n}_bias"]).astype(np.int64) for n in layer_names]
+    records = [column_records(w) for w in model.weights()]
+    biases = [np.asarray(bias).astype(np.int64) for bias in model.biases()]
 
     plat = ColumnCPMPlatform()
     b = Z80Builder()
 
-    _emit_entry(b)
+    libcpm.emit_entry(b)
 
     # === Shared engine =======================================================
-    libnn.emit_generate(b, plat, eos_idx, max_output_len,
+    libnn.emit_generate(b, plat, model.eos_idx, max_output_len,
                         emit_inference(layer_sizes), hoist_query=True)
     libnn.emit_printch(b, plat)
     libnn.emit_update_ctx(b, plat)
@@ -506,8 +428,8 @@ def build_autoreg(
     libnn.emit_ctx_hash(b, plat)
     libnn.emit_clear_ctx(b, plat)
     libnn.emit_argmax(b, output_size)
-    libnn.emit_tokenizer(b, plat, position_bands)
-    libnn.emit_tok_hash(b, plat, position_bands)
+    libnn.emit_tokenizer(b, plat, model.position_bands)
+    libnn.emit_tok_hash(b, plat, model.position_bands)
 
     # === Column-major kernel =================================================
     emit_split_scan(b)
@@ -522,23 +444,17 @@ def build_autoreg(
             emit_hidden_epilogue(b, i, _act_page(i + 1), layer_sizes[i + 1])
 
     # === Data ================================================================
-    libnn.emit_charset_table(b, charset)
-    b.label("CRLF")
-    b.db(13, 10, ord("$"))
+    libnn.emit_charset_table(b, model.charset)
+    libcpm.emit_crlf(b)
 
     for name in ("CDPTR", "NCOL"):
         b.label(name)
         b.dw(0)
     b.label("CDCNT")
     b.db(0)
-    libnn.emit_engine_variables(b, position_bands)
+    libnn.emit_engine_variables(b, model.position_bands)
 
-    b.label("CHATBUF")
-    b.db(CHAT_BUFFER_SIZE)  # capacity, read by BDOS
-    b.label("CHATLEN")
-    b.db(0)  # length, written by BDOS
-    b.label("CHATDAT")
-    b.ds(CHAT_BUFFER_SIZE)
+    libcpm.emit_chat_buffer(b)
 
     b.label("OUTBUF")
     b.ds(output_size * libnn.ACTIVATION_SIZE)
@@ -594,15 +510,7 @@ def main() -> None:
 
     print("Building column-major CHAT.COM...\n")
     b = build_autoreg(args.model, max_output_len=args.max_output_len)
-
-    print("\nKey addresses:")
-    for name in ("START", "GENERATE", "PREQ", "LAYER1", "ARGMAX", "TOKENIZE"):
-        if name in b.labels:
-            print(f"  {name}: {b.labels[name]:04X}h")
-
-    b.save(args.output)
-    print(f"\nTotal size: {len(b.code)} bytes ({len(b.code) / 1024:.1f} KB)")
-    print(f"Saved to {args.output}")
+    b.save_and_report(args.output, libcpm.KEY_LABELS)
 
 
 if __name__ == "__main__":
