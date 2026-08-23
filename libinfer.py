@@ -216,6 +216,60 @@ def forward(model: Model, x: np.ndarray, accum_bits: int = 16) -> np.ndarray:
     return forward_layers(model, x, accum_bits)[-1]
 
 
+# --- query-half hoisting -----------------------------------------------------
+#
+# The query half of the input vector is fixed for a whole response - `generate`
+# encodes it once and only the context half changes per character - so layer 1's
+# contribution from those 128 inputs can be computed once per query instead of
+# once per generated character.  Folding that partial sum into layer 1's bias is
+# exact rather than an approximation: the accumulator is a sum modulo
+# 2**accum_bits, and addition mod 2**n is associative, so regrouping the addends
+# cannot change the result.  What may *not* move is the >>2, which floors and is
+# therefore a nonlinearity - the same argument EZ80.md makes for reordering.
+
+
+def split_query_half(
+    w1: np.ndarray, num_buckets: int = NUM_BUCKETS
+) -> tuple[np.ndarray, np.ndarray]:
+    """Split layer 1's weights into their query-half and context-half columns."""
+    return w1[:, :num_buckets], w1[:, num_buckets:]
+
+
+def query_bias(
+    model: Model, query_vec: np.ndarray, accum_bits: int = 16
+) -> np.ndarray:
+    """Layer 1's per-neuron bias with the query half's contribution folded in.
+
+    This is what the backends compute once per query, and what they then hand
+    the layer-1 kernel in place of ``biases[0]``.
+    """
+    wq, _ = split_query_half(model.weights[0])
+    q = np.asarray(query_vec, dtype=np.int64)
+    return wrap(wq.astype(np.int64) @ q + model.biases[0].astype(np.int64), accum_bits)
+
+
+def forward_hoisted(
+    model: Model,
+    query_vec: np.ndarray,
+    context_vec: np.ndarray,
+    accum_bits: int = 16,
+) -> np.ndarray:
+    """:func:`forward`, computed the way the hoisting backends compute it.
+
+    Equal to ``forward(model, concat(query_vec, context_vec))`` for every input;
+    ``tests/test_hoisting.py`` is the proof, and any divergence is a bug in the
+    argument above rather than a tolerable rounding difference.
+    """
+    _, wc = split_query_half(model.weights[0])
+    hoisted = Model(
+        weights=[wc, *model.weights[1:]],
+        biases=[query_bias(model, query_vec, accum_bits), *model.biases[1:]],
+        charset=model.charset,
+        position_bands=model.position_bands,
+    )
+    return forward(hoisted, np.asarray(context_vec, dtype=np.int64), accum_bits)
+
+
 #: Widest layer a Z80 backend can emit: its neuron loop counts in B, and DJNZ
 #: treats a zero start as 256. The eZ80 backend uses sentinels, so it has no cap.
 Z80_MAX_LAYER = 256

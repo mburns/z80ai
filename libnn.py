@@ -79,42 +79,98 @@ class LayerPlan:
     in_buffer: str
     out_buffer: str
     is_last: bool
+    #: Byte offset into ``in_buffer`` where this layer's inputs begin. Non-zero
+    #: only for a hoisted layer 1, which reads the context half of the input
+    #: vector and receives the query half through its bias.
+    in_offset: int = 0
+    #: Overrides for the three derived labels. A hoisted layer 1 takes its bias
+    #: from the per-query QBIAS rather than from the model's own BIAS1, and the
+    #: query pass is a layer that has no index in the network at all.
+    name: str | None = None
+    weights: str | None = None
+    bias: str | None = None
 
     @property
     def label(self) -> str:
-        return f"LAYER{self.index + 1}"
+        return self.name or f"LAYER{self.index + 1}"
 
     @property
     def weights_label(self) -> str:
-        return f"WTS{self.index + 1}"
+        return self.weights or f"WTS{self.index + 1}"
 
     @property
     def bias_label(self) -> str:
-        return f"BIAS{self.index + 1}"
+        return self.bias or f"BIAS{self.index + 1}"
 
 
-def plan_layers(layer_sizes: list[int], input_buffer: str) -> list[LayerPlan]:
+def plan_layers(
+    layer_sizes: list[int], input_buffer: str, hoist_query: bool = False
+) -> list[LayerPlan]:
     """Assign ping-ponged scratch buffers to each layer.
 
     The first layer reads the tokenized input and the last writes ``OUTBUF``;
     everything between alternates between two scratch buffers.
+
+    With ``hoist_query``, layer 1 reads only the context half of the input and
+    takes its bias from ``QBIAS``, which :func:`query_plan` fills once per query
+    with the query half's contribution. See :func:`libinfer.forward_hoisted` for
+    why that is exact rather than an approximation.
     """
+    if hoist_query:
+        validate_hoistable(layer_sizes)
     num_layers = len(layer_sizes) - 1
     plans = []
     for i in range(num_layers):
         in_buffer = input_buffer if i == 0 else _scratch(i)
         out_buffer = "OUTBUF" if i == num_layers - 1 else _scratch(i + 1)
+        hoisted = hoist_query and i == 0
         plans.append(
             LayerPlan(
                 index=i,
-                in_size=layer_sizes[i],
+                in_size=NUM_BUCKETS if hoisted else layer_sizes[i],
                 out_size=layer_sizes[i + 1],
                 in_buffer=in_buffer,
                 out_buffer=out_buffer,
                 is_last=i == num_layers - 1,
+                in_offset=CONTEXT_OFFSET if hoisted else 0,
+                bias="QBIAS" if hoisted else None,
             )
         )
     return plans
+
+
+def query_plan(layer_sizes: list[int], input_buffer: str) -> LayerPlan:
+    """The once-per-query pass that fills ``QBIAS``.
+
+    Layer 1 over the query half only, with no scaling and no ReLU: it produces
+    a raw 16-bit partial sum plus ``BIAS1``, which is exactly what the
+    per-character layer 1 then wants as its bias.
+    """
+    validate_hoistable(layer_sizes)
+    return LayerPlan(
+        index=0,
+        in_size=NUM_BUCKETS,
+        out_size=layer_sizes[1],
+        in_buffer=input_buffer,
+        out_buffer="QBIAS",
+        is_last=False,
+        name="PREQ",
+        weights="WTS1Q",
+        bias="BIAS1",
+    )
+
+
+def validate_hoistable(layer_sizes: list[int]) -> None:
+    """Reject a model whose input is not the usual query|context split.
+
+    Raises:
+        ValueError: If layer 1 does not read exactly two halves of NUM_BUCKETS.
+    """
+    if layer_sizes[0] != 2 * NUM_BUCKETS:
+        raise ValueError(
+            f"input size {layer_sizes[0]} is not {2 * NUM_BUCKETS}, so it has no "
+            f"query/context halves to hoist"
+        )
 
 
 def _scratch(depth: int) -> str:
@@ -147,14 +203,22 @@ def emit_generate(
     eos_idx: int,
     max_output_len: int,
     emit_inference: Callable[[Z80Builder], None],
+    hoist_query: bool = False,
 ) -> None:
     """Emit GENERATE: infer, argmax, print, feed back, repeat until EOS.
 
     ``emit_inference`` emits whatever runs one forward pass, leaving the scores
     in OUTBUF. Backends differ there: the packed builds call a stub per layer,
     the index-list build calls a single table-driven INFER.
+
+    ``hoist_query`` runs PREQ once here rather than once per character, which is
+    the whole point of it: the query half of the input does not change for the
+    length of a response. Every caller reaches GENERATE straight from TOKENIZE,
+    so this is the one place that needs to know.
     """
     b.label("GENERATE")
+    if hoist_query:
+        b.call("PREQ")
     b.ld_a_n(max_output_len)
     b.ld_mem_label_a("GENCNT")
 
@@ -384,35 +448,57 @@ def emit_clear_ctx(b: Z80Builder, plat: Platform, unrolled: bool = True) -> None
 # --- inference ---------------------------------------------------------------
 
 
-def emit_layer_dispatch(b: Z80Builder, plans: list[LayerPlan]) -> None:
+def emit_layer_dispatch(
+    b: Z80Builder, plans: list[LayerPlan], walker: str = "LAYER"
+) -> None:
     """Emit one stub per layer, loading pointers and sizes then entering LAYER."""
     for plan in plans:
         b.label(plan.label)
         b.ld_hl_label(plan.weights_label)
         b.ld_de_label(plan.bias_label)
-        b.ld_ix_label(plan.in_buffer)
+        b.ld_ix_label(plan.in_buffer, plan.in_offset)
         b.ld_iy_label(plan.out_buffer)
         b.ld_b_n(_byte_count(plan.out_size))
         b.ld_c_n(_byte_count(plan.in_size))
         if not plan.is_last:
-            b.jp("LAYER")
-        # The last stub falls through into LAYER, which follows.
+            b.jp(walker)
+        # The last stub falls through into the walker, which follows.
 
 
-def emit_layer(b: Z80Builder) -> None:
-    """Emit LAYER: one fully-connected layer over 2-bit packed weights.
+def emit_query_dispatch(b: Z80Builder, plan: LayerPlan) -> None:
+    """Emit the PREQ stub, which enters the unscaled walker QLAYER."""
+    b.label(plan.label)
+    b.ld_hl_label(plan.weights_label)
+    b.ld_de_label(plan.bias_label)
+    b.ld_ix_label(plan.in_buffer, plan.in_offset)
+    b.ld_iy_label(plan.out_buffer)
+    b.ld_b_n(_byte_count(plan.out_size))
+    b.ld_c_n(_byte_count(plan.in_size))
+    b.jp("QLAYER")
+
+
+def emit_layer(b: Z80Builder, name: str = "LAYER", prefix: str = "L",
+               scale: bool = True) -> None:
+    """Emit a fully-connected layer walker over 2-bit packed weights.
 
     ``HL`` walks the weight stream, ``DE`` the biases, ``IX`` the inputs and
     ``IY`` the outputs; ``B`` counts neurons and ``C`` weights within a neuron.
     A packed byte is reloaded whenever the per-neuron weight counter reaches a
     multiple of four, which is why every neuron starts on a byte boundary.
+
+    Two copies get emitted. ``LAYER`` is the per-character one and scales its
+    result by four on the way out; ``QLAYER`` is the once-per-query pass that
+    fills ``QBIAS``, and must *not* scale, because the shift floors and so
+    cannot be applied to a partial sum. ``prefix`` keeps their internal labels
+    apart; the shared MULADD and scratch are safe because the two never run at
+    the same time.
     """
-    b.label("LAYER")
+    b.label(name)
     b.ld_mem_label_bc("SAVCNT")
     b.ld_mem_label_hl("SAVW")
     b.ld_mem_label_de("SAVB")
 
-    b.label("LNEUR")
+    b.label(f"{prefix}NEUR")
     b.push_bc()
     b.ld_hl_nn(0)
     b.ld_mem_label_hl("ACC")
@@ -424,17 +510,17 @@ def emit_layer(b: Z80Builder) -> None:
     b.ld_b_a()
     b.ld_c_n(0)
 
-    b.label("LWT")
+    b.label(f"{prefix}WT")
     b.ld_a_c()
     b.and_n(0x03)
-    b.jr_nz("LSAME")
+    b.jr_nz(f"{prefix}SAME")
     b.ld_hl_mem_label("SAVW")
     b.ld_a_hl()
     b.ld_mem_label_a("PACKED")
     b.inc_hl()
     b.ld_mem_label_hl("SAVW")
 
-    b.label("LSAME")
+    b.label(f"{prefix}SAME")
     b.ld_a_mem_label("PACKED")
     b.rrca()
     b.rrca()
@@ -451,7 +537,7 @@ def emit_layer(b: Z80Builder) -> None:
     b.dec_a()
     b.call_nz("MULADD")
     b.inc_c()
-    b.djnz("LWT")
+    b.djnz(f"{prefix}WT")
 
     # Bias, then scale down to keep the next layer inside 16 bits.
     b.ld_hl_mem_label("SAVB")
@@ -463,17 +549,18 @@ def emit_layer(b: Z80Builder) -> None:
     b.ld_hl_mem_label("ACC")
     b.add_hl_de()
     b.ld_mem_label_hl("ACC")
-    b.sra_h()
-    b.rr_l()
-    b.sra_h()
-    b.rr_l()
+    if scale:
+        b.sra_h()
+        b.rr_l()
+        b.sra_h()
+        b.rr_l()
 
     b.ld_iyd_l(0)
     b.ld_iyd_h(1)
     b.inc_iy()
     b.inc_iy()
     b.pop_bc()
-    b.djnz("LNEUR")
+    b.djnz(f"{prefix}NEUR")
     b.ret()
 
 
@@ -824,8 +911,17 @@ def emit_variables(b: Z80Builder, position_bands: int = 1) -> None:
     emit_engine_variables(b, position_bands)
 
 
-def emit_buffers(b: Z80Builder, plat: Platform, layer_sizes: Sequence[int]) -> None:
-    """Emit the activation buffers: input vector, two scratch, and output."""
+def emit_buffers(
+    b: Z80Builder,
+    plat: Platform,
+    layer_sizes: Sequence[int],
+    hoist_query: bool = False,
+) -> None:
+    """Emit the activation buffers: input vector, two scratch, and output.
+
+    ``hoist_query`` adds QBIAS, layer 1's per-query bias vector: one 16-bit word
+    per layer-1 neuron, rewritten by PREQ each time a new query is tokenized.
+    """
     b.label(plat.buffer)
     b.ds(layer_sizes[0] * ACTIVATION_SIZE)
 
@@ -837,6 +933,9 @@ def emit_buffers(b: Z80Builder, plat: Platform, layer_sizes: Sequence[int]) -> N
     b.ds(max_hidden * ACTIVATION_SIZE)
     b.label("OUTBUF")
     b.ds(layer_sizes[-1] * ACTIVATION_SIZE)
+    if hoist_query:
+        b.label("QBIAS")
+        b.ds(layer_sizes[1] * ACTIVATION_SIZE)
 
 
 def emit_weights(
@@ -849,3 +948,13 @@ def emit_weights(
         b.label(f"BIAS{i}")
         for v in bias:
             b.dw(int(v) & 0xFFFF)
+
+
+def emit_query_weights(b: Z80Builder, packed_query: bytes) -> None:
+    """Emit WTS1Q: layer 1's query-half columns, walked once per query.
+
+    ``WTS1`` holds the context half in a hoisting build, so the two streams
+    together are exactly the layer-1 matrix the model was trained with.
+    """
+    b.label("WTS1Q")
+    b.blob(packed_query)

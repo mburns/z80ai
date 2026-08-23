@@ -34,14 +34,17 @@ ZX_RAM_TOP = 0x10000  # one past the last byte of RAM on a 48K machine
 ARTIFACTS = {
     "GUESS.COM": ("examples/guess/model.npz", "cpm"),
     "GUESS-FAST.COM": ("examples/guess/model.npz", "cpm"),
+    "GUESS-COL.COM": ("examples/guess/model.npz", "cpm"),
     "GUESS.TAP": ("examples/guess/model.npz", "zx"),
     "GUESS.bin": ("examples/guess/model.npz", "agon"),
     "CHAT.COM": ("examples/tinychat/model.npz", "cpm"),
     "CHAT-FAST.COM": ("examples/tinychat/model.npz", "cpm"),
+    "CHAT-COL.COM": ("examples/tinychat/model.npz", "cpm"),
     "CHAT.TAP": ("examples/tinychat/model.npz", "zx"),
     "CHAT.bin": ("examples/tinychat/model.npz", "agon"),
     "TALK.COM": ("examples/smalltalk/model.npz", "cpm"),
     "TALK-FAST.COM": ("examples/smalltalk/model.npz", "cpm"),
+    "TALK-COL.COM": ("examples/smalltalk/model.npz", "cpm"),
     "TALK.TAP": ("examples/smalltalk/model.npz", "zx"),
     "TALK.bin": ("examples/smalltalk/model.npz", "agon"),
 }

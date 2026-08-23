@@ -367,9 +367,16 @@ def _emit_layers_column(b: EZ80Builder, params: dict, layer_names: list[str],
         last = i == num_layers - 1
 
         b.label(f'LAYER{i+1}')
-        for j, bias in enumerate(biases):
-            b.ld_hl_nn(int(bias) & 0xFFFFFF)
-            b.ld_mem_label_hl('ACC', 3 * j)
+        if i == 0:
+            # QBASE already holds bias1 plus the query half's contribution,
+            # which PREQ computed once for the whole response.
+            for j in range(num_out):
+                b.ld_hl_mem_label('QBASE', 3 * j)
+                b.ld_mem_label_hl('ACC', 3 * j)
+        else:
+            for j, bias in enumerate(biases):
+                b.ld_hl_nn(int(bias) & 0xFFFFFF)
+                b.ld_mem_label_hl('ACC', 3 * j)
         b.ld_iy_label('COLLIST')
 
         b.label(f'CDRIVE{i+1}')
@@ -417,29 +424,66 @@ def _emit_layers_column(b: EZ80Builder, params: dict, layer_names: list[str],
             b.ld_iyd_hl(0)                       # terminate the next layer's list
             b.jp(f'LAYER{i+2}')
 
+    _emit_query_pass(b, params, layer_names[0])
 
-def _emit_input_scan(b: EZ80Builder, num_in: int) -> None:
-    """Build layer 1's column list from the tokenizer's output.
+
+def _emit_query_pass(b: EZ80Builder, params: dict, first_layer: str) -> None:
+    """Emit PREQ: layer 1's query half, run once per query rather than per step.
+
+    Threaded code makes this nearly free to express. PREQ reuses layer 1's own
+    column blocks and its driver; all that differs is which columns the list
+    holds and where the terminator sends the walk. The result lands in QBASE,
+    which layer 1 then loads instead of the bias.
+
+    Exact rather than approximate: the accumulator is a sum mod 2**24 and
+    addition mod 2**n is associative, so splitting it in two cannot move a bit.
+    See :func:`libinfer.forward_hoisted`.
+    """
+    biases = np.asarray(params[f'{first_layer}_bias']).astype(np.int64)
+
+    b.label('PREQ')
+    for j, bias in enumerate(biases):
+        b.ld_hl_nn(int(bias) & 0xFFFFFF)
+        b.ld_mem_label_hl('ACC', 3 * j)
+    b.call('SCAN_QUERY')
+    b.ld_iy_label('COLLIST')
+    b.jp('CDRIVE1')  # the walk lands on QEPI, whose RET returns to PREQ's caller
+
+    b.label('QEPI')
+    for j in range(len(biases)):
+        b.ld_hl_mem_label('ACC', 3 * j)
+        b.ld_mem_label_hl('QBASE', 3 * j)
+    b.ret()
+
+
+def _emit_input_scan(b: EZ80Builder, name: str, columns: range,
+                     terminator: str) -> None:
+    """Build a layer-1 column list over part of the input vector.
 
     The later layers get their lists for free in the neuron epilogue, but the
     input vector is written by BUCKET_ADD, which can hit the same bucket twice.
     Appending there would put a column on the list twice and double its
     contribution, so the list is built by one pass over the finished vector.
+
+    Two of these get emitted, over the two halves of the input. SCAN_QUERY runs
+    once per query and terminates on QEPI; SCAN_CTX runs once per character and
+    terminates on LEPI1. Same column blocks either way - only the list and the
+    terminator differ, which is the freedom threaded code buys.
     """
-    b.label('SCAN_INPUTS')
+    b.label(name)
     b.ld_iy_label('COLLIST')
     b.ld_de_nn(0)
     b.ld_bc_nn(3)
-    for j in range(num_in):
+    for j in columns:
         b.ld_hl_mem_label('INBUF', 3 * j)
         b.or_a()
         b.sbc_hl_de()       # DE is 0, so HL survives; Z says whether it is zero
-        b.jp_z(f'SCAN{j}')
+        b.jp_z(f'{name}{j}')
         b.ld_hl_label(f'COL1_{j}')
         b.ld_iyd_hl(0)
         b.add_iy_bc()
-        b.label(f'SCAN{j}')
-    b.ld_hl_label('LEPI1')
+        b.label(f'{name}{j}')
+    b.ld_hl_label(terminator)
     b.ld_iyd_hl(0)          # terminator: where the walk goes when the list ends
     b.ret()
 
@@ -622,6 +666,8 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
 
     # === GENERATE ============================================================
     b.label('GENERATE')
+    if kernel == 'column':
+        b.call('PREQ')  # once per response: the query cannot change during one
     b.ld_a_n(max_output_len)
     b.ld_mem_label_a('GENCNT')
 
@@ -674,8 +720,9 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
         b.ret()
     elif kernel == 'column':
         # The column list has to be rebuilt each step: the context half of the
-        # input changes with every character emitted.
-        b.call('SCAN_INPUTS')
+        # input changes with every character emitted. The query half does not,
+        # so PREQ dealt with it once, before the loop.
+        b.call('SCAN_CTX')
         b.jp('LAYER1')
     else:
         # The unrolled layers are emitted last, after every JR-using routine,
@@ -1010,7 +1057,9 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
         _emit_layers_unrolled(b, params, layer_names, num_layers)
     elif kernel == 'column':
         _emit_column_epilogue(b)
-        _emit_input_scan(b, layer_sizes[0])
+        _emit_input_scan(b, 'SCAN_QUERY', range(NUM_BUCKETS), 'QEPI')
+        _emit_input_scan(b, 'SCAN_CTX',
+                         range(NUM_BUCKETS, layer_sizes[0]), 'LEPI1')
         _emit_layers_column(b, params, layer_names, num_layers)
 
     # === DATA ================================================================
@@ -1077,6 +1126,9 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
         b.ds24(widest_out)
         b.label('COLLIST')
         b.ds24(widest_in + 1)
+        # Layer 1's bias with the query half folded in, rewritten once per query.
+        b.label('QBASE')
+        b.ds24(layer_sizes[1])
 
     if kernel == 'compact':
         b.label('BIASES')

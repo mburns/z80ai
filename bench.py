@@ -29,6 +29,7 @@ from libhost import AgonHost, CPMHost, ZXHost
 TARGETS = {
     "com": ("buildz80com", "CP/M, packed 2-bit weights", 4_000_000, False, {}),
     "fast": ("buildfastz80com", "CP/M, per-value index lists", 4_000_000, False, {}),
+    "col": ("buildcolz80com", "CP/M, column-major index lists", 4_000_000, False, {}),
     "tap": ("buildz80tap", "ZX Spectrum, packed weights", 3_500_000, False, {}),
     "ez80-compact": ("buildez80", "Agon eZ80, one byte per weight",
                      18_432_000, True, {"kernel": "compact"}),

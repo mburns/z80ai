@@ -302,13 +302,17 @@ def test_unknown_kernel_is_rejected(tiny_model_path):
 
 
 def test_active_column_list_holds_exactly_the_nonzero_inputs(tiny_model_path):
-    """The list is the whole optimization: wrong contents means wrong answers."""
+    """The list is the whole optimization: wrong contents means wrong answers.
+
+    Layer 1 only ever sees the context half now - the query half was walked
+    once, by PREQ, before the generation loop started.
+    """
     builder = build(tiny_model_path, "column")
     cpu = run_ez80_until(builder, "HELLO", "LAYER1")
 
     x = reference_input("HELLO")
     want = [
-        builder.labels[f"COL1_{j}"] for j in range(len(x)) if x[j] != 0
+        builder.labels[f"COL1_{j}"] for j in range(128, len(x)) if x[j] != 0
     ]
     base = builder.labels["COLLIST"]
     got = [cpu.peek_word(base + 3 * i, 3) for i in range(len(want))]
@@ -316,6 +320,31 @@ def test_active_column_list_holds_exactly_the_nonzero_inputs(tiny_model_path):
 
     terminator = cpu.peek_word(base + 3 * len(want), 3)
     assert terminator == builder.labels["LEPI1"], "list is not terminated"
+
+
+def test_query_column_list_holds_exactly_the_nonzero_query_buckets(tiny_model_path):
+    """PREQ's half of the same list, terminated on QEPI rather than LEPI1."""
+    builder = build(tiny_model_path, "column")
+    cpu = run_ez80_until(builder, "HELLO", "QEPI")
+
+    x = reference_input("HELLO")
+    want = [builder.labels[f"COL1_{j}"] for j in range(128) if x[j] != 0]
+    assert want, "the query tokenized to nothing"
+    base = builder.labels["COLLIST"]
+    got = [cpu.peek_word(base + 3 * i, 3) for i in range(len(want))]
+    assert got == want
+    assert cpu.peek_word(base + 3 * len(want), 3) == builder.labels["QEPI"]
+
+
+def test_qbase_holds_the_reference_query_partial(tiny_model_path, tiny_model):
+    """What PREQ leaves in QBASE is layer 1's bias with the query folded in."""
+    builder = build(tiny_model_path, "column")
+    cpu = run_ez80_until(builder, "HELLO", "GENLOOP")
+    got = read24(cpu, builder.labels["QBASE"], tiny_model.layer_sizes[1])
+    want = libinfer.query_bias(
+        tiny_model, libinfer.trigram_encode("HELLO"), accum_bits=24
+    )
+    np.testing.assert_array_equal(got, want)
 
 
 def test_active_column_list_has_no_duplicates(tiny_model_path):
@@ -410,9 +439,10 @@ def test_column_major_with_an_all_zero_input(tmp_path, model_factory):
     model.save_npz(path)
     builder = build(path, "column", max_output_len=1)
 
-    # Stop before the input scan, blank the whole input vector, and let INFER
-    # rebuild the column list over it - which should come out empty.
-    cpu = run_ez80_until(builder, "HELLO", "INFER")
+    # Stop before PREQ, blank the whole input vector, and let the scans rebuild
+    # the column lists over it - which should come out empty. Before PREQ, not
+    # before INFER: PREQ reads the query half once, ahead of the loop.
+    cpu = run_ez80_until(builder, "HELLO", "GENERATE")
     for addr in range(builder.labels["INBUF"], builder.labels["INBUF"] + 256 * 3):
         cpu.poke(addr, 0)
 

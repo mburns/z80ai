@@ -21,36 +21,52 @@ import os
 
 import pytest
 
+import buildcolz80com
 import buildez80
 import buildfastz80com
 import buildz80com
 import buildz80tap
 
+# Every hash below changed when layer 1's query half was hoisted out of the
+# generation loop: the query cannot change while one response is generated, so
+# PREQ folds its contribution into layer 1's bias once per query instead of once
+# per character. 1.30x on the packed builds, 1.24x on the index-list build, 1.16x
+# on the eZ80 column kernel, for 600-5,000 bytes. Bit-identical output - see
+# tests/test_hoisting.py.
+#
 # artifact -> (module, example, sha256 of the image as written to disk)
 GOLDEN = {
     "GUESS.COM": (buildz80com, "guess",
-                  "1c26b542228fff147991e4b2b8c1e92652d46b4fb8b9eeafbb0442169b085a5a"),
+                  "f6049e084e42de0ef3c6aadf8c8564d4c8ec4018960e0bbe4d2b75643ab1d883"),
     "GUESS-FAST.COM": (buildfastz80com, "guess",
-                       "cceee1ec8d138f707d5759f8100bfa9c14476ed04aa4aedc31839d11efe94baf"),
+                       "3a003a1fda25c6b12eea2025c1c5fb42dbf4fb7894c25ab71c666d0d72b92cbe"),
+    # New: the column-major CP/M layout, 2.9x fewer instructions than the
+    # index-list one for about 3KB more.
+    "GUESS-COL.COM": (buildcolz80com, "guess",
+                      "6d0b8f6a3d10d8ed83986fb9014c2c181f7772c3501f093c97782c655fc35e7a"),
     # Changed when eZ80 ARGMAX stopped counting neurons in B (no 256-output
     # cap, 24-bit MAXI/RESULT) and again when the default kernel became the
     # unrolled column-major one - 23x fewer instructions for 2.6x the size.
     "GUESS.bin": (buildez80, "guess",
-                  "8eb986d2c73574344be128c66a9a71e08727bcc948d4afe8d35451f35c3db751"),
+                  "56484a20f181bbddd040aef16b679d976207f1113fb084aa9b793f83f41df9ac"),
     # Changed when tinychat's 502 replies were collapsed onto a 21-word
     # vocabulary and then onto 11; the model is retrained on it.
     "CHAT.COM": (buildz80com, "tinychat",
-                 "b51cd50ca41940b95ff6e01484451628032aadcf3e8161a5ce50fa2ec10a53ca"),
+                 "facab199025f80ebee7a77110eb4a16af6e604805da4fe7e2ef5623d46f11a30"),
     "CHAT-FAST.COM": (buildfastz80com, "tinychat",
-                      "d9e50bee9c4ac0ded9651cddf88d40d403dc8506a7b38bb205e135f3ba45bc10"),
+                      "e3b74660e5777ea82568ec13454e6e534e4a661990640cd9447df527f7f72977"),
+    "CHAT-COL.COM": (buildcolz80com, "tinychat",
+                     "4a522fb857ba0f55220344cbcc32d226a081f49a3d9c8b55b8d5cea998d14f92"),
     "CHAT.bin": (buildez80, "tinychat",
-                 "436e4b0af7ea36432648f25bb64bdecbb26dcc7f9c7db1930b944fe4ad26f1d8"),
+                 "cd09d2dc237e06977ecbf7e3dda28a63babc20c858c656519e03daf91859d305"),
     "TALK.COM": (buildz80com, "smalltalk",
-                 "75842adb7a8ec135d54f71bc082aaf4fef62691def1306ed4242f59808353e51"),
+                 "fdf6ee4f4d660e64435c1e0359f2cc6e393b91e4f76c1b98b56b78b6263f4722"),
     "TALK-FAST.COM": (buildfastz80com, "smalltalk",
-                      "33e8a588e06b1392a522e031bb9b478700c3cb0e2a87efcdcfef088acdae7d8c"),
+                      "17d9070833d14e79f649f4a295bc9f3ebaedb005d05faa7e66f5a8eff3e810bf"),
+    "TALK-COL.COM": (buildcolz80com, "smalltalk",
+                     "522cfbfc438141e44c55f036764d32d1d50c8df66475c3f9e57aa1d9c97ef637"),
     "TALK.bin": (buildez80, "smalltalk",
-                 "6efec989a6d3bb11af1c3f3846b0a98ebe26b0a4b80e9f48ce725e29d6b740b2"),
+                 "8370a5fe7731f33f607a3664223b31ce0f064d1b6699700f31feacca5c976937"),
 }
 
 # The .TAP hashes cover the container, not the raw image, so they are checked
@@ -59,11 +75,11 @@ GOLDEN_TAP = {
     # Changed when the ZX build adopted the CP/M inner loop: same arithmetic,
     # 26% fewer instructions, 32 bytes smaller.
     "GUESS.TAP": ("guess",
-                  "f357b874901daec1f8ced9df2b0ff529471eef04a7d1256165d232ad48b46d86"),
+                  "9c6aa2b15841a2bc945b3d0c8468edb5b3432150b4d7f19b7bab5d96f2bb80dc"),
     "CHAT.TAP": ("tinychat",
-                 "5ca0ea49959b7e194f1acf1d90b9d90b9224484ed0ccb068e92e092fc2a159e3"),
+                 "fbd66cf962521294e59440ef6d6c610b8953920527397f2589dc25f4b22abe20"),
     "TALK.TAP": ("smalltalk",
-                 "4db2e3f77b05b85165cee46fc16151cfa4a615a81b059ac8b2b5d9f647d58213"),
+                 "b66150b7823e40b849cea774c1b205608decdba4fb04b19e91a266863be82540"),
 }
 
 
