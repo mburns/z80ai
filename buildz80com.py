@@ -17,6 +17,7 @@ import argparse
 
 import numpy as np
 
+import libinfer
 import libnn
 from libinfer import discover_layers, pack_2bit, validate_z80_layers
 from libz80 import Z80Builder
@@ -84,7 +85,8 @@ def build_autoreg(
         ValueError: If a layer is wider than a Z80 neuron loop can count.
     """
     print(f"Loading model from {model_path}...")
-    params, _arch, charset = load_model_params(model_path)
+    params, arch, charset = load_model_params(model_path)
+    position_bands = arch.get('position_bands', libinfer.FLAT)
 
     eos_idx = len(charset) - 1
     print(f"Charset ({len(charset)} chars): {charset[:-1]!r} + EOS")
@@ -177,14 +179,14 @@ def build_autoreg(
     libnn.emit_muladd(b)
     libnn.emit_relu(b, plans)
     libnn.emit_argmax(b, output_size)
-    libnn.emit_tokenizer(b, plat)
-    libnn.emit_tok_hash(b, plat)
+    libnn.emit_tokenizer(b, plat, position_bands)
+    libnn.emit_tok_hash(b, plat, position_bands)
 
     # === Data ===
     libnn.emit_charset_table(b, charset)
     b.label("CRLF")
     b.db(13, 10, ord("$"))
-    libnn.emit_variables(b)
+    libnn.emit_variables(b, position_bands)
 
     b.label("CHATBUF")
     b.db(CHAT_BUFFER_SIZE)  # capacity, read by BDOS

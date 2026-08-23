@@ -81,6 +81,8 @@ layout.
 - **Autoregressive generation**: Outputs text character-by-character
 - **No floating point**: Everything is integer math with fixed-point scaling
 - **Interactive chat mode**: Just run `CHAT` with no arguments
+- **Optional order-aware input**: `--position-bands` makes the encoder
+  distinguish `PUT KEY IN BOX` from `PUT BOX IN KEY` - see [ENCODING.md](ENCODING.md)
 - **Tested against a real CPU emulator**: every build is executed instruction by
   instruction and compared to a NumPy reference model - see [TESTING.md](TESTING.md)
 
@@ -148,6 +150,12 @@ Your input is hashed into 128 buckets via trigram encoding - an abstract "tag cl
 "there hello"  →  [bucket 23: 64, bucket 87: 32, ...]  (same!)
 "helo ther"    →  [bucket 23: 32, bucket 87: 32, ...]  (similar - typo tolerant)
 ```
+
+Word order is discarded along with everything else, which is what makes
+paraphrases work. When order matters - a command parser, an adventure game -
+`--position-bands` seeds each trigram's hash with where it appeared, at no
+cost in generation time. See [ENCODING.md](ENCODING.md); it is a real trade,
+not a free upgrade.
 
 This is semantically powerful for short inputs, but there's a limit: longer or order-dependent sentences blur together as concepts compete for the same buckets. "Open the door and turn on the lights" will likely be too close to distinguish from "turn on the door and open the lights."
 

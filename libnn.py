@@ -577,13 +577,19 @@ def emit_argmax(b: Z80Builder, output_size: int) -> None:
 # --- query tokenization ------------------------------------------------------
 
 
-def emit_tokenizer(b: Z80Builder, plat: Platform) -> None:
+def emit_tokenizer(b: Z80Builder, plat: Platform, position_bands: int = 1) -> None:
     """Emit TOKENIZE: hash the query's trigrams into the first half of the buffer.
 
     The query is treated as though padded with a space at each end, so an
     n-character query contributes n trigrams.
+
+    TOKENIZE runs once per query, not once per generated character, so the
+    extra work ``position_bands`` adds does not show up in generation time.
     """
     b.label("TOKENIZE")
+    if position_bands > 1:
+        b.xor_a()
+        b.ld_mem_label_a("TOKPOS")
 
     # Clear the query half of the activation buffer.
     b.ld_hl_label(plat.buffer)
@@ -660,14 +666,61 @@ def emit_tokenizer(b: Z80Builder, plat: Platform) -> None:
     b.jr("TOK_DONE")
 
 
-def emit_tok_hash(b: Z80Builder, plat: Platform) -> None:
-    """Emit TOK_HASH: ``((c1 * 31 + c2) * 31 + c3) & 127``, then bump the bucket."""
+def _emit_band_seed(b: Z80Builder, bands: int) -> None:
+    """Leave ``position_band(TOKPOS) * BAND_SEED`` in HL.
+
+    The band is ``TOKPOS >> 3`` clamped to ``bands - 1``: three RRCAs and a
+    mask, because a proportional band would need a divide. The seed is then
+    multiplied by 7 the same way the context encoder does it, as ``x * 8 - x``.
+    """
+    b.ld_a_mem_label("TOKPOS")
+    b.rrca()
+    b.rrca()
+    b.rrca()
+    b.and_n(0x1F)  # RRCA rotates, so drop the bits that wrapped round
+    b.cp_n(bands)
+    b.jr_c("TOK_BAND_OK")
+    b.ld_a_n(bands - 1)  # clamp: everything past the last band shares it
+
+    b.label("TOK_BAND_OK")
+    b.ld_l_a()
+    b.ld_h_n(0)
+    b.push_hl()
+    b.add_hl_hl()
+    b.add_hl_hl()
+    b.add_hl_hl()  # * 8
+    b.pop_de()
+    b.or_a()
+    b.sbc_hl_de()  # * 7
+
+
+def emit_tok_hash(b: Z80Builder, plat: Platform, position_bands: int = 1) -> None:
+    """Emit TOK_HASH: ``((c1 * 31 + c2) * 31 + c3) & 127``, then bump the bucket.
+
+    With ``position_bands > 1`` the hash starts from the trigram's position
+    band rather than zero, so the same trigram lands in different buckets
+    depending on where in the query it appeared.
+    """
     b.label("TOK_HASH")
     b.push_de()
 
-    b.ld_a_mem_label("TOKC1")
-    b.ld_l_a()
-    b.ld_h_n(0)
+    if position_bands > 1:
+        _emit_band_seed(b, position_bands)
+        # h = seed * 31, so that adding c1 below completes h * 31 + c1.
+        b.push_hl()
+        for _ in range(5):
+            b.add_hl_hl()
+        b.pop_de()
+        b.or_a()
+        b.sbc_hl_de()
+        b.ld_a_mem_label("TOKC1")
+        b.ld_c_a()
+        b.ld_b_n(0)
+        b.add_hl_bc()
+    else:
+        b.ld_a_mem_label("TOKC1")
+        b.ld_l_a()
+        b.ld_h_n(0)
     b.push_hl()
     for _ in range(5):
         b.add_hl_hl()
@@ -714,6 +767,10 @@ def emit_tok_hash(b: Z80Builder, plat: Platform) -> None:
     b.ld_hl_a()
     b.pop_de()
     b.pop_de()
+    if position_bands > 1:
+        b.ld_a_mem_label("TOKPOS")
+        b.inc_a()
+        b.ld_mem_label_a("TOKPOS")
     b.ret()
 
     b.label("TOK_DONE")
@@ -742,22 +799,29 @@ def emit_layer_variables(b: Z80Builder) -> None:
     b.dw(0)
 
 
-def emit_engine_variables(b: Z80Builder) -> None:
-    """Emit the scratch shared by argmax, generation, tokenizing and context."""
+def emit_engine_variables(b: Z80Builder, position_bands: int = 1) -> None:
+    """Emit the scratch shared by argmax, generation, tokenizing and context.
+
+    TOKPOS only exists when the tokenizer is position-aware, so a model built
+    without bands lays out exactly as it did before this option existed.
+    """
     b.label("MAXV")
     b.dw(0)
-    for name in ("MAXI", "RESULT", "GENCNT", "TOKLEN", "TOKC1", "TOKC2", "TOKC3",
-                 "CTXPOS", "CTXN"):
+    names = ["MAXI", "RESULT", "GENCNT", "TOKLEN", "TOKC1", "TOKC2", "TOKC3"]
+    if position_bands > 1:
+        names.append("TOKPOS")
+    names += ["CTXPOS", "CTXN"]
+    for name in names:
         b.label(name)
         b.db(0)
     b.label("CTXCHARS")
     b.ds(CONTEXT_LEN)
 
 
-def emit_variables(b: Z80Builder) -> None:
+def emit_variables(b: Z80Builder, position_bands: int = 1) -> None:
     """Emit every shared variable, in the order the packed backends expect."""
     emit_layer_variables(b)
-    emit_engine_variables(b)
+    emit_engine_variables(b, position_bands)
 
 
 def emit_buffers(b: Z80Builder, plat: Platform, layer_sizes: Sequence[int]) -> None:

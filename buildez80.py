@@ -57,7 +57,7 @@ from __future__ import annotations
 import numpy as np
 
 from libez80 import AGON_LOAD_ADDR, AGON_MAX_IMAGE, EZ80Builder, agon_header
-from libinfer import SHIFT, discover_layers
+from libinfer import FLAT, SHIFT, discover_layers
 from loadmodel import load_model_params
 
 MAX_OUTPUT_LEN = 50
@@ -503,7 +503,8 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
             f"unknown kernel {kernel!r}; choose from {['auto', *KERNELS]}"
         )
     print(f"Loading model from {model_path}...")
-    params, _arch, charset = load_model_params(model_path)
+    params, arch, charset = load_model_params(model_path)
+    position_bands = arch.get('position_bands', FLAT)
 
     eos_idx = len(charset) - 1
     num_chars = len(charset)
@@ -769,6 +770,9 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
 
     # === TOKENIZE: query text -> first 128 buckets ===========================
     b.label('TOKENIZE')
+    if position_bands > 1:
+        b.xor_a()
+        b.ld_mem_label_a('TOKPOS')
     b.ld_hl_label('INBUF')
     b.ld_de_label('INBUF')
     b.inc_de()
@@ -836,8 +840,31 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.label('TOK_HASH')
     b.push_de()
     b.ld_hl_nn(0)
-    b.ld_a_mem_label('TOKC1')
-    b.ld_l_a()
+    if position_bands > 1:
+        # Seed with the trigram's position band: TOKPOS >> 3, clamped, times 7.
+        b.ld_a_mem_label('TOKPOS')
+        b.rrca()
+        b.rrca()
+        b.rrca()
+        b.and_n(0x1F)  # RRCA rotates, so drop the bits that wrapped round
+        b.cp_n(position_bands)
+        b.jr_c('TOK_BAND_OK')
+        b.ld_a_n(position_bands - 1)
+        b.label('TOK_BAND_OK')
+        b.ld_l_a()
+        b.push_hl()
+        b.add_hl_hl()
+        b.add_hl_hl()
+        b.add_hl_hl()
+        b.pop_bc()
+        b.or_a()
+        b.sbc_hl_bc()  # * 7
+        b.call('HASH_STEP2')
+        b.ld_a_mem_label('TOKC1')
+        b.call('HASH_ADD')
+    else:
+        b.ld_a_mem_label('TOKC1')
+        b.ld_l_a()
     b.call('HASH_STEP2')
     b.ld_a_mem_label('TOKC2')
     b.call('HASH_ADD')
@@ -849,6 +876,10 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ld_hl_label('INBUF')
     b.call('BUCKET_ADD')
     b.pop_de()
+    if position_bands > 1:
+        b.ld_a_mem_label('TOKPOS')
+        b.inc_a()
+        b.ld_mem_label_a('TOKPOS')
     b.ret()
 
     # HASH_STEP2: HL *= 31.  HASH_ADD: HL += A.
@@ -987,8 +1018,11 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     for c in charset:
         b.db(0 if c == '\x00' else ord(c))
 
-    for name in ('TOKLEN', 'TOKC1', 'TOKC2', 'TOKC3', 'CTXPOS', 'CTXN',
-                 'GENCNT', 'RELUF', 'INPLEN'):
+    scratch = ['TOKLEN', 'TOKC1', 'TOKC2', 'TOKC3']
+    if position_bands > 1:
+        scratch.append('TOKPOS')
+    scratch += ['CTXPOS', 'CTXN', 'GENCNT', 'RELUF', 'INPLEN']
+    for name in scratch:
         b.label(name)
         b.db(0)
 

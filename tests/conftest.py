@@ -32,6 +32,7 @@ def make_model(
     layer_sizes: list[int],
     charset: str = " ABCDEFGHIJ\x00",
     seed: int = 7,
+    position_bands: int = 1,
 ) -> Model:
     """Build a random but deterministic quantized model."""
     rng = np.random.default_rng(seed)
@@ -42,7 +43,8 @@ def make_model(
             rng.choice(_WEIGHT_VALUES, size=(nout, nin), p=_WEIGHT_PROBS).astype(np.int32)
         )
         biases.append(rng.integers(-400, 400, size=nout).astype(np.int32))
-    return Model(weights=weights, biases=biases, charset=charset)
+    return Model(weights=weights, biases=biases, charset=charset,
+                 position_bands=position_bands)
 
 
 @pytest.fixture(scope="session")
@@ -54,6 +56,19 @@ def model_factory():
 @pytest.fixture(scope="session")
 def tiny_model() -> Model:
     return make_model([256, 16, 12])
+
+
+@pytest.fixture(scope="session")
+def banded_model() -> Model:
+    """Same shape as tiny_model, but tokenized with position bands."""
+    return make_model([256, 16, 12], position_bands=8)
+
+
+@pytest.fixture(scope="session")
+def banded_model_path(tmp_path_factory, banded_model: Model) -> str:
+    path = str(tmp_path_factory.mktemp("models") / "banded.npz")
+    banded_model.save_npz(path)
+    return path
 
 
 @pytest.fixture(scope="session")
