@@ -67,6 +67,22 @@ GOLDEN = {
                      "522cfbfc438141e44c55f036764d32d1d50c8df66475c3f9e57aa1d9c97ef637"),
     "TALK.bin": (buildez80, "smalltalk",
                  "8370a5fe7731f33f607a3664223b31ce0f064d1b6699700f31feacca5c976937"),
+    # New: the phrasebook build. One forward pass over 128 query buckets, one
+    # argmax over 151 replies, and the text printed from the SD card rather
+    # than spelled - so no GENLOOP, no context window, and no column kernel
+    # (its query hoisting amortizes over the steps of a response, and there is
+    # one). `auto` lands on `row`; `column` would need 552KB and not fit.
+    "CLINC.bin": (buildez80, "clinc150",
+                  "f87d431ada3d297bf02dcdbf5c359ff1371a9fab82b7678b05277918c98ed6ce"),
+}
+
+#: The companion files a phrasebook binary loads. Pinned for the same reason
+#: the images are: the offset table lives in one file and the text it indexes
+#: in the same one, and a build that changed either without the other would
+#: print the wrong reply rather than fail.
+GOLDEN_COMPANION = {
+    "PHRASES.DAT": ("clinc150",
+                    "daaee683934dbad65c27986de6d9f83608ec49345a641ee53bdd07ee2f3930b4"),
 }
 
 # The .TAP hashes cover the container, not the raw image, so they are checked
@@ -117,8 +133,21 @@ def test_generated_tap_is_unchanged(artifact, examples_dir):
     )
 
 
+@pytest.mark.parametrize("companion", sorted(GOLDEN_COMPANION))
+def test_generated_companion_file_is_unchanged(companion, examples_dir):
+    example, expected = GOLDEN_COMPANION[companion]
+    builder = buildez80.build_autoreg(model_path(examples_dir, example))
+    got = hashlib.sha256(builder.phrase_blob).hexdigest()
+    assert got == expected, (
+        f"{companion} changed: {got}\n"
+        f"If that was intended, update GOLDEN_COMPANION in this file and say "
+        f"why in the commit message."
+    )
+
+
 def test_every_shipped_artifact_is_covered():
     """build-examples.sh and the release list must not outgrow this file."""
     import verify_artifacts
 
     assert set(verify_artifacts.ARTIFACTS) == set(GOLDEN) | set(GOLDEN_TAP)
+    assert set(verify_artifacts.COMPANIONS.values()) == set(GOLDEN_COMPANION)

@@ -52,15 +52,57 @@ IDK
 
 80.6% of held-out queries answered correctly, against 59.4% for a keyword table
 built from the same data — which is the check that the model is doing something
-a word list cannot. See it yourself:
+a word list cannot, **in 64KB of RAM**. Given storage the answer changes; see
+below. See it yourself:
 
 ```bash
 python data/baseline.py examples/smalltalk/training-data.txt.gz \
                         --model examples/smalltalk/model.npz
 ```
 
+### [clinc150](examples/clinc150/)
+
+For an Agon with an SD card. The model emits an *index* and the reply text
+lives on the card, so reply length costs nothing and all 150 CLINC intents ship
+with full sentences instead of 19 with two-word ones.
+
+```
+> what is my checking balance
+YOUR BALANCE IS FOUR HUNDRED DOLLARS
+> how do i jump start a car
+RED TO POSITIVE THEN BLACK TO GROUND
+> what is the airspeed velocity of a swallow
+I DO NOT KNOW THAT ONE
+```
+
+81.9% macro over 151 classes, in 47KB of weights. Its README also records the
+mixture-of-experts design that was built for this and **lost** to it — routing
+turned out to be the same problem with the evidence thrown away.
+
 See [data/README.md](data/README.md) for what makes a dataset suit a 2-bit
 model, and `data/lint.py` for checking one before you train it.
+
+## Which budget is the claim about?
+
+Worth being clear, because the answer differs and only one of them was ever on
+the page. Held-out macro on `smalltalk`, with what each would occupy on the
+target machine:
+
+| | on device | macro |
+|---|---:|---:|
+| keyword table | 1.7 KB | 62.1% |
+| nearest centroid | 4.8 KB | 74.8% |
+| **the model** | **35.9 KB** | **80.7%** |
+| 1-NN over the whole corpus | 130.9 KB | 84.3% |
+
+On CP/M or a Spectrum, everything competes for the same 64KB and the model wins
+outright. On an Agon with a card, a plain nearest-neighbour retriever is *more
+accurate* — and needs about four times the storage to be.
+
+So the honest claim is **accuracy per byte**, not accuracy. That is the axis the
+target machines actually have, and it is the one the model wins. `data/baseline.py`
+prints both, and `tests/test_baseline.py` fails a build that quietly gives ground
+on either.
 
 ## Quickstart
 
@@ -81,7 +123,9 @@ Get running in under 5 minutes:
 - **CP/M**: `iz-cpm CHAT.COM` — or `CHAT-COL.COM`, the same model with the
   fastest weight layout (24x quicker per character, 8KB larger)
 - **ZX Spectrum**: `fuse --tape CHAT.TAP`, then `CLEAR 24575`, `LOAD "" CODE` and `RANDOMIZE USR 24576`
-- **Agon Light / eZ80**: copy `CHAT.bin` to the SD card and run it by name
+- **Agon Light / eZ80**: copy `CHAT.bin` to the SD card and run it by name — or
+  `CLINC.bin`, which answers 150 intents in full sentences and needs
+  `PHRASES.DAT` copied beside it
 
 For building from source or training your own models, see [TRAINING.md](TRAINING.md).
 
@@ -100,6 +144,11 @@ The individual builders (`buildz80com.py`, `buildfastz80com.py`,
 `buildcolz80com.py`, `buildz80tap.py`, `buildez80.py`) still work standalone if
 you want a specific layout, as does `--target cpm-column`, `cpm-fast` or
 `cpm-packed`.
+
+A model carrying a phrasebook builds an Agon classifier instead of a character
+decoder, and writes two files — the binary and the `PHRASES.DAT` it loads from
+the card. Both come out of one build, because the offset table and the text it
+indexes are two halves of one thing. See [EZ80.md](EZ80.md).
 
 ## Features
 

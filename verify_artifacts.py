@@ -46,6 +46,14 @@ ARTIFACTS = {
     "TALK-COL.COM": ("examples/smalltalk/model.npz", "cpm"),
     "TALK.TAP": ("examples/smalltalk/model.npz", "zx"),
     "TALK.bin": ("examples/smalltalk/model.npz", "agon"),
+    "CLINC.bin": ("examples/clinc150/model.npz", "agon-phrasebook"),
+}
+
+#: Artifacts that need a companion file on the SD card to run at all. Kept
+#: beside ARTIFACTS rather than folded into it because two tests iterate that
+#: dict and expect two-tuples.
+COMPANIONS = {
+    "CLINC.bin": "PHRASES.DAT",
 }
 
 
@@ -105,7 +113,8 @@ def check_fits(org: int, size: int, top: int, where: str) -> None:
         )
 
 
-def run_artifact(path: str, platform: str, query: str) -> str:
+def run_artifact(path: str, platform: str, query: str,
+                 files: dict[str, bytes] | None = None) -> str:
     """Boot the artifact on its platform and return what it printed."""
     with open(path, "rb") as fh:
         data = fh.read()
@@ -125,10 +134,10 @@ def run_artifact(path: str, platform: str, query: str) -> str:
         out, _host = run_zx(image, stdin=[query, "!"], org=org)
         return out
 
-    if platform == "agon":
+    if platform in ("agon", "agon-phrasebook"):
         check_fits(AGON_LOAD, len(data), AGON_SRAM_TOP - AGON_STACK_MARGIN,
                    "the top of Agon SRAM")
-        out, _host = run_agon(data, stdin=[query, "!"])
+        out, _host = run_agon(data, stdin=[query, "!"], files=files)
         return out
 
     raise VerificationError(f"unknown platform {platform}")
@@ -145,10 +154,25 @@ def verify(dist: str, query: str) -> list[tuple[str, str, str, bool]]:
         model = libinfer.Model.load(model_path)
         # The eZ80 accumulates in 24 bits and so never wraps; the Z80 targets
         # wrap at 16. Compare each against the semantics it actually implements.
-        bits = 24 if platform == "agon" else 16
-        expected = libinfer.generate(model, query, accum_bits=bits)
+        bits = 24 if platform.startswith("agon") else 16
 
-        printed = run_artifact(path, platform, query)
+        files = None
+        if platform == "agon-phrasebook":
+            # The replies are not in the binary - the whole point - so the
+            # card has to be served too, and a missing companion must fail the
+            # verification rather than silently checking a program that could
+            # not answer anything.
+            companion = os.path.join(dist, COMPANIONS[name])
+            if not os.path.exists(companion):
+                raise VerificationError(
+                    f"{name} needs {COMPANIONS[name]} beside it and it is missing")
+            with open(companion, "rb") as fh:
+                files = {COMPANIONS[name]: fh.read()}
+            expected = libinfer.classify(model, query, accum_bits=bits)
+        else:
+            expected = libinfer.generate(model, query, accum_bits=bits)
+
+        printed = run_artifact(path, platform, query, files)
         # CP/M single-query mode prints only the reply; the chat-driven ZX and
         # Agon builds wrap it in prompt and echo chrome.
         ok = printed == expected if platform == "cpm" else expected in printed

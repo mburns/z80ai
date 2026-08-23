@@ -92,10 +92,20 @@ def test_every_known_artifact_names_a_model_that_exists(examples_dir):
     import os
 
     for name, (model_path, platform) in va.ARTIFACTS.items():
-        assert platform in {"cpm", "zx", "agon"}, name
+        assert platform in {"cpm", "zx", "agon", "agon-phrasebook"}, name
         assert os.path.exists(os.path.join(os.path.dirname(examples_dir), model_path)), (
             f"{name} refers to a missing model {model_path}"
         )
+
+
+def test_every_phrasebook_artifact_declares_its_companion():
+    """A phrasebook binary cannot answer anything without its card file, so a
+    missing entry here would verify a program that could only print an error."""
+    for name, (_model, platform) in va.ARTIFACTS.items():
+        if platform == "agon-phrasebook":
+            assert name in va.COMPANIONS, name
+    for name in va.COMPANIONS:
+        assert va.ARTIFACTS[name][1] == "agon-phrasebook", name
 
 
 def test_verify_reports_nothing_for_an_empty_directory(tmp_path):
