@@ -105,11 +105,20 @@ class OverflowAwareLinear(nn.Module):
 
     def __init__(self, in_features: int, out_features: int,
                  simulate_overflow: bool = True,
-                 overflow_penalty: float = 0.0) -> None:
+                 overflow_penalty: float = 0.0,
+                 max_accum: float = MAX_ACCUM) -> None:
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.simulate_overflow = simulate_overflow
+        #: The accumulator this layer must not overflow. 32767 on a Z80; an
+        #: eZ80 accumulates in 24 bits and cannot wrap for any plausible layer
+        #: width, so raising this makes the penalty stop firing on its own
+        #: rather than needing a branch in the loss.
+        self.max_accum = float(max_accum)
+        #: Fallback for callers that cannot pass quant_temp positionally -
+        #: nn.Sequential, which is what QATCommandClassifier is built from.
+        self.quant_temp = 1.0
 
         # Xavier initialization
         self.weight = nn.Parameter(
@@ -121,9 +130,11 @@ class OverflowAwareLinear(nn.Module):
         # Track overflow risk
         self.register_buffer('max_accum_seen', torch.tensor(0.0))
 
-    def forward(self, x: torch.Tensor, quant_temp: float = 1.0) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, quant_temp: float | None = None) -> torch.Tensor:
         # Use quantized weights with STE (straight-through estimator)
         # quant_temp: 0 = float, 1 = fully quantized (progressive during training)
+        if quant_temp is None:
+            quant_temp = self.quant_temp
         w_quant = quantize_weights_2bit(self.weight, hard=True, temperature=quant_temp)
         out = F.linear(x, w_quant, self.bias)
 
@@ -142,7 +153,7 @@ class OverflowAwareLinear(nn.Module):
 
     def get_overflow_risk(self) -> float:
         """Return ratio of max accumulator to overflow threshold."""
-        return (self.max_accum_seen / MAX_ACCUM).item()
+        return (self.max_accum_seen / self.max_accum).item()
 
     def compute_overflow_penalty(self, x: torch.Tensor) -> torch.Tensor:
         """Compute differentiable overflow penalty based on accumulator estimates."""
@@ -154,7 +165,7 @@ class OverflowAwareLinear(nn.Module):
 
         # Soft penalty: how much we exceed the safe threshold
         # Use a softer threshold (e.g., 80% of max) to have safety margin
-        safe_threshold = MAX_ACCUM * 0.8
+        safe_threshold = self.max_accum * 0.8
         overflow = F.relu(accum_estimate - safe_threshold)
 
         return overflow.mean()
@@ -190,8 +201,25 @@ class QATCommandClassifier(nn.Module):
 
         self.network = nn.Sequential(*layers)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, quant_temp: float | None = None) -> torch.Tensor:
+        # nn.Sequential cannot pass an extra argument down, so the temperature
+        # is set on the layers instead. Without this the classifier would train
+        # fully quantized from epoch zero, while feedme's decoder ramps - and
+        # the two would not be comparable.
+        if quant_temp is not None:
+            self.set_quant_temp(quant_temp)
         return self.network(x)
+
+    def set_quant_temp(self, quant_temp: float) -> None:
+        for module in self.network:
+            if isinstance(module, OverflowAwareLinear):
+                module.quant_temp = quant_temp
+
+    def set_max_accum(self, max_accum: float) -> None:
+        """Widen the accumulator the overflow penalty defends, for eZ80 models."""
+        for module in self.network:
+            if isinstance(module, OverflowAwareLinear):
+                module.max_accum = float(max_accum)
 
     def get_overflow_stats(self) -> dict:
         """Get overflow risk statistics for all layers."""
@@ -240,9 +268,12 @@ class QATCommandClassifier(nn.Module):
 
                 with torch.no_grad():
                     w = module.weight
-                    # Quantize weights
-                    w_scale = torch.quantile(w.abs().flatten(), 0.95)
-                    w_scaled = w / w_scale if w_scale > 0 else w
+                    # Identical to feedme.AutoregressiveModel.get_quantized_params,
+                    # deliberately: these two are the only paths from a trained
+                    # model to shipped weights, and if they disagree the model
+                    # that ships is not the model that was measured.
+                    w_scale = torch.quantile(w.abs().flatten(), 0.95).clamp(min=1e-6)
+                    w_scaled = w / w_scale
                     w_quant = (torch.clamp(torch.round(w_scaled), -2, 1)
                                .cpu().numpy().astype(np.int8))
 
@@ -312,134 +343,3 @@ def train_qat_model(model: QATCommandClassifier,
                       f"OverflowRisk={max_risk:.2f}x")
 
     return losses
-
-
-# =============================================================================
-# Test with larger architecture
-# =============================================================================
-
-if __name__ == '__main__':
-    import json
-
-    from poc_inference import export_model_to_binary, integer_inference
-    from train_commands import SimpleTokenizer
-
-    print("=" * 60)
-    print("QAT Training with Overflow-Aware Regularization")
-    print("=" * 60)
-
-    # Load training data
-    examples = []
-    with open('training_data.jsonl') as f:
-        for line in f:
-            obj = json.loads(line)
-            examples.append((obj['text'], obj['command']))
-
-    commands = sorted({ex[1] for ex in examples})
-    command_to_idx = {cmd: i for i, cmd in enumerate(commands)}
-    idx_to_command = {i: cmd for cmd, i in command_to_idx.items()}
-
-    print(f"Loaded {len(examples)} examples, {len(commands)} classes")
-
-    # Create tokenizer and encode
-    tokenizer = SimpleTokenizer(vocab_size=128)
-    tokenizer.fit([ex[0] for ex in examples])
-
-    X = tokenizer.encode_batch([ex[0] for ex in examples])
-    y_np = np.array([command_to_idx[ex[1]] for ex in examples])
-
-    X = torch.tensor(X, dtype=torch.float32)
-    y = torch.tensor(y_np, dtype=torch.long)
-
-    print(f"Dataset: {X.shape}")
-
-    # Test with LARGER architecture
-    print("\n" + "=" * 60)
-    print("Training 128→128→64→16 with QAT")
-    print("(First layer has 128 inputs - at the overflow limit!)")
-    print("=" * 60)
-
-    model = QATCommandClassifier(
-        input_size=128,
-        hidden_sizes=[128, 64],
-        num_classes=len(commands),
-        simulate_overflow=True
-    )
-
-    train_qat_model(model, X, y, epochs=500, lr=0.01, overflow_penalty=0.0001)
-
-    # Test float accuracy
-    print("\n" + "=" * 60)
-    print("Float Inference Test:")
-    print("=" * 60)
-
-    model.eval()
-    test_phrases = [
-        "show me the files",
-        "copy everything to drive b",
-        "delete old backups",
-        "edit my document",
-        "how much disk space",
-        "hello",
-        "help me",
-        "who are you",
-    ]
-
-    with torch.no_grad():
-        for phrase in test_phrases:
-            x = torch.tensor(tokenizer.encode(phrase), dtype=torch.float32).unsqueeze(0)
-            pred = model(x).argmax(dim=1).item()
-            cmd = idx_to_command[pred]
-            print(f"  '{phrase}' → {cmd}")
-
-    # Check overflow risk
-    print(f"\nOverflow risk per layer: {model.get_overflow_stats()}")
-
-    # Test integer inference accuracy
-    print("\n" + "=" * 60)
-    print("Integer Inference Accuracy (simulating Z80):")
-    print("=" * 60)
-
-    params = model.get_quantized_params()
-    metadata = export_model_to_binary(params, '/tmp/qat_test.bin')
-    with open('/tmp/qat_test.bin', 'rb') as f:
-        packed_data = f.read()
-
-    correct_float = 0
-    correct_int = 0
-    total = min(500, len(examples))
-
-    with torch.no_grad():
-        for i in range(total):
-            phrase, true_cmd = examples[i]
-            vec = tokenizer.encode(phrase)
-
-            # Float inference
-            x = torch.tensor(vec, dtype=torch.float32).unsqueeze(0)
-            float_pred = idx_to_command[model(x).argmax(dim=1).item()]
-
-            # Integer inference
-            int_out = integer_inference(packed_data, metadata['layers'], vec)
-            int_pred = idx_to_command[np.argmax(int_out)]
-
-            if float_pred == true_cmd:
-                correct_float += 1
-            if int_pred == true_cmd:
-                correct_int += 1
-
-    print(f"Float accuracy:   {correct_float}/{total} ({100*correct_float/total:.1f}%)")
-    print(f"Integer accuracy: {correct_int}/{total} ({100*correct_int/total:.1f}%)")
-
-    # Save model
-    torch.save({
-        'model_state': model.state_dict(),
-        'tokenizer_vocab_size': tokenizer.vocab_size,
-        'commands': commands,
-        'command_to_idx': command_to_idx,
-        'architecture': {
-            'input_size': 128,
-            'hidden_sizes': [128, 64],
-            'num_classes': len(commands),
-        }
-    }, 'command_model_qat.pt')
-    print("\nSaved QAT model to command_model_qat.pt")
