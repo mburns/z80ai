@@ -63,6 +63,10 @@ the bytes.
 | `test_model_io.py` | That a `.pt` and the `.npz` exported from it build the same image (skipped without PyTorch) |
 | `test_bench.py` | The benchmark target table, and that the faster layouts really do retire fewer instructions |
 | `test_codegen_stability.py` | The exact bytes each backend emits, by hash |
+| `test_agon_files.py` | MOS file I/O, and that a load outside Agon SRAM raises instead of growing the emulator's memory |
+| `test_baseline.py` | Every row of the accuracy claim, including the retrievers that beat the model once storage is free |
+| `test_datasets.py` | The CLINC150 recipes, and that lint's thresholds judge a balanced 151-way set correctly |
+| `test_phrasebook.py` | One forward pass, one reply: the reference path a phrasebook model is checked against |
 
 ## In CI
 
@@ -76,7 +80,12 @@ matter are in `build`:
 | Reproducible build | Builds everything twice and compares byte for byte. A build that picks up dict ordering or a hash seed would stop matching what anyone can rebuild |
 | Artifact verification | Boots every release binary in the emulator and compares its output to the reference. **A binary that assembles but computes the wrong answer cannot reach a release** |
 
-That last one is the reason any of this exists. Run it yourself:
+`test_baseline.py` adds a fifth thing CI stops, in the test job rather than in
+`build`: an accuracy regression. Until it existed, every number in the READMEs
+was prose no build could contradict, and a retrain that halved a model's macro
+score would have shipped green.
+
+That artifact check is the reason any of this exists. Run it yourself:
 
 ```bash
 ./build-examples.sh dist

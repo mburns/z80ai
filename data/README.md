@@ -76,7 +76,8 @@ python data/baseline.py examples/guess/training-data.txt.gz \
                         --model examples/guess/model.npz
 ```
 
-Held-out, whole responses, on the shipped models:
+Held-out, whole responses, on the shipped models — **at the resident budget**,
+where everything competes for the same 64KB the program lives in:
 
 | | majority answer | keyword table | model |
 |---|---:|---:|---:|
@@ -98,6 +99,46 @@ Read `guess` with that in mind. On overall the keyword table looks close —
 |---|---:|---:|---:|---:|
 | keyword table | 99.3% | 46.1% | 48.2% | **0.0%** |
 | model | 80.6% | 71.0% | 94.5% | **100%** |
+
+### The other budget
+
+That table asks "would a word list have done this in 64KB?" An Agon with an SD
+card is a different question, and the answer is less comfortable. Storage stops
+being scarce, so the floor is no longer a word list — it is a retriever over the
+whole training corpus. `baseline.py` scores three, and prints what each would
+occupy on the target beside its accuracy:
+
+```
+                                    on device  overall    macro
+  keyword table, held-out              1.7 KB    59.4%    62.1%
+  nearest centroid, held-out           4.8 KB    74.6%    74.8%
+  1-NN trigram, held-out             130.9 KB    84.1%    84.3%
+  1-NN word Jaccard, held-out         88.6 KB    81.6%    81.7%
+  model model.npz, held-out           35.9 KB    80.6%    80.7%
+```
+
+Read that honestly and it says two things at once.
+
+**The model is not the most accurate option** once the corpus no longer has to
+fit. A plain cosine 1-NN beats it by 3.7 points of macro. The published
+80.6%-against-59.4% is true, and it is a claim about 64KB, not about the task.
+
+**The model is the most byte-efficient thing above 80%.** It gets there in
+35.9KB against the retriever's 130.9KB — and a nearest-centroid classifier, at
+one seventh the model's size, is already within six points. Accuracy per byte is
+the axis where the model wins, and it is the axis that matters on the machines
+this project actually targets.
+
+The retrievers are costed sparsely, because that is what an Agon would store: a
+trigram vector lights up about 25 of 128 buckets with counts that fit in a
+nibble, so one byte of index and one of count per nonzero beats both a dense
+int16 vector — five times larger — and keeping the text to re-encode on every
+lookup, which is cheaper to hold but thousands of hashes per query to use.
+Costing them densely would have overstated them fivefold and flattered the model
+for free.
+
+`tests/test_baseline.py` pins every row of this, so a retrain that quietly gives
+up four points fails a build rather than sitting in a README.
 
 `tinychat` shows what vocabulary size is worth. Collapsing its 502 replies onto
 11 took macro from 10.7% to 44.4% — but the intermediate stop at 21 replies only
