@@ -389,6 +389,7 @@ class Z80Builder:
     def pop_iy(self) -> None: self.emit(0xFD, 0xE1)
 
     # Block
+    def out_n_a(self, port: int) -> None: self.emit(0xD3, port & 0xFF)  # OUT (n),A
     def ldir(self) -> None: self.emit(0xED, 0xB0)
 
     # Exchange
