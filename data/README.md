@@ -70,17 +70,37 @@ the model.)
 the training half and scores it on the same held-out split, so you can see what
 the model is actually adding:
 
+```bash
+python data/baseline.py examples/guess/training-data.txt.gz \
+                        --model examples/guess/model.npz
+```
+
+Held-out, whole responses, on the shipped models:
+
 | | majority answer | keyword table | model |
 |---|---:|---:|---:|
-| `examples/smalltalk/` | 3.5% | 59.4% | **96.7%** |
-| `examples/guess/` | 57.7% | 76.6% | **94.1%** |
-| `examples/tinychat/` | 8.5% | 10.5% | 61.0% |
+| `examples/smalltalk/` | 3.5% / 5.3% | 59.4% / 62.1% | **80.6% / 80.7%** |
+| `examples/guess/` | 57.7% / 25.0% | 76.6% / 48.4% | **81.3% / 86.5%** |
+| `examples/tinychat/` | 8.5% / 0.9% | 10.5% / 1.6% | 33.8% / 10.7% |
 
-Read those rows carefully. `smalltalk` is the clean case: real phrasings, a word
-list gets nowhere near, the model earns its 39KB. `guess` is genuinely learned
-but a keyword table already gets three quarters of the way. `tinychat`'s table
-scores 10.5% because 502 responses defeat it — but the model only reaches 61%,
-so the task is beating both.
+Each cell is **overall / macro**, and the difference between them is the point.
+Overall weights every pair equally, so a dominant answer inflates it: `guess` is
+58% `NO`, and a constant guesser scores 57.7% overall for knowing nothing. Macro
+averages over distinct answers, where the same guesser gets 25.0%.
+
+Read `guess` with that in mind. On overall the keyword table looks close —
+76.6% against the model's 81.3%. On macro it is not close at all: 48.4% against
+86.5%, because the table wins by defaulting to `NO` on the majority class and
+**never says `WIN` at all**. It cannot end the game. Per class:
+
+| | NO | MAYBE | YES | WIN |
+|---|---:|---:|---:|---:|
+| keyword table | 99.3% | 46.1% | 48.2% | **0.0%** |
+| model | 80.6% | 71.0% | 94.5% | **100%** |
+
+`tinychat` is the row to worry about: 33.8% overall and 10.7% macro. Its 502
+responses defeat the table too, but a model that gets two answers in three wrong
+is not doing the job either.
 
 So look for tasks where **being approximately right is acceptable** — where a
 "wrong" answer still reads as a plausible one. `guess` (four answers to

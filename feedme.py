@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 
 import libinfer
-from libdata import accuracy_ceiling, load_pairs, split_pairs
+from libdata import accuracy_ceiling, load_pairs, score_predictions, split_pairs
 from libqat import OverflowAwareLinear
 
 # Character set - built dynamically from training data
@@ -311,6 +311,56 @@ def parse_hidden_sizes(spec: str) -> list[int]:
     return vals
 
 
+def response_accuracy(model: 'AutoregressiveModel', pairs: Sequence[tuple[str, str]],
+                      query_encoder: 'TrigramEncoder',
+                      context_encoder: 'ContextEncoder',
+                      max_len: int = 16) -> tuple[float, float]:
+    """Fraction of ``pairs`` whose *whole generated response* is correct.
+
+    Not the same thing as the per-character accuracy the training loop reports.
+    That one scores each next character against the true prefix - teacher
+    forcing - so a model that gets the first character wrong is still credited
+    for the rest.  Generation has no true prefix to lean on: one wrong character
+    and the context feeding every later step is wrong too.
+
+    The gap is large.  On the shipped guess model, 96% of characters against 81%
+    of responses.
+
+    Returns ``(overall, macro)``.  Macro averages over distinct responses rather
+    than over pairs, which matters whenever one answer dominates: guess is 58%
+    NO, so always answering NO scores 58% overall and 25% macro.
+    """
+    if not pairs:
+        return 1.0, 1.0
+
+    # Decode every query in lockstep: one batched forward per character, rather
+    # than one per character per pair.
+    queries = np.stack([query_encoder.encode(q) for q, _ in pairs])
+    outputs = [''] * len(pairs)
+    done = np.zeros(len(pairs), dtype=bool)
+
+    model.eval()
+    with torch.no_grad():
+        for _ in range(max_len):
+            if done.all():
+                break
+            contexts = np.stack([context_encoder.encode(o) for o in outputs])
+            x = torch.tensor(np.concatenate([queries, contexts], axis=1),
+                             dtype=torch.float32)
+            picks = model(x, use_int=True).argmax(dim=1).tolist()
+            for i, idx in enumerate(picks):
+                if done[i]:
+                    continue
+                if idx == EOS_IDX:
+                    done[i] = True
+                else:
+                    outputs[i] += idx_to_char(idx)
+    model.train()
+
+    answers = dict(zip((q for q, _ in pairs), outputs, strict=True))
+    return score_predictions(pairs, answers.__getitem__)
+
+
 def train_chunked(chunk_size: int = 1000, epochs_per_chunk: int = 100, lr: float = 0.01,
                   save_best: bool = False, hidden_sizes: list[int] | None = None,
                   checkpoint_file: str = 'command_model_autoreg.pt',
@@ -461,18 +511,23 @@ def train_chunked(chunk_size: int = 1000, epochs_per_chunk: int = 100, lr: float
                         acc = (preds == y).float().mean()
                         int_acc = (model(X, use_int=True).argmax(dim=1) == y).float().mean()
 
-                        # The number that decides which checkpoint to keep is
-                        # the held-out one when there is one. Selecting on the
-                        # training score just picks whichever epoch memorized
-                        # hardest.
-                        val_int_acc = None
+                        # Two held-out numbers, and they are not interchangeable.
+                        # ValChr scores each next character against the true
+                        # prefix; ValRsp generates the whole response from the
+                        # model's own output, which is what a user sees. Select
+                        # on ValRsp: on guess, the epoch with the best character
+                        # score was 28 points worse per response class.
+                        val_chr = val_rsp = val_macro = None
                         if X_val is not None:
                             model.eval()
-                            val_int_acc = (
+                            val_chr = (
                                 model(X_val, use_int=True).argmax(dim=1) == y_val
                             ).float().mean().item()
+                            val_rsp, val_macro = response_accuracy(
+                                model, val_pairs, query_encoder, context_encoder
+                            )
                             model.train()
-                        score = val_int_acc if val_int_acc is not None else int_acc.item()
+                        score = val_macro if val_macro is not None else int_acc.item()
 
                         current_epoch = total_epochs + epoch + 1
                         if score > best_int_acc:
@@ -483,7 +538,10 @@ def train_chunked(chunk_size: int = 1000, epochs_per_chunk: int = 100, lr: float
                         else:
                             marker = ""
 
-                        val_note = "" if val_int_acc is None else f", ValAcc={val_int_acc:.1%}"
+                        val_note = "" if val_chr is None else (
+                            f", ValChr={val_chr:.1%}, ValRsp={val_rsp:.1%}"
+                            f", ValMacro={val_macro:.1%}"
+                        )
                         print(f"  Epoch {current_epoch}: "
                               f"CE={ce_loss.item():.4f}, Acc={acc:.1%}, "
                               f"IntAcc={int_acc:.1%}{val_note}{marker}")
@@ -524,8 +582,11 @@ def train_chunked(chunk_size: int = 1000, epochs_per_chunk: int = 100, lr: float
 
     print(f"\n{'=' * 60}")
     print(f"Finished: {chunk_num + 1}/{total_chunks} chunks, {total_epochs} total epochs")
-    measured_on = "held-out" if val_pairs else "TRAINING data"
-    print(f"Best IntAcc ({measured_on}): {best_int_acc:.1%} at epoch {best_epoch}")
+    if val_pairs:
+        print(f"Best held-out ValMacro: {best_int_acc:.1%} at epoch {best_epoch}")
+    else:
+        print(f"Best IntAcc (TRAINING data, per character): {best_int_acc:.1%} "
+              f"at epoch {best_epoch}")
     print("=" * 60)
 
     return model

@@ -19,7 +19,9 @@ IDK
 NO PROB
 ```
 
-**96.7% on held-out queries**, in a 39KB `.COM`.
+**80.6% of held-out queries answered correctly**, in a 39KB `.COM`. (96.7% of
+individual *characters* are right — that is the number `feedme` prints as
+`ValChr`, and it is not the same claim. See [TRAINING.md](../../TRAINING.md).)
 
 ```bash
 ./run.sh          # retrain, build and run under CP/M
@@ -43,21 +45,27 @@ The intents are CLINC's; the replies are ours. Regenerate with:
 
 ## Why it is here
 
-`tinychat` does the same job on hand-written data and reaches 61.0% on held-out
-queries — its 502 distinct responses are memorized rather than learned. This
-example is the control: same task, same architecture, real phrasings and a
-disciplined 19-reply vocabulary.
+`tinychat` does the same job on hand-written data and answers 33.8% of held-out
+queries correctly — its 502 distinct responses are memorized rather than
+learned. This example is the control: same task, same architecture, real
+phrasings and a disciplined 19-reply vocabulary.
 
 It also settles a question the repo could not previously answer — whether the
 model is doing anything a lookup table could not:
 
-| | held-out accuracy |
-|---|---:|
-| always answering `OLD` | 3.5% |
-| keyword table (~1.7KB) | 59.4% |
-| **this model** (39KB `.COM`) | **96.7%** |
+| | overall | macro |
+|---|---:|---:|
+| always answering `OLD` | 3.5% | 5.3% |
+| keyword table (~1.7KB) | 59.4% | 62.1% |
+| **this model** (39KB `.COM`) | **80.6%** | **80.7%** |
 
-Check it yourself: `python data/baseline.py examples/smalltalk/training-data.txt.gz`.
+```bash
+python data/baseline.py examples/smalltalk/training-data.txt.gz \
+                        --model examples/smalltalk/model.npz
+```
+
+Overall and macro agree here because the classes are balanced by construction —
+which is itself worth having, since on `guess` they differ by 38 points.
 
 On generated data that gap collapses — a keyword table matched the model almost
 exactly on a synthetic command set tried earlier. Real utterances vary in ways a

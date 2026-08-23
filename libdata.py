@@ -12,7 +12,7 @@ import gzip
 import random
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 
 Pair = tuple[str, str]
 
@@ -122,6 +122,27 @@ def accuracy_ceiling(pairs: Sequence[Pair]) -> float:
     for query, response in pairs:
         by_query[query][response] += 1
     return sum(c.most_common(1)[0][1] for c in by_query.values()) / len(pairs)
+
+
+def score_predictions(pairs: Sequence[Pair],
+                      predict: Callable[[str], str]) -> tuple[float, float]:
+    """``(overall, macro)`` accuracy of ``predict`` over ``pairs``.
+
+    Overall weights every pair equally, so a dominant answer inflates it:
+    always saying NO scores 58% on guess.  Macro averages over distinct
+    answers, where the same guesser scores 25%.  Quote both, and compare like
+    with like - a model's per-character score is neither of these.
+    """
+    if not pairs:
+        return 1.0, 1.0
+    correct: Counter = Counter()
+    total: Counter = Counter()
+    for query, reply in pairs:
+        total[reply] += 1
+        correct[reply] += predict(query) == reply
+    overall = sum(correct.values()) / len(pairs)
+    macro = sum(correct[k] / total[k] for k in total) / len(total)
+    return overall, macro
 
 
 def contradictions(pairs: Sequence[Pair]) -> dict[str, set[str]]:
