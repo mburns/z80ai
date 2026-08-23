@@ -114,43 +114,54 @@ and `data/lint.py` reports them as colliding.
 ```
 Loaded 28718 pairs → 25823 train / 2895 val → 1 chunks of 25823
 Ceiling from contradictory labels: train 97.7%, val 98.4%
-  Epoch 120: CE=0.1355, Acc=94.6%, IntAcc=95.2%, ValAcc=94.1% *BEST*
+  Epoch 120: CE=0.1584, Acc=93.6%, IntAcc=93.6%, ValChr=92.9%, ValRsp=72.4%, ValMacro=56.2%
 ```
 
-| column | meaning |
-|---|---|
-| `Acc` | float accuracy on training data. Ignore it. |
-| `IntAcc` | quantized accuracy on training data — what the Z80 will compute |
-| `ValAcc` | quantized accuracy on **held-out queries**. This is the real one. |
+| column | measured on | counts |
+|---|---|---|
+| `Acc` | training data | characters, float weights. Ignore it. |
+| `IntAcc` | training data | characters, quantized |
+| `ValChr` | **held-out** | characters |
+| `ValRsp` | **held-out** | whole responses |
+| `ValMacro` | **held-out** | whole responses, averaged per answer |
+
+Three traps, in increasing order of how much they will mislead you.
 
 **`IntAcc` is not `Acc`.** Float accuracy can sit at 99% while integer accuracy
 is 60%; only the integer number survives to the Z80.
 
-**`ValAcc` is not `IntAcc`.** The gap between them is memorization:
+**`ValChr` is not `ValRsp`.** `ValChr` scores each next character against the
+*true* prefix — teacher forcing — so a model that gets the first character wrong
+is still credited for the rest. Generation has no true prefix: one wrong
+character and the context feeding every later step is wrong too. The gap is
+large and it is not a constant:
 
-| dataset | IntAcc | ValAcc | gap |
-|---|---:|---:|---:|
-| `examples/guess/` | 95.2% | 94.1% | 1.1 |
-| `examples/tinychat/` | 78.7% | **61.0%** | **17.7** |
+| dataset | `ValChr` | `ValRsp` |
+|---|---:|---:|
+| `examples/guess/` | 96.2% | 81.3% |
+| `examples/smalltalk/` | 96.7% | 80.6% |
+| `examples/tinychat/` | 78.3% | 33.8% |
 
-Tinychat's 502 responses are being memorized, not learned. Until recently every
-number this project reported was measured on the training set, so nothing could
-have told you.
+**`ValRsp` is not `ValMacro`.** Overall response accuracy weights every pair
+equally, so a dominant answer inflates it. `guess` is 58% `NO`: answering `NO`
+to everything scores 57.7%. Macro averages over distinct answers, where the same
+guesser scores 25.0%. If your classes are unbalanced — and they usually are —
+`ValMacro` is the one to watch.
 
-A small gap is necessary but not sufficient. The split holds out unique
-*queries*, so templated data — where a held-out query has near-twins in the
-training half — will show a small gap without generalizing. `guess` is templated
+`--save-best` selects on `ValMacro` for exactly this reason. The two disagree in
+practice: in the run below `ValChr` rises almost monotonically and peaks at the
+last epoch, while `ValMacro` peaks at epoch 70 and then drifts down. Selecting on
+characters would keep the wrong checkpoint.
+
+A small train/held-out gap is necessary but not sufficient. The split holds out
+unique *queries*, so templated data — where a held-out query has near-twins in
+the training half — shows a small gap without generalizing. `guess` is templated
 that way. To find out what a model has really learned, hold out a whole
-dimension (every query using one verb, or one prefix) and evaluate on that; see
+dimension (every query using one verb, or one prefix); see
 [data/README.md](data/README.md).
 
-The split holds out 10% of unique *queries* (`--val-frac`, `--seed`). Note that
-templated paraphrases of a held-out query still appear in training, so `ValAcc`
-is optimistic — `guess`'s ~0 gap is partly that effect. `--val-frac 0` restores
-the old training-set-only behaviour, and then the summary says so.
-
-`--save-best` keeps the checkpoint with the best `ValAcc`. Worth using: training
-is not monotonic, and a late epoch can be several points worse than the peak.
+`--val-frac 0` restores the old training-set-only behaviour, and then the
+summary says so.
 
 ## Quantization-aware training
 
@@ -199,7 +210,9 @@ layers, plus `128 × len(charset)` for the output. About 35KB packed.
 |---|---|
 | Garbage output | `IntAcc` too low. Check it, not `Acc`. Quantization only reaches full strength 80% of the way through the run, so give it more epochs — or shrink the vocabulary. |
 | Always the same answer | Class imbalance — one response above ~40%. Run `data/lint.py`. |
-| High `IntAcc`, low `ValAcc` | Memorizing. Too many distinct responses, or too few phrasings each. |
+| High `IntAcc`, low `ValRsp` | Memorizing. Too many distinct responses, or too few phrasings each. |
+| High `ValChr`, low `ValRsp` | Normal to a degree — but a large gap means the first character of a response is often wrong, and everything after it follows. |
+| High `ValRsp`, low `ValMacro` | Riding one dominant answer. Balance the classes; `data/lint.py` flags it. |
 | Accuracy plateaus below 100% | Check the ceiling. Contradictory labels may make the rest unreachable. |
 | Similar inputs, same output | Trigram collision. Use shorter, more distinctive phrasings. |
 | Binary too big | Fewer/narrower layers, or a smaller charset. Check what `data/lint.py` says about rare characters. |
@@ -223,35 +236,43 @@ Parameters: 141,259
 
 --- Chunk 1/1: 25823 pairs ---
 Generated 99762 character examples
-  Epoch 10:  CE=0.5765, Acc=82.7%, IntAcc=81.5%, ValAcc=80.5% *BEST*
-  Epoch 40:  CE=0.1976, Acc=92.0%, IntAcc=91.2%, ValAcc=91.2% *BEST*
-  Epoch 50:  CE=0.1852, Acc=92.5%, IntAcc=91.2%, ValAcc=91.2%
-  Epoch 80:  CE=0.1532, Acc=93.8%, IntAcc=93.2%, ValAcc=92.5%
-  Epoch 100: CE=0.1367, Acc=94.7%, IntAcc=94.8%, ValAcc=94.0% *BEST*
-  Epoch 120: CE=0.1355, Acc=94.6%, IntAcc=95.2%, ValAcc=94.1% *BEST*
-Saved best (epochs: 120, best: 94.1% @ 120)
+  Epoch 10:  CE=1.1247, Acc=61.9%, IntAcc=64.1%, ValChr=64.7%, ValRsp=8.2%,  ValMacro=3.5% *BEST*
+  Epoch 40:  CE=0.2233, Acc=91.1%, IntAcc=89.8%, ValChr=89.7%, ValRsp=60.1%, ValMacro=43.2% *BEST*
+  Epoch 70:  CE=0.1801, Acc=92.6%, IntAcc=91.7%, ValChr=91.5%, ValRsp=67.1%, ValMacro=60.8% *BEST*
+  Epoch 90:  CE=0.1670, Acc=93.3%, IntAcc=93.3%, ValChr=92.8%, ValRsp=72.1%, ValMacro=55.6%
+  Epoch 110: CE=0.1868, Acc=92.0%, IntAcc=93.0%, ValChr=92.5%, ValRsp=70.8%, ValMacro=58.2%
+  Epoch 120: CE=0.1584, Acc=93.6%, IntAcc=93.6%, ValChr=92.9%, ValRsp=72.4%, ValMacro=56.2%
+Saved best (epochs: 120, best: 60.8% @ 70)
 
 ============================================================
 Finished: 1/1 chunks, 120 total epochs
-Best IntAcc (held-out): 94.1% at epoch 120
+Best held-out ValMacro: 60.8% at epoch 70
 ============================================================
 ```
 
 (Every tenth epoch shown; nothing else altered.)
 
-Three things to notice.
+Four things to notice.
 
-`ValAcc` tracks `IntAcc` within about a point, so the model is generalizing —
-but see the warning about templated data above, because `guess` is templated and
-this split cannot fully see through that.
+**The three held-out numbers do not move together.** At epoch 120, `ValChr` is
+92.9% and `ValRsp` is 72.4% — a fifth of the responses are wrong despite nearly
+all the characters being right. Quote `ValChr` at your peril.
 
-**95.2% is close to done.** The ceiling line says contradictory labels cap this
-data at 97.7%. The remaining 2.5 points are not a training problem, and no
-number of extra epochs will recover them.
+**`ValMacro` peaks in the middle.** Best at epoch 70, then down, while `ValChr`
+keeps climbing to the last epoch. `--save-best` kept epoch 70; selecting on
+characters would have kept epoch 120 instead.
+
+**This run is not as good as the shipped model.** `examples/guess/model.npz`
+scores 86.5% macro against this run's 60.8%, so 120 epochs from scratch is not
+enough for this dataset — check a new model against the old one before replacing
+it (`python data/baseline.py <data> --model <npz>`).
 
 **Training is not seeded** — there is no `torch.manual_seed` anywhere — so the
-same command on the same data varies by around a point run to run. Do not read a
-half-point difference as a real difference.
+same command on the same data varies run to run. Do not read a small difference
+as a real one.
+
+The ceiling line is worth keeping in view too: contradictory labels cap this
+data at 97.7%, so the last 2.3 points are a data problem, not a training one.
 
 See [data/README.md](data/README.md) for what makes a dataset suit this
 architecture, and for why a good score on generated data can be misleading.

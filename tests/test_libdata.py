@@ -147,6 +147,46 @@ def test_contradictions_reports_the_conflicting_labels():
     assert libdata.contradictions(pairs) == {"A B": {"YES", "NO"}}
 
 
+# --- scoring -----------------------------------------------------------------
+
+
+def test_score_predictions_counts_both_ways():
+    pairs = [("A B", "YES")] * 3 + [("C D", "NO")]
+    overall, macro = libdata.score_predictions(pairs, lambda q: "YES")
+    assert overall == pytest.approx(0.75)   # 3 of 4 pairs
+    assert macro == pytest.approx(0.5)      # 1 of 2 answers
+
+
+def test_macro_exposes_a_majority_class_guesser():
+    """The whole reason macro is reported: overall flatters always-say-NO.
+
+    On guess this is not hypothetical - 58% of the data is NO, so a constant
+    guesser scores 58% overall, which is most of what the keyword baseline
+    gets.  Macro puts it at 25%.
+    """
+    pairs = [("Q ONE", "NO")] * 58 + [("Q TWO", "YES")] * 21 + [("Q SIX", "MAYBE")] * 21
+    overall, macro = libdata.score_predictions(pairs, lambda q: "NO")
+    assert overall == pytest.approx(0.58)
+    assert macro == pytest.approx(1 / 3)
+
+
+def test_score_predictions_is_one_when_everything_is_right():
+    pairs = [("A B", "YES"), ("C D", "NO")]
+    assert libdata.score_predictions(pairs, dict(pairs).__getitem__) == (1.0, 1.0)
+
+
+def test_score_predictions_of_an_empty_set():
+    assert libdata.score_predictions([], lambda q: "X") == (1.0, 1.0)
+
+
+def test_a_class_never_predicted_drags_macro_down_hard():
+    """guess's keyword table never says WIN; macro is where that shows up."""
+    pairs = [("Q A", "NO")] * 99 + [("Q B", "WIN")]
+    overall, macro = libdata.score_predictions(pairs, lambda q: "NO")
+    assert overall == pytest.approx(0.99)
+    assert macro == pytest.approx(0.5)
+
+
 # --- the linter --------------------------------------------------------------
 
 

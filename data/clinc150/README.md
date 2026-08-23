@@ -57,14 +57,19 @@ itself. On a synthetic command-phrasing set built here earlier, a keyword table
 matched the neural model almost exactly — the task did not need a model at all.
 On CLINC it does not come close:
 
-| | held-out accuracy |
+| | held-out responses correct |
 |---|---:|
 | keyword table (~1.7KB) | 59.4% |
-| the model (39KB `.COM`) | **96.7%** |
+| the model (39KB `.COM`) | **80.6%** |
 
 Real phrasings vary in ways a word list cannot cover, which is exactly the
-condition under which a fuzzy 128-bucket encoder earns its size. Reproduce the
-baseline with `python data/baseline.py examples/smalltalk/training-data.txt.gz`.
+condition under which a fuzzy 128-bucket encoder earns its size. Reproduce both
+numbers with:
+
+```bash
+python data/baseline.py examples/smalltalk/training-data.txt.gz \
+                        --model examples/smalltalk/model.npz
+```
 
 ## Adding a recipe
 

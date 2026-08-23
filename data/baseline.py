@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from libdata import Pair, read_files, split_pairs
+from libdata import Pair, read_files, score_predictions, split_pairs
 
 MIN_PURITY = 0.9   # a word must predict one reply this consistently to count
 MIN_COUNT = 3      # ...and appear at least this often
@@ -51,6 +51,8 @@ def classify(query: str, table: dict[str, str], fallback: str) -> str:
     return fallback
 
 
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -58,6 +60,7 @@ def main() -> None:
     parser.add_argument('paths', nargs='*', help='Data files (default: stdin)')
     parser.add_argument('--val-frac', type=float, default=0.1)
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--model', help='Also score a trained .npz on the same split')
     args = parser.parse_args()
 
     pairs = read_files(args.paths)
@@ -71,13 +74,31 @@ def main() -> None:
     fallback = Counter(r for _, r in train).most_common(1)[0][0]
 
     print(f"{len(table)} words from {len(train):,} training pairs, "
-          f"~{len(table) * 12:,} bytes as a table")
-    print(f"  always answering {fallback!r}      "
-          f"{sum(r == fallback for _, r in val) / len(val):6.1%}")
-    for name, subset in (("keyword table, training", train),
-                         ("keyword table, held-out", val)):
-        ok = sum(classify(q, table, fallback) == r for q, r in subset)
-        print(f"  {name}  {ok / len(subset):6.1%}")
+          f"~{len(table) * 12:,} bytes as a table\n")
+    rows: list[tuple[str, list[Pair], object]] = [
+        (f"always answering {fallback!r}", val, lambda q: fallback),
+        ("keyword table, training", train, lambda q: classify(q, table, fallback)),
+        ("keyword table, held-out", val, lambda q: classify(q, table, fallback)),
+    ]
+
+    if args.model:
+        import libinfer
+
+        model = libinfer.Model.load(args.model)
+        longest = max(len(r) for _, r in pairs) + 1
+        rows.append((
+            f"model {Path(args.model).name}, held-out", val,
+            lambda q: libinfer.generate(model, q, longest),
+        ))
+
+    print(f"{'':36}{'overall':>9}{'macro':>9}")
+    for name, subset, predict in rows:
+        overall, macro = score_predictions(subset, predict)
+        print(f"  {name:34}{overall:>9.1%}{macro:>9.1%}")
+
+    print("\nOverall weights every pair equally, so a dominant answer inflates it;\n"
+          "macro averages over distinct answers.  Compare macro with macro - and\n"
+          "never with a model's ValChr, which counts characters, not answers.")
 
 
 if __name__ == '__main__':

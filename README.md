@@ -50,9 +50,14 @@ WHO KNOWS
 IDK
 ```
 
-96.7% on held-out queries, against 59.4% for a keyword table built from the same
-data — which is the check that the model is doing something a word list cannot.
-Run `python data/baseline.py examples/smalltalk/training-data.txt.gz` to see it.
+80.6% of held-out queries answered correctly, against 59.4% for a keyword table
+built from the same data — which is the check that the model is doing something
+a word list cannot. See it yourself:
+
+```bash
+python data/baseline.py examples/smalltalk/training-data.txt.gz \
+                        --model examples/smalltalk/model.npz
+```
 
 See [data/README.md](data/README.md) for what makes a dataset suit a 2-bit
 model, and `data/lint.py` for checking one before you train it.
