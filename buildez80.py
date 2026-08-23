@@ -54,6 +54,8 @@ Usage:
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 from libez80 import AGON_LOAD_ADDR, AGON_MAX_IMAGE, EZ80Builder, agon_header
@@ -77,6 +79,10 @@ KEY_LABELS = ('START', 'GENERATE', 'LAYER', 'LAYER1', 'ARGMAX', 'TOKENIZE',
 MOS_API = 0x08  # RST 08h, function number in A
 MOS_OUTCHAR = 0x10  # RST 10h, character in A
 MOS_GETKEY = 0x00
+# HL=filename, DE=load address, BC=max size -> A=status. The only SD call this
+# makes: one call, no handle to leak, and it exists in every MOS version, which
+# matters because MOS itself cannot be exercised in CI. See tools/mostest.py.
+MOS_LOAD = 0x01
 
 # Weight stream encoding. Values outside {-2,-1,0,1} act as terminators.
 W_END_NEURON = 0x02
@@ -116,6 +122,31 @@ def neuron_ops(row: np.ndarray) -> list[tuple[int, int]]:
     """
     w = np.clip(np.asarray(row), -2, 1).astype(np.int8)
     return [(int(j), int(w[j])) for j in np.nonzero(w)[0]]
+
+
+def encode_phrases(phrases: list[str]) -> bytes:
+    """The on-card phrasebook: a count, an offset table, then the text.
+
+    ``[count:3][offset:3 x count][NUL-terminated text...]``, every field
+    24-bit little-endian and every offset relative to the *start of the file*.
+
+    Offsets rather than addresses, deliberately. The rest of the image is
+    absolute - libz80.resolve() patches fixups and throws the fixup list away,
+    so a .bin carries no relocation information at all - but a file that
+    contains no addresses cannot be loaded to the wrong one. The program adds
+    the load address once, at runtime.
+    """
+    header = 3 + 3 * len(phrases)
+    text = bytearray()
+    offsets = []
+    for phrase in phrases:
+        offsets.append(header + len(text))
+        text += phrase.encode('ascii') + b'\x00'
+
+    out = bytearray()
+    for value in (len(phrases), *offsets):
+        out += bytes(((value >> (8 * k)) & 0xFF) for k in range(3))
+    return bytes(out + text)
 
 
 def layer_buffers(index: int, num_layers: int) -> tuple[str, str]:
@@ -540,16 +571,24 @@ KERNELS = ('column', 'row', 'compact')
 def build_autoreg(model_path: str = 'command_model_autoreg.pt',
                   max_output_len: int = MAX_OUTPUT_LEN,
                   org: int = AGON_LOAD_ADDR,
-                  kernel: str = 'auto') -> EZ80Builder:
-    """Build the eZ80 autoregressive inference binary.
+                  kernel: str = 'auto',
+                  phrases_file: str = 'PHRASES.DAT') -> EZ80Builder:
+    """Build the eZ80 inference binary.
 
     ``kernel`` selects how the layers are emitted; see :data:`KERNELS`.  The
     default, ``'auto'``, takes the fastest kernel whose image still fits in
     Agon SRAM, which is the same fastest-that-fits policy build.py already
     applies to the CP/M target.
+
+    A model carrying a phrasebook (``_architecture['phrases']``) builds a
+    classifier instead of a character decoder: one forward pass over the query
+    buckets, one argmax, and the reply printed from ``phrases_file`` on the SD
+    card.  The builder's ``phrase_blob`` attribute holds the bytes that file
+    must contain.
     """
     if kernel == 'auto':
-        return _build_fastest_that_fits(model_path, max_output_len, org)
+        return _build_fastest_that_fits(model_path, max_output_len, org,
+                                        phrases_file)
     if kernel not in KERNELS:
         raise ValueError(
             f"unknown kernel {kernel!r}; choose from {['auto', *KERNELS]}"
@@ -562,8 +601,37 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     # Named locally: the emit sequence below reads them dozens of times.
     charset, eos_idx = model.charset, model.eos_idx
     position_bands = model.position_bands
+    phrases, phrasebook = model.phrases, model.is_phrasebook
     if output_size < 2:
         raise ValueError("charset must have at least two entries")
+
+    if phrasebook:
+        # Hoisting layer 1's query half pays off across the steps of one
+        # response. A phrasebook has one step, so there is nothing to hoist
+        # and the column kernel's whole reason for existing is absent - along
+        # with the query/context split of the input vector that it assumes.
+        if kernel == 'column':
+            raise ValueError(
+                "the column kernel splits the input into a query half and a "
+                "context half; a phrasebook has neither. Use row or compact.")
+        if model.input_size != NUM_BUCKETS:
+            raise ValueError(
+                f"a phrasebook takes {NUM_BUCKETS} query buckets, not "
+                f"{model.input_size}: there is no context to encode when the "
+                f"whole answer is chosen in one pass")
+
+    # The decode table is sized by the charset or the phrase list and ARGMAX by
+    # the weight shapes, and nothing ever compared them. Disagreeing, PRINTCH
+    # indexes past the table into the scratch bytes that follow it and prints
+    # whatever is there - no crash, no warning, just the wrong answer.
+    if output_size != model.num_outputs:
+        label = 'phrases' if phrasebook else 'charset entries'
+        raise ValueError(
+            f"the output layer has {output_size} neurons but there are "
+            f"{model.num_outputs} {label}; one of them is wrong")
+
+    phrase_blob = encode_phrases(phrases) if phrasebook else b''
+
 
     # The unrolled kernels bake the weights into the code, so only the compact
     # one needs a weight stream and a bias table in the data section.
@@ -578,7 +646,38 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
 
     # === Entry ===============================================================
     b.label('START')
-    b.jp('CHAT_LOOP')
+    if phrasebook:
+        b.jp('LOAD_PHRASES')
+    else:
+        b.jp('CHAT_LOOP')
+
+    if phrasebook:
+        # === LOAD_PHRASES ====================================================
+        # The replies live on the SD card, which is the entire point: the model
+        # picks an index, so the text costs it nothing and is free to be
+        # sentences. mos_load is the only firmware call here beyond printing
+        # and reading keys - one call, no handle to leak, present in every MOS
+        # version. BC is the buffer size, so MOS refuses an oversized file
+        # rather than writing past the end of it.
+        b.label('LOAD_PHRASES')
+        b.ld_hl_label('PHRNAME')
+        b.ld_de_label('PHRBUF')
+        b.ld_bc_nn(len(phrase_blob))
+        b.ld_a_n(MOS_LOAD)
+        b.rst(MOS_API)
+        b.or_a()
+        b.jp_z('CHAT_LOOP')
+
+        # Nonzero status: say so and stop, rather than jumping into whatever
+        # the buffer happens to contain and printing it as an answer.
+        b.ld_hl_label('PHRERR')
+        b.label('PE_LOOP')
+        b.ld_a_hl()
+        b.or_a()
+        b.ret_z()
+        b.rst(MOS_OUTCHAR)
+        b.inc_hl()
+        b.jr('PE_LOOP')
 
     b.label('CHAT_LOOP')
     b.call('PRNL')
@@ -598,8 +697,11 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.jp_z('CHAT_EXIT')
 
     b.call('TOKENIZE')
-    b.call('CLEAR_CTX')
-    b.call('GENERATE')
+    if phrasebook:
+        b.call('CLASSIFY')
+    else:
+        b.call('CLEAR_CTX')
+        b.call('GENERATE')
     b.jp('CHAT_LOOP')
 
     b.label('CHAT_EXIT')
@@ -700,6 +802,45 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ld_a_hl()
     b.rst(MOS_OUTCHAR)
     b.ret()
+
+    if phrasebook:
+        # === CLASSIFY ========================================================
+        # The whole of a phrasebook's inference. One pass, one argmax, one
+        # reply - no GENLOOP, no EOS compare, no context to slide, because
+        # there is nothing for a context window to condition on when the
+        # entire answer is chosen in a single step.
+        b.label('CLASSIFY')
+        b.call('INFER')
+        b.call('ARGMAX')
+        b.call('PRINT_PHRASE')
+        b.jp('PRNL')
+
+        # === PRINT_PHRASE ====================================================
+        # RESULT indexes the offset table that follows the count, so the entry
+        # is at PHRBUF + 3 + 3*RESULT. Its contents are relative to the start
+        # of the file, so PHRBUF is added once more to reach the text.
+        b.label('PRINT_PHRASE')
+        b.ld_hl_mem_label('RESULT')
+        b.add_hl_hl()               # RESULT*2
+        b.ld_bc_mem_label('RESULT')
+        b.add_hl_bc()               # RESULT*3
+        b.ld_bc_label('PHRBUF')
+        b.add_hl_bc()
+        # There is no LD HL,(HL); the eZ80's 24-bit indirect load is through
+        # IX, so the pointer goes there. The +3 skips the count.
+        b.push_hl()
+        b.pop_ix()
+        b.ld_hl_ixd(3)              # HL = offset from the start of the file
+        b.ld_bc_label('PHRBUF')
+        b.add_hl_bc()
+
+        b.label('PP_LOOP')
+        b.ld_a_hl()
+        b.or_a()
+        b.ret_z()
+        b.rst(MOS_OUTCHAR)
+        b.inc_hl()
+        b.jr('PP_LOOP')
 
     # === INFER: run every layer ==============================================
     # Buffers ping-pong; the assignment is fixed at build time so the layer
@@ -1132,6 +1273,20 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
         b.label('QBASE')
         b.ds24(layer_sizes[1])
 
+    if phrasebook:
+        b.label('PHRNAME')
+        b.ascii(phrases_file)
+        b.db(0)
+        b.label('PHRERR')
+        b.ascii(f"Could not load {phrases_file} from the SD card.")
+        b.db(13)
+        b.db(10)
+        b.db(0)
+        # Sized from the file the build produced, so mos_load's BC argument and
+        # the buffer cannot disagree.
+        b.label('PHRBUF')
+        b.ds(len(phrase_blob))
+
     if kernel == 'compact':
         b.label('BIASES')
         b.blob(bias_blob)
@@ -1147,20 +1302,55 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
         "INBUF and CTXBUF must be contiguous"
 
     b.kernel = kernel
+    #: The bytes PHRASES.DAT must contain, or b'' for a character decoder.
+    #: The build writes it beside the .bin; both come from one encode_phrases
+    #: call, so the offsets the program indexes and the text it prints cannot
+    #: drift apart.
+    b.phrase_blob = phrase_blob
+    b.phrases_file = phrases_file if phrasebook else None
     return b
 
 
-def _build_fastest_that_fits(model_path: str, max_output_len: int,
-                             org: int) -> EZ80Builder:
+def write_phrase_file(builder: EZ80Builder, binary_path: str) -> str | None:
+    """Write the phrasebook beside the .bin, under the name the binary loads.
+
+    Both files come out of one build, so the offsets the program indexes and
+    the text it prints cannot drift apart - which they would the moment the
+    two were produced by separate commands.
+    """
+    if not builder.phrase_blob:
+        return None
+    path = os.path.join(os.path.dirname(binary_path) or '.', builder.phrases_file)
+    with open(path, 'wb') as fh:
+        fh.write(builder.phrase_blob)
+    print(f"Wrote {len(builder.phrase_blob):,} bytes to {path} - "
+          f"copy it onto the card beside the binary")
+    return path
+
+
+def _build_fastest_that_fits(model_path: str, max_output_len: int, org: int,
+                             phrases_file: str = 'PHRASES.DAT') -> EZ80Builder:
     """Take the first kernel in :data:`KERNELS` whose image fits Agon SRAM.
 
     The unrolled kernels trade size for speed, so a large enough model can only
     be built with the compact one.  Preserving that fallback is the whole point
     of keeping it around.
     """
-    last = len(KERNELS) - 1
-    for i, kernel in enumerate(KERNELS):
-        builder = build_autoreg(model_path, max_output_len, org, kernel=kernel)
+    # Read only the metadata: which kernels are even candidates has to be
+    # decided before building any of them, and load_for_build would print a
+    # second banner for a model each candidate is about to load anyway.
+    from loadmodel import load_model_params
+
+    _, arch, _ = load_model_params(model_path)
+    # A phrasebook runs one forward pass, so the column kernel's query hoisting
+    # has nothing to amortize and its query/context split does not exist.
+    candidates = [k for k in KERNELS
+                  if not (k == 'column' and arch.get('phrases') is not None)]
+
+    last = len(candidates) - 1
+    for i, kernel in enumerate(candidates):
+        builder = build_autoreg(model_path, max_output_len, org, kernel=kernel,
+                                phrases_file=phrases_file)
         size = len(builder.build())
         fits = org + size <= AGON_LOAD_ADDR + AGON_MAX_IMAGE
         if fits:
@@ -1199,6 +1389,8 @@ def main() -> None:
     b.report_labels(KEY_LABELS)
 
     b.save(args.output)
+    if b.phrase_blob:
+        write_phrase_file(b, args.output)
     size = len(b.code)
     print(f"\nTotal size: {size:,} bytes ({size / 1024:.1f} KB)")
     print(f"Loads at {AGON_LOAD_ADDR:06X}h, runs in ADL mode; "

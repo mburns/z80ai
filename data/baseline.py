@@ -242,10 +242,19 @@ def main() -> None:
         accum_bits = args.accum_bits or getattr(model, 'accum_bits', None) or 16
         longest = max(len(r) for _, r in pairs) + 1
         nbytes = sum(w.size for w in model.weights) // 4 + sum(b.size * 2 for b in model.biases)
+
+        # A phrasebook takes the 128 query buckets and answers in one pass; a
+        # character decoder takes 256 and loops. Calling the wrong one is a
+        # shape error rather than a wrong number, which is the good case.
+        if model.phrases is not None:
+            def predict(q: str) -> str:
+                return libinfer.classify(model, q, accum_bits=accum_bits)
+        else:
+            def predict(q: str) -> str:
+                return libinfer.generate(model, q, longest, accum_bits=accum_bits)
+
         rows.append((
-            f"model {Path(args.model).name}, held-out", val,
-            lambda q: libinfer.generate(model, q, longest, accum_bits=accum_bits),
-            nbytes,
+            f"model {Path(args.model).name}, held-out", val, predict, nbytes,
         ))
 
     print(f"{'':34}{'on device':>11}{'overall':>9}{'macro':>9}")

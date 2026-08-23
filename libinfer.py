@@ -354,6 +354,24 @@ class BuildInputs:
     position_bands: int
     names: list[str]
     layer_sizes: list[int]
+    #: Replies this model selects between, when it is a phrasebook classifier
+    #: rather than a character decoder.  None means the latter, and that
+    #: ``charset`` is what decodes its output.
+    phrases: list[str] | None = None
+
+    @property
+    def is_phrasebook(self) -> bool:
+        return self.phrases is not None
+
+    @property
+    def num_outputs(self) -> int:
+        """How many things the output layer is supposed to be choosing between.
+
+        The charset for a character decoder, the phrase list for a phrasebook.
+        Worth having in one place: the output layer's width is set by the weight
+        shapes and the decode table's by this, and nothing compared them.
+        """
+        return len(self.phrases) if self.is_phrasebook else len(self.charset)
 
     @property
     def num_layers(self) -> int:
@@ -406,8 +424,15 @@ def load_for_build(model_path: str, report_io: bool = True) -> BuildInputs:
     print(f"Loading model from {model_path}...")
     params, arch, charset = load_model_params(model_path)
     names, layer_sizes = discover_layers(params)
+    phrases = arch.get("phrases")
 
-    print(f"Charset ({len(charset)} chars): {charset[:-1]!r} + EOS")
+    if phrases is None:
+        print(f"Charset ({len(charset)} chars): {charset[:-1]!r} + EOS")
+    else:
+        # A phrasebook never spells anything, so its charset says nothing worth
+        # printing; what it selects between is the phrase list.
+        print(f"Phrasebook ({len(phrases)} replies), "
+              f"longest {max(map(len, phrases))} characters")
     print(f"Architecture: {' → '.join(map(str, layer_sizes))}")
     if report_io:
         print(f"Input: {layer_sizes[0]} "
@@ -420,6 +445,7 @@ def load_for_build(model_path: str, report_io: bool = True) -> BuildInputs:
         position_bands=arch.get("position_bands", FLAT),
         names=names,
         layer_sizes=layer_sizes,
+        phrases=phrases,
     )
 
 
