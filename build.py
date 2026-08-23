@@ -46,16 +46,9 @@ from __future__ import annotations
 import argparse
 import os
 
+import libcpm
+from libinfer import MAX_OUTPUT_LEN
 from libz80 import Z80Builder
-
-# A stock CP/M 2.2 puts the BDOS at E400h; leave a little room for the stack.
-CPM_TPA_TOP = 0xE400
-CPM_STACK_MARGIN = 0x0200
-
-
-def _fits_in_tpa(builder: Z80Builder) -> bool:
-    return builder.org + len(builder.build()) + CPM_STACK_MARGIN <= CPM_TPA_TOP
-
 
 #: CP/M weight layouts, fastest first. `auto` takes the first one that fits.
 CPM_LAYOUTS = ("column", "fast", "packed")
@@ -81,7 +74,7 @@ def build_cpm(model: str, max_output_len: int,
         builder = modules[layout].build_autoreg(model, max_output_len=max_output_len)
         # Packed is the backstop: it always fits, so it is taken unconditionally
         # rather than leaving the loop with nothing to return.
-        if layout == CPM_LAYOUTS[-1] or _fits_in_tpa(builder):
+        if layout == CPM_LAYOUTS[-1] or libcpm.fits_in_tpa(builder):
             return builder, layout
         print(
             f"\n{layout} layout needs {len(builder.build()):,} bytes and will "
@@ -118,7 +111,7 @@ def main() -> None:
                                  "cpm-packed", "zx", "ez80", "ez80-column",
                                  "ez80-row", "ez80-compact"],
                         help="Platform and weight layout (default: auto = cpm)")
-    parser.add_argument("--max-output-len", type=int, default=50,
+    parser.add_argument("--max-output-len", type=int, default=MAX_OUTPUT_LEN,
                         help="Maximum characters generated per response")
     args = parser.parse_args()
 
@@ -135,12 +128,11 @@ def main() -> None:
         builder, layout = build_ez80(args.model, args.max_output_len, kernel)
 
     if target == "zx":
-        import buildz80tap
+        import libzx
 
         image = builder.build()
-        tap = buildz80tap.build_tap_header(
-            os.path.basename(args.output).split(".")[0][:10], builder.org, len(image)
-        ) + buildz80tap.build_tap_data(image)
+        name = os.path.basename(args.output).split(".")[0]
+        tap = libzx.build_tap(image, builder.org, name)
         with open(args.output, "wb") as fh:
             fh.write(tap)
         print(f"\nWrote {len(tap):,} bytes to {args.output}")

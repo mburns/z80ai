@@ -16,13 +16,19 @@ from __future__ import annotations
 
 import contextlib
 
+# Entry points and memory maps come from the target modules rather than being
+# restated: the emulator's idea of where BDOS sits and the code generator's have
+# to agree, and the surest way to guarantee that is to have only one of them.
+from libcpm import BDOS, CPM_CMDLINE, TPA, TPA_TOP
 from libz80emu import Z80, Z80Error
+from libzx import ORG_ADDR as ZX_DEFAULT_ORG
+from libzx import ZX_CHAN_OPEN, ZX_CLS, ZX_KEY_INPUT, ZX_PRINT_A, ZX_RAM_TOP
+
+#: Where a transient program's stack starts, a little below the BDOS. Real CP/M
+#: hands over whatever the CCP was using; anywhere clear of the image will do.
+CPM_STACK = 0xE000
 
 # --- CP/M --------------------------------------------------------------------
-
-BDOS = 0x0005
-TPA = 0x0100
-CPM_CMDLINE = 0x0080
 
 
 class CPMExit(Exception):
@@ -39,14 +45,15 @@ class CPMHost:
         self.finished = False
         self._set_cmdline(cmdline)
 
-        # 0000h: warm boot. 0005h: BDOS entry.
+        # 0000h: warm boot. 0005h: BDOS entry, a JP to the real BDOS at the top
+        # of the TPA - programs read the address there to size the TPA.
         self.cpu.poke(0x0000, 0xC3)  # JP 0000h - the hook intercepts first
-        self.cpu.poke(0x0005, 0xC3)
-        self.cpu.poke(0x0006, 0x00)
-        self.cpu.poke(0x0007, 0xE4)  # BDOS lives at E400h; top of TPA
+        self.cpu.poke(BDOS, 0xC3)
+        self.cpu.poke(BDOS + 1, TPA_TOP & 0xFF)
+        self.cpu.poke(BDOS + 2, TPA_TOP >> 8)
         self.cpu.hooks[0x0000] = self._warm_boot
         self.cpu.hooks[BDOS] = self._bdos
-        self.cpu.sp = 0xE000
+        self.cpu.sp = CPM_STACK
 
     def _set_cmdline(self, cmdline: str) -> None:
         text = cmdline.upper()[:126]
@@ -143,14 +150,6 @@ def run_cpm(
 
 # --- ZX Spectrum -------------------------------------------------------------
 
-ZX_PRINT_A = 0x0010
-ZX_CLS = 0x0DAF
-ZX_CHAN_OPEN = 0x1601
-ZX_KEY_INPUT = 0x10A8
-
-
-ZX_DEFAULT_ORG = 0x6000
-
 
 class ZXHost:
     """Stubs for the handful of 48K ROM routines the TAP build calls."""
@@ -200,7 +199,7 @@ class ZXHost:
         return True
 
     def run(self, image: bytes, max_cycles: int = 2_000_000_000) -> str:
-        if self.org + len(image) > 0x10000:
+        if self.org + len(image) > ZX_RAM_TOP:
             raise Z80Error(
                 f"image of {len(image):,} bytes does not fit in RAM at {self.org:#06x}"
             )

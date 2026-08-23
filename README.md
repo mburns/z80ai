@@ -125,8 +125,10 @@ Z80-μLM runs on multiple Z80-based platforms:
   - `buildfastz80com.py` — an index list per weight value, per neuron. ~9x faster
   - `buildcolz80com.py` — index lists per input *column*, so zero activations
     are skipped as well as zero weights. ~24x faster, about 3KB larger
-  - All three share their engine with the ZX build; see `libnn.py`
-- **ZX Spectrum 48K**: Full support via `buildz80tap.py`. See [ZX-SPECTRUM.md](ZX-SPECTRUM.md) for details
+  - All three share their engine with the ZX build (`libnn.py`) and their
+    front end — entry, chat loop, BDOS line buffer — with each other (`libcpm.py`)
+- **ZX Spectrum 48K**: Full support via `buildz80tap.py`, over the shared ZX
+  target in `libzx.py`. See [ZX-SPECTRUM.md](ZX-SPECTRUM.md) for details
   - Generates `.TAP` files for emulators or real hardware
   - Uses ZX Spectrum ROM routines for I/O
   - Memory optimized for 48K systems

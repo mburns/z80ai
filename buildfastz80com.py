@@ -43,28 +43,24 @@ Disadvantages:
     Uses the stack pointer with interrupts disabled.
     Packed weight version could be considerably faster.
 
-Would make sense to combine these into a single version which chooses the
-fastest version that fits.
-
+Choosing between the layouts is ``build.py --target auto``'s job; this module
+is what it calls when the index-list one is the fastest that fits.  The program
+around the layers - entry, chat loop, BDOS line buffer - is shared with the
+other two CP/M backends in ``libcpm.py``.
 """
+
+from __future__ import annotations
+
+import argparse
 
 import numpy as np
 
+import libcpm
 import libinfer
 import libnn
-from buildz80com import (
-    BDOS,
-    CPM_CMDLINE,
-    CPMPlatform,
-)
-from libinfer import discover_layers, validate_z80_layers
+from libcpm import CPMPlatform
+from libinfer import MAX_OUTPUT_LEN, validate_z80_layers
 from libz80 import Z80Builder
-from loadmodel import load_model_params
-
-#: Maximum characters to generate before giving up on ever seeing an EOS.
-MAX_OUTPUT_LEN = 50
-#: Size of the chat-mode input line (BDOS function 10 buffer).
-CHAT_BUFFER_SIZE = 62
 
 
 class FastCPMPlatform(CPMPlatform):
@@ -247,31 +243,24 @@ def emit_preq(b: Z80Builder) -> None:
 
 def build_autoreg(model_path: str = 'command_model_autoreg.pt',
                   max_output_len: int = MAX_OUTPUT_LEN) -> Z80Builder:
-    """Build the autoregressive inference .COM"""
+    """Assemble the index-list inference engine and model into a .COM image.
 
-    # Load model (supports both .pt and .npz formats)
-    print(f"Loading model from {model_path}...")
-    params, arch, charset = load_model_params(model_path)
-    position_bands = arch.get('position_bands', libinfer.FLAT)
+    Args:
+        model_path: A ``.npz`` or ``.pt`` model.
+        max_output_len: Characters to generate before giving up on an EOS.
 
-    eos_idx = len(charset) - 1
-    num_chars = len(charset)
-    print(f"Charset ({num_chars} chars): {charset[:-1]!r} + EOS")
+    Returns:
+        The builder, with all labels resolvable.
 
-    # Discover layers. Sorted numerically, not lexically: a 10-layer model
-    # would otherwise run fc10 straight after fc1.
-    layer_names, layer_sizes = discover_layers(params)
-    num_layers = len(layer_names)
-
-    input_size = layer_sizes[0]  # 256 (128 query + 128 context)
-    output_size = layer_sizes[-1]  # 64 characters
-
-    print(f"Architecture: {' → '.join(map(str, layer_sizes))}")
-    print(f"Input: {input_size} (128 query + 128 context)")
-    print(f"Output: {output_size} characters")
+    Raises:
+        ValueError: If a layer is wider than a Z80 neuron loop can count.
+    """
+    model = libinfer.load_for_build(model_path)
+    layer_sizes = model.layer_sizes
+    num_layers = model.num_layers
+    input_size = model.input_size
 
     validate_z80_layers(layer_sizes)
-
     libnn.validate_hoistable(layer_sizes)
 
     # Layer 1 is split by column. The query half goes into QWTS, which PREQ
@@ -279,89 +268,20 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     # unchanged, since they already name the upper half of the activation
     # buffer INFER indexes. NETWORK's layer-1 bias slots are PREQ's output, so
     # they start at zero and the real BIAS1 travels with QWTS.
-    w1 = params[f'{layer_names[0]}_weight']
-    w1q, w1c = libinfer.split_query_half(w1)
-    bias1 = params[f'{layer_names[0]}_bias']
+    w1q, w1c = libinfer.split_query_half(model.weight(0))
+    bias1 = model.bias(0)
     query_weights = pack_weights_and_biases(w1q, bias1)
     weights_biases = [
         pack_weights_and_biases(w1c, np.zeros_like(bias1), libnn.NUM_BUCKETS)
     ] + [
-        pack_weights_and_biases(params[f'{name}_weight'], params[f'{name}_bias'])
-        for name in layer_names[1:]
+        pack_weights_and_biases(model.weight(i), model.bias(i))
+        for i in range(1, num_layers)
     ]
 
     plat = FastCPMPlatform()
     b = Z80Builder()
 
-    # === MAIN ===
-    b.label('START')
-    # Check if command line is empty - if so, enter chat mode
-    b.ld_hl_nn(CPM_CMDLINE)
-    b.ld_a_hl()
-    b.or_a()
-    b.jp_z('CHAT')          # No args = interactive chat mode
-
-    # Single query mode (args on command line)
-    b.call('TOKENIZE')      # Tokenize query into first 128 buckets
-    b.call('CLEAR_CTX')     # Clear context (last 128 buckets)
-    b.call('GENERATE')      # Generation loop
-    b.rst(0)                # Return to CP/M
-
-    # === CHAT MODE: Interactive loop with '>' prompt ===
-    b.label('CHAT')
-    b.label('CHAT_LOOP')
-    # Print newline
-    b.ld_de_label('CRLF')
-    b.ld_c_n(9)             # BDOS print string
-    b.call_addr(BDOS)
-    # Print prompt
-    b.ld_e_n(ord('>'))
-    b.ld_c_n(2)             # BDOS console output
-    b.call_addr(BDOS)
-    b.ld_e_n(ord(' '))
-    b.ld_c_n(2)
-    b.call_addr(BDOS)
-
-    # Read line (BDOS function 10)
-    b.ld_de_label('CHATBUF')
-    b.ld_c_n(10)            # BDOS read console buffer
-    b.call_addr(BDOS)
-
-    # Print newline after input
-    b.ld_de_label('CRLF')
-    b.ld_c_n(9)
-    b.call_addr(BDOS)
-
-    # Check if empty input (just enter)
-    b.ld_a_mem_label('CHATLEN')
-    b.or_a()
-    b.jr_z('CHAT_LOOP')     # Empty input, prompt again
-
-    # Check for exit command (!)
-    b.ld_a_mem_label('CHATDAT')
-    b.cp_n(ord('!'))
-    b.jp_z('CHAT_EXIT')     # Exit if first char is !
-
-    # Copy input to CPM_CMDLINE format for TOKENIZE
-    b.ld_a_mem_label('CHATLEN')
-    b.ld_hl_nn(CPM_CMDLINE)
-    b.ld_hl_a()             # Store length at 0080h
-    b.ld_hl_label('CHATDAT')
-    b.ld_de_nn(CPM_CMDLINE + 1)
-    b.ld_c_a()
-    b.ld_b_n(0)
-    b.ldir()                # Copy input text
-
-    # Process and generate response
-    b.call('TOKENIZE')
-    b.call('CLEAR_CTX')
-    b.call('GENERATE')
-
-    # Loop for next input
-    b.jr('CHAT_LOOP')
-
-    b.label('CHAT_EXIT')
-    b.rst(0)                # Return to CP/M
+    libcpm.emit_entry(b)
 
     # === GENERATE: Main generation loop ===
     b.label('GENERATE')
@@ -387,7 +307,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
 
     # Check for EOS
     b.ld_a_mem_label('RESULT')
-    b.cp_n(eos_idx)
+    b.cp_n(model.eos_idx)
     b.ret_z()  # Return if EOS
 
     # Print character
@@ -629,15 +549,14 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ld_mem_label_a('RESULT')
     b.ret()
 
-    libnn.emit_tokenizer(b, plat, position_bands)
-    libnn.emit_tok_hash(b, plat, position_bands)
+    libnn.emit_tokenizer(b, plat, model.position_bands)
+    libnn.emit_tok_hash(b, plat, model.position_bands)
 
     # === DATA ===
     # Character table (dynamic size based on charset)
-    libnn.emit_charset_table(b, charset)
+    libnn.emit_charset_table(b, model.charset)
 
-    b.label('CRLF')
-    b.db(13, 10, ord('$'))
+    libcpm.emit_crlf(b)
 
     # INFER parks the stack pointer here while it walks the weights with POP.
     b.label('SPSAV')
@@ -647,15 +566,9 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.dw(0)
     b.label('PQN')
     b.db(0)
-    libnn.emit_engine_variables(b, position_bands)
+    libnn.emit_engine_variables(b, model.position_bands)
 
-    # Chat mode buffer (BDOS function 10 format)
-    b.label('CHATBUF')
-    b.db(CHAT_BUFFER_SIZE)  # capacity, read by BDOS
-    b.label('CHATLEN')
-    b.db(0)  # length, written by BDOS
-    b.label('CHATDAT')
-    b.ds(CHAT_BUFFER_SIZE)
+    libcpm.emit_chat_buffer(b)
 
     b.label('NETWORK')
     b.db(num_layers)
@@ -690,25 +603,20 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     return b
 
 
-if __name__ == '__main__':
-    import argparse
+def main() -> None:
     parser = argparse.ArgumentParser(description='Build Z80 autoregressive .COM')
-    parser.add_argument('--model', '-m', type=str, default='command_model_autoreg.pt',
+    parser.add_argument('--model', '-m', default='command_model_autoreg.pt',
                         help='Model file to load')
-    parser.add_argument('--output', '-o', type=str, default='z80/CHAT.COM',
+    parser.add_argument('--output', '-o', default='z80/CHAT.COM',
                         help='Output .COM file')
+    parser.add_argument('--max-output-len', type=int, default=MAX_OUTPUT_LEN,
+                        help='Maximum characters generated per response')
     args = parser.parse_args()
 
     print("Building autoregressive CHAT.COM...\n")
+    b = build_autoreg(args.model, max_output_len=args.max_output_len)
+    b.save_and_report(args.output, libcpm.KEY_LABELS)
 
-    b = build_autoreg(args.model)
 
-    # Show key addresses
-    print("\nKey addresses:")
-    for name in ['START', 'GENERATE', 'LAYER', 'ARGMAX', 'TOKENIZE', 'UPDATE_CTX', 'CHARTBL']:
-        if name in b.labels:
-            print(f"  {name}: {b.labels[name]:04X}h")
-
-    b.save(args.output)
-    print(f"\nTotal size: {len(b.code)} bytes ({len(b.code)/1024:.1f} KB)")
-    print(f"Saved to {args.output}")
+if __name__ == '__main__':
+    main()
