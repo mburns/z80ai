@@ -45,10 +45,10 @@ The intents are CLINC's; the replies are ours. Regenerate with:
 
 ## Why it is here
 
-`tinychat` does the same job on hand-written data and answers 33.8% of held-out
-queries correctly — its 502 distinct responses are memorized rather than
-learned. This example is the control: same task, same architecture, real
-phrasings and a disciplined 19-reply vocabulary.
+`tinychat` does the same job on hand-written data and answers 28.4% of held-out
+queries correctly. Its vocabulary has since been cleaned up, which was not
+enough: what it lacks is *phrasings per answer*, and that is exactly what
+crowdsourced data provides. This example is the control.
 
 It also settles a question the repo could not previously answer — whether the
 model is doing anything a lookup table could not:

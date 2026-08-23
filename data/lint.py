@@ -35,6 +35,49 @@ MAX_RESPONSE_LEN = 12       # characters; longer is slower and harder
 MAX_CONTRADICTION_RATE = 0.05
 
 
+def phrasing_redundancy(pairs: list[tuple[str, str]], sample: int = 60) -> float:
+    """Median cosine to the nearest query wanting the *same* reply.
+
+    How many different ways the data says each thing.  A model generalizes by
+    seeing one intent phrased several ways; if every query is a one-off there is
+    nothing to generalize from, however many of them there are.  Measured on the
+    shipped data:
+
+        smalltalk  0.74   crowdsourced paraphrases, 149 per reply -> 80.6%
+        guess      0.58   templated, but 7,180 per reply          -> 81.3%
+        tinychat   0.54   hand-written one-offs, 96 per reply     -> 30.3%
+
+    Reported rather than judged: the number only means something next to the
+    examples-per-response count above it.  Low on both is the bad case.
+    """
+    import numpy as np
+
+    by_reply: dict[str, list[str]] = defaultdict(list)
+    for query, reply in pairs:
+        by_reply[reply].append(query)
+
+    vectors: dict[str, np.ndarray] = {}
+    for query, _ in pairs:
+        if query not in vectors:
+            v = trigram_encode(query).astype(float)
+            norm = np.linalg.norm(v)
+            vectors[query] = v / norm if norm else v
+
+    rng = np.random.default_rng(0)
+    nearest: list[float] = []
+    for queries in by_reply.values():
+        if len(queries) < 2:
+            continue
+        chosen = (queries if len(queries) <= sample
+                  else list(rng.choice(queries, sample, replace=False)))
+        matrix = np.stack([vectors[q] for q in chosen])
+        sims = matrix @ matrix.T
+        np.fill_diagonal(sims, -1.0)
+        nearest.extend(sims.max(axis=1))
+
+    return float(np.median(nearest)) if nearest else 0.0
+
+
 def report(pairs: list[tuple[str, str]]) -> list[str]:
     """Print the analysis; return a list of problems found."""
     problems: list[str] = []
@@ -58,6 +101,8 @@ def report(pairs: list[tuple[str, str]]) -> list[str]:
     print(f"{'exact duplicate pairs':<32}{duplicates:>10,}  ({_pct(duplicates, len(pairs))})")
     print(f"{'pairs in a contradiction':<32}{involved:>10,}  ({_pct(involved, len(pairs))})")
     print(f"{'accuracy ceiling':<32}{accuracy_ceiling(pairs):>9.1%}")
+    print(f"{'examples per response':<32}{len(pairs) / len(labels):>10,.0f}")
+    print(f"{'phrasing redundancy':<32}{phrasing_redundancy(pairs):>10.2f}")
 
     print("\nresponse distribution")
     for label, count in labels.most_common(12):
