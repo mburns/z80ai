@@ -378,22 +378,26 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ld_c_a()
     b.ld_a_e()
 
-    # Scale output to keep within range.
-    b.sra_c()
-    b.rra()
-    b.sra_c()
-    b.rra()
-
-    # Check if ReLU desired
+    # Decide the ReLU before scaling rather than after.  The sign lives in bit
+    # 7 of C and the shift is arithmetic, so it cannot change: a hidden neuron
+    # that is negative here relus to exactly zero whatever the shift does, and
+    # scaling it first is wasted work.
     b.exx()
     b.inc_e()
     b.dec_e()
     b.exx()
-    b.jr_z('NO_RELU')
+    b.jr_z('DO_SCALE')      # last layer has no ReLU, so always scale
     b.bit_7_c()
-    b.jr_z('NO_RELU')
+    b.jr_z('DO_SCALE')      # non-negative, so scale it
     b.xor_a()
-    b.ld_c_a()
+    b.ld_c_a()              # negative: the answer is zero, skip the shift
+    b.jr('NO_RELU')
+
+    b.label('DO_SCALE')
+    b.sra_c()
+    b.rra()
+    b.sra_c()
+    b.rra()
     b.label('NO_RELU')
 
     # write summation to output
