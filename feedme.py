@@ -568,6 +568,11 @@ def train_chunked(chunk_size: int = 1000, epochs_per_chunk: int = 100, lr: float
                 'hidden_sizes': hidden_sizes,
                 'num_classes': NUM_CHARS,
                 'position_bands': position_bands,
+                # Recorded so data/baseline.py can tell whether the split it is
+                # scoring against is the one this model was held out from.
+                # Scoring on any other seed reports training pairs as held-out
+                # and inflates the result by ten points or more.
+                'split_seed': seed,
             },
             'charset': CHARSET,
             'total_epochs': total_epochs,
