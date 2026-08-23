@@ -267,9 +267,26 @@ scores 86.5% macro against this run's 60.8%, so 120 epochs from scratch is not
 enough for this dataset — check a new model against the old one before replacing
 it (`python data/baseline.py <data> --model <npz>`).
 
-**Training is not seeded** — there is no `torch.manual_seed` anywhere — so the
-same command on the same data varies run to run. Do not read a small difference
-as a real one.
+**`feedme.py` training is not seeded** — there is no `torch.manual_seed` in it —
+so the same command on the same data varies run to run. Do not read a small
+difference as a real one.
+
+"Small" is dataset-dependent, and worth measuring before trusting any
+comparison. Holding the split fixed and moving only the training seed, three
+runs of the same classifier:
+
+| | held out | macro spread |
+|---|---:|---:|
+| `smalltalk` | 283 | 87.6–88.7% (**1.1 points**) |
+| `tinychat` | 205 | 38.3–46.2% (**7.9 points**) |
+
+So a two-point move on `smalltalk` is worth investigating and a five-point move
+on `tinychat` is worth nothing. `tinychat` is the noisier of the two because it
+holds out fewer queries and has fewer examples per class — the same two things
+that make it the harder task.
+
+`classify.py` **is** seeded (`--seed`), because a phrasebook is one model per
+domain and ten models nobody can reproduce is a different problem.
 
 The ceiling line is worth keeping in view too: contradictory labels cap this
 data at 97.7%, so the last 2.3 points are a data problem, not a training one.

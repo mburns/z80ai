@@ -381,6 +381,17 @@ def resolve(name: str | None,
         # One expert's slice, plus the catch-all so it can decline politely.
         intents = DOMAINS[domain] + ['oos']
         return {i: REPLIES[i] for i in intents}, None
+    if name == 'smalltalk-phrasebook':
+        # The smalltalk intents, answered from the phrase table instead of
+        # spelled. Measured against the character decoder on the same 19
+        # labels and the same split: 88.0% macro against 80.7%, and the spread
+        # over three training seeds is 1.1 points, so the gain is not the seed.
+        #
+        # The same comparison on tinychat's 11 replies finds nothing: its
+        # spread is 7.9 points and the decoder sits inside it. What the
+        # classifier head saves is the capacity a decoder spends spelling, so
+        # it pays in proportion to how much reply vocabulary there is to spell.
+        return {i: REPLIES[i] for i in RECIPES['smalltalk']}, None
     if name == 'clinc150':
         return dict(REPLIES), None
     if name == 'clinc-router':
@@ -400,7 +411,8 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument('--recipe', default='smalltalk',
-                        choices=[*sorted(RECIPES), 'clinc150', 'clinc-router'])
+                        choices=[*sorted(RECIPES), 'clinc150', 'clinc-router',
+                                 'smalltalk-phrasebook'])
     parser.add_argument('--domain', choices=sorted(DOMAINS),
                         help='Emit one domain expert\'s training file instead '
                              'of a recipe (fifteen intents plus the catch-all)')

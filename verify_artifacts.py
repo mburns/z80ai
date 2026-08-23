@@ -47,13 +47,15 @@ ARTIFACTS = {
     "TALK.TAP": ("examples/smalltalk/model.npz", "zx"),
     "TALK.bin": ("examples/smalltalk/model.npz", "agon"),
     "CLINC.bin": ("examples/clinc150/model.npz", "agon-phrasebook"),
+    "TALK-PHR.bin": ("examples/smalltalk/phrasebook.npz", "agon-phrasebook"),
 }
 
 #: Artifacts that need a companion file on the SD card to run at all. Kept
 #: beside ARTIFACTS rather than folded into it because two tests iterate that
 #: dict and expect two-tuples.
 COMPANIONS = {
-    "CLINC.bin": "PHRASES.DAT",
+    "CLINC.bin": "CLINC.DAT",
+    "TALK-PHR.bin": "TALK-PHR.DAT",
 }
 
 
