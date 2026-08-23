@@ -314,6 +314,65 @@ def test_an_unknown_intent_is_rejected(subset):
         subset.build({"not_a_real_intent": "NOPE"})
 
 
+# --- tinychat's canonicalized vocabulary -------------------------------------
+
+
+@pytest.fixture(scope="session")
+def canon(repo_root):
+    sys.path.insert(0, os.path.join(repo_root, "examples", "tinychat"))
+    import canonicalize as module
+
+    return module
+
+
+def test_tinychat_data_matches_its_mapping(canon, examples_dir):
+    """The shipped file must be what canonicalize.py produces from the source."""
+    generated, _dropped, _unmapped, _tally = canon.build()
+    shipped = libdata.read_files(
+        [os.path.join(examples_dir, "tinychat", "training-data.txt.gz")]
+    )
+    assert generated == shipped, "training-data.txt.gz is stale; regenerate it"
+
+
+def test_every_source_reply_is_mapped_or_deliberately_dropped(canon):
+    """No reply may fall through the rules by accident.
+
+    The mapping is 500-odd judgement calls; the guard is that none of them is
+    an oversight.
+    """
+    unmapped = {r for _, r in canon.load_source() if canon.canonical(r) is None
+                and not canon.DROP.match(r)}
+    assert unmapped == {"MOSTLY"}, f"unmapped replies: {sorted(unmapped)}"
+
+
+def test_canonical_vocabulary_is_small_and_shares_letters(canon):
+    pairs, *_ = canon.build()
+    replies = {r for _, r in pairs}
+    assert replies <= set(canon.VOCAB), "a reply escaped the vocabulary"
+    assert len(replies) <= 25
+    assert len(libdata.build_charset(pairs)) <= 25, "charset too wide"
+
+
+def test_canonicalized_data_is_clean(canon):
+    """The whole point: no contradictions, no duplicates, nothing dominant."""
+    pairs, *_ = canon.build()
+    assert libdata.contradictions(pairs) == {}
+    assert libdata.accuracy_ceiling(pairs) == 1.0
+    assert len(pairs) == len({q for q, _ in pairs})
+
+    counts = Counter(r for _, r in pairs)
+    assert max(counts.values()) / len(pairs) < 0.25
+    # Nothing so rare it cannot be learned.
+    assert min(counts.values()) / len(pairs) > 0.01
+
+
+def test_short_queries_are_dropped(canon):
+    """Two-character queries collide in 128 buckets while wanting different
+    replies, so they are unlearnable however much data there is."""
+    pairs, *_ = canon.build()
+    assert min(len(q) for q, _ in pairs) >= canon.MIN_QUERY_LEN
+
+
 def test_the_shipped_datasets_parse(examples_dir):
     """Whatever else is wrong with them, they must still load."""
     for example in ("guess", "tinychat"):

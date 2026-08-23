@@ -37,12 +37,14 @@ GOLDEN = {
     # unrolled column-major one - 23x fewer instructions for 2.6x the size.
     "GUESS.bin": (buildez80, "guess",
                   "8eb986d2c73574344be128c66a9a71e08727bcc948d4afe8d35451f35c3db751"),
+    # Changed when tinychat's 502 replies were collapsed onto a 21-word
+    # vocabulary; the model is retrained on the canonicalized data.
     "CHAT.COM": (buildz80com, "tinychat",
-                 "d7acba3d23bd5ed94e5028855f01d82fff918766bd2907c8b9c3ae1499c4cd70"),
+                 "22b53d001ac679633aa2490229af91303b4d3dfa569d2251210a81e8b6847e7c"),
     "CHAT-FAST.COM": (buildfastz80com, "tinychat",
-                      "7f471c0ef59450d2f501b2f5998444f0d5495ce34545ec0eccc9f4c00f8203b1"),
+                      "124e15d11ace998b3f669af6f2cbd3b705a689ba42018ad2c0709dfcc8ef7b6d"),
     "CHAT.bin": (buildez80, "tinychat",
-                 "b625752319916915e15091e38562c6be10e4aef932ac0f269cd365159fa62cba"),
+                 "f97df19f7e07d2c979a2ce981294b9823836625227591ca114bd78e52e50287a"),
     "TALK.COM": (buildz80com, "smalltalk",
                  "75842adb7a8ec135d54f71bc082aaf4fef62691def1306ed4242f59808353e51"),
     "TALK-FAST.COM": (buildfastz80com, "smalltalk",
@@ -59,7 +61,7 @@ GOLDEN_TAP = {
     "GUESS.TAP": ("guess",
                   "f357b874901daec1f8ced9df2b0ff529471eef04a7d1256165d232ad48b46d86"),
     "CHAT.TAP": ("tinychat",
-                 "0287509b474133e1d57abdf76796d43a91d343559dc1055f67832ea0b113e59c"),
+                 "2283521cbd6d343ae870a560c0386eca66177d066de448b44d30abef049f9f09"),
     "TALK.TAP": ("smalltalk",
                  "4db2e3f77b05b85165cee46fc16151cfa4a615a81b059ac8b2b5d9f647d58213"),
 }

@@ -30,12 +30,13 @@ The two numbers that matter most are the ones nobody counts:
 decoder — a model with four responses is doing four-way classification however
 many lines you feed it. Each additional response costs capacity, and each
 additional *character* costs 128 output weights and forces a full retrain to
-add. `tinychat` has 502 responses and a 40-character charset; it is fighting the
-architecture.
+add. `tinychat` used to have 502 responses and a 40-character charset, which is
+how a dataset fights the architecture; it is down to 21 and 23.
 
 **The accuracy ceiling.** If the same query appears with two different
-responses, no model can be right about both. `tinychat` is capped at 87.0% and
-`guess` at 97.8% before training starts. Without this number a model that has
+responses, no model can be right about both. `guess` is capped at 97.8% before
+training starts, and `tinychat` was capped at 87.0% until its replies were
+canonicalized. Without this number a model that has
 learned everything learnable looks like it is underperforming, and the fix looks
 like "train longer" when it is "fix the data".
 
@@ -81,7 +82,7 @@ Held-out, whole responses, on the shipped models:
 |---|---:|---:|---:|
 | `examples/smalltalk/` | 3.5% / 5.3% | 59.4% / 62.1% | **80.6% / 80.7%** |
 | `examples/guess/` | 57.7% / 25.0% | 76.6% / 48.4% | **81.3% / 86.5%** |
-| `examples/tinychat/` | 8.5% / 0.9% | 10.5% / 1.6% | 33.8% / 10.7% |
+| `examples/tinychat/` | 20.4% / 5.0% | 20.9% / 6.2% | 28.4% / 26.6% |
 
 Each cell is **overall / macro**, and the difference between them is the point.
 Overall weights every pair equally, so a dominant answer inflates it: `guess` is
@@ -98,9 +99,28 @@ Read `guess` with that in mind. On overall the keyword table looks close —
 | keyword table | 99.3% | 46.1% | 48.2% | **0.0%** |
 | model | 80.6% | 71.0% | 94.5% | **100%** |
 
-`tinychat` is the row to worry about: 33.8% overall and 10.7% macro. Its 502
-responses defeat the table too, but a model that gets two answers in three wrong
-is not doing the job either.
+`tinychat` is the row to worry about. Collapsing its 502 replies onto 21 lifted
+macro from 10.7% to 26.6% and made the data sound — no contradictions, no
+duplicates, a 100% ceiling — but overall barely moved, and it clears a constant
+guesser by only eight points.
+
+Two numbers explain why, and `lint.py` now prints both:
+
+| | examples per response | phrasing redundancy |
+|---|---:|---:|
+| `examples/smalltalk/` | 149 | 0.74 |
+| `examples/guess/` | 7,180 | 0.58 |
+| `examples/tinychat/` | 96 | 0.54 |
+
+**Phrasing redundancy** is how similar each query is to the nearest other query
+wanting the same answer — how many ways the data says each thing. A model
+generalizes by seeing one intent phrased several times. `smalltalk` gets 149
+crowdsourced paraphrases per answer. `guess` has only moderate redundancy but
+7,180 examples per answer to compensate. `tinychat` has neither: its queries are
+hand-written one-offs, so there is little to generalize *from*.
+
+A clean vocabulary is necessary and not sufficient. Volume without redundancy
+does not help either — what a model needs is the *same thing said several ways*.
 
 So look for tasks where **being approximately right is acceptable** — where a
 "wrong" answer still reads as a plausible one. `guess` (four answers to
