@@ -111,6 +111,20 @@ class Model:
     #: model because a build that tokenizes differently from training produces
     #: confident nonsense rather than an error.
     position_bands: int = FLAT
+    #: The libdata.split_pairs seed this model was held out from, if it recorded
+    #: one. Scoring against a different split silently counts training pairs as
+    #: held-out; data/baseline.py warns when the two disagree.
+    split_seed: int | None = None
+    #: Replies this model selects between, when it is a phrasebook classifier
+    #: rather than a character decoder. One forward pass picks an index into
+    #: this list; the text is never spelled, so it costs the model nothing and
+    #: lives on the SD card rather than in the weights. None means the model is
+    #: a character decoder and ``charset`` is what decodes its output.
+    phrases: list[str] | None = None
+    #: Accumulator width the model was trained for: 16 on a Z80, 24 on an eZ80.
+    #: Carried so a scorer does not have to guess from the target it happens to
+    #: be building for.
+    accum_bits: int = 16
 
     @property
     def num_layers(self) -> int:
@@ -134,13 +148,19 @@ class Model:
 
     @classmethod
     def from_params(cls, params: dict, charset: str,
-                    position_bands: int = FLAT) -> Model:
+                    position_bands: int = FLAT,
+                    split_seed: int | None = None,
+                    phrases: list[str] | None = None,
+                    accum_bits: int = 16) -> Model:
         names = layer_names(params)
         return cls(
             weights=[np.asarray(params[f"{n}_weight"], dtype=np.int32) for n in names],
             biases=[np.asarray(params[f"{n}_bias"], dtype=np.int32) for n in names],
             charset=charset,
             position_bands=position_bands,
+            split_seed=split_seed,
+            phrases=phrases,
+            accum_bits=accum_bits,
         )
 
     @classmethod
@@ -149,16 +169,27 @@ class Model:
 
         params, arch, charset = load_model_params(path)
         return cls.from_params(params, charset,
-                               arch.get("position_bands", FLAT))
+                               arch.get("position_bands", FLAT),
+                               arch.get("split_seed"),
+                               arch.get("phrases"),
+                               arch.get("accum_bits", 16))
 
     def architecture(self) -> dict:
         sizes = self.layer_sizes
-        return {
+        arch = {
             "input_size": sizes[0],
             "hidden_sizes": sizes[1:-1],
             "num_classes": sizes[-1],
             "position_bands": self.position_bands,
+            "split_seed": self.split_seed,
+            "accum_bits": self.accum_bits,
         }
+        # Rides in the architecture dict rather than its own npz key so that
+        # loadmodel.load_model_params keeps its three-value signature and every
+        # builder keeps working unchanged.
+        if self.phrases is not None:
+            arch["phrases"] = list(self.phrases)
+        return arch
 
     def encode_query(self, text: str) -> np.ndarray:
         """Tokenize a query the way this model was trained to expect."""
@@ -413,6 +444,25 @@ def generate(
         out.append(ch)
         ctx_chars = (ctx_chars + _lower(ch))[-CONTEXT_LEN:]
     return "".join(out)
+
+
+def classify_index(model: Model, query: str, accum_bits: int = 16) -> int:
+    """The phrase index one forward pass over the query buckets selects.
+
+    The whole of a phrasebook model's inference: no context, no autoregression,
+    no EOS.  There is nothing for a context window to condition on when the
+    entire answer is chosen in one step, so the input is the 128 query buckets
+    alone and the second half of the character model's input vector does not
+    exist.  That is also why layer one is half the size.
+    """
+    return argmax(forward(model, model.encode_query(query), accum_bits))
+
+
+def classify(model: Model, query: str, accum_bits: int = 16) -> str:
+    """The reply a phrasebook model selects. Mirrors PRINT_PHRASE."""
+    if model.phrases is None:
+        raise ValueError("model has no phrasebook; use generate() instead")
+    return model.phrases[classify_index(model, query, accum_bits)]
 
 
 # --- weight packing ----------------------------------------------------------
