@@ -167,6 +167,13 @@ Trade-offs:
 - **Deeper layers** → Better feature extraction, but diminishing returns
 - **Fewer layers** → Faster inference, less expressive
 
+**Word order:** by default the query encoder is order-insensitive - the same
+trigram hashes the same way wherever it appears - which is why paraphrases work
+so well and why `PUT KEY IN BOX` and `PUT BOX IN KEY` look nearly identical to
+it. `--position-bands 8` makes it order-aware. That is a large win when order
+carries meaning and a measurable loss when it does not, so it is off by default;
+see [ENCODING.md](ENCODING.md) for both numbers before turning it on.
+
 **Layer width limits:** the Z80 backends count neurons in the `B` register, so
 `DJNZ` caps a layer at 256. Anything wider builds only for eZ80
 (`buildez80.py`), which terminates each neuron with a sentinel instead of

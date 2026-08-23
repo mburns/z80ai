@@ -50,6 +50,7 @@ fastest version that fits.
 
 import numpy as np
 
+import libinfer
 import libnn
 from buildz80com import (
     BDOS,
@@ -120,7 +121,8 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
 
     # Load model (supports both .pt and .npz formats)
     print(f"Loading model from {model_path}...")
-    params, _arch, charset = load_model_params(model_path)
+    params, arch, charset = load_model_params(model_path)
+    position_bands = arch.get('position_bands', libinfer.FLAT)
 
     eos_idx = len(charset) - 1
     num_chars = len(charset)
@@ -484,8 +486,8 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ld_mem_label_a('RESULT')
     b.ret()
 
-    libnn.emit_tokenizer(b, plat)
-    libnn.emit_tok_hash(b, plat)
+    libnn.emit_tokenizer(b, plat, position_bands)
+    libnn.emit_tok_hash(b, plat, position_bands)
 
     # === DATA ===
     # Character table (dynamic size based on charset)
@@ -497,7 +499,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     # INFER parks the stack pointer here while it walks the weights with POP.
     b.label('SPSAV')
     b.dw(0)
-    libnn.emit_engine_variables(b)
+    libnn.emit_engine_variables(b, position_bands)
 
     # Chat mode buffer (BDOS function 10 format)
     b.label('CHATBUF')

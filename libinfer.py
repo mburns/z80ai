@@ -40,11 +40,39 @@ def hash16(chars: str, seed: int = 0) -> int:
     return h
 
 
-def trigram_encode(text: str, num_buckets: int = NUM_BUCKETS) -> np.ndarray:
+#: Characters per position band. A power of two so the Z80 gets the band with
+#: shifts rather than a divide.
+BAND_WIDTH = 8
+#: Seed multiplier per band, matching the context encoder's ``pos * 7``.
+BAND_SEED = 7
+#: Default number of position bands. One band means every trigram hashes the
+#: same way wherever it appears, which is what every model before this existed
+#: with, so it stays the default.
+FLAT = 1
+
+
+def position_band(index: int, bands: int) -> int:
+    """Which position band the trigram starting at ``index`` belongs to.
+
+    Bands are fixed-width and clamped, not proportional to the query length:
+    ``index >> 3`` is three shifts on a Z80, whereas a proportional band would
+    need a multiply and a divide in the tokenizer's inner loop.
+    """
+    return min(index // BAND_WIDTH, bands - 1)
+
+
+def trigram_encode(
+    text: str, num_buckets: int = NUM_BUCKETS, position_bands: int = FLAT
+) -> np.ndarray:
     """Encode a query into trigram-hash buckets, exactly as TOKENIZE does.
 
     The query is treated as if padded with a space at each end, so a query of
     n characters contributes n trigrams.
+
+    With ``position_bands > 1`` each trigram's hash is seeded by where in the
+    query it appears, so reordered words no longer land in the same buckets.
+    That makes the encoding order-sensitive, which is what a command parser
+    needs and what a paraphrase-matcher does not - see ENCODING.md.
     """
     vec = np.zeros(num_buckets, dtype=np.int32)
     text = text.lstrip(" ")
@@ -53,7 +81,9 @@ def trigram_encode(text: str, num_buckets: int = NUM_BUCKETS) -> np.ndarray:
     chars = [_lower(c) for c in text]
     padded = [" ", *chars, " "]
     for i in range(len(padded) - 2):
-        vec[hash16("".join(padded[i : i + 3])) % num_buckets] += BUCKET_WEIGHT
+        seed = position_band(i, position_bands) * BAND_SEED if position_bands > 1 else 0
+        bucket = hash16("".join(padded[i : i + 3]), seed=seed) % num_buckets
+        vec[bucket] += BUCKET_WEIGHT
     return vec
 
 
@@ -77,6 +107,10 @@ class Model:
     weights: list[np.ndarray]
     biases: list[np.ndarray]
     charset: str
+    #: Position bands the query encoder was trained with. Carried with the
+    #: model because a build that tokenizes differently from training produces
+    #: confident nonsense rather than an error.
+    position_bands: int = FLAT
 
     @property
     def num_layers(self) -> int:
@@ -99,7 +133,8 @@ class Model:
         return [self.input_size] + [int(w.shape[0]) for w in self.weights]
 
     @classmethod
-    def from_params(cls, params: dict, charset: str) -> Model:
+    def from_params(cls, params: dict, charset: str,
+                    position_bands: int = FLAT) -> Model:
         names = sorted(
             {k.replace("_weight", "").replace("_bias", "") for k in params},
             key=lambda n: int(n[2:]),
@@ -108,14 +143,16 @@ class Model:
             weights=[np.asarray(params[f"{n}_weight"], dtype=np.int32) for n in names],
             biases=[np.asarray(params[f"{n}_bias"], dtype=np.int32) for n in names],
             charset=charset,
+            position_bands=position_bands,
         )
 
     @classmethod
     def load(cls, path: str) -> Model:
         from loadmodel import load_model_params
 
-        params, _arch, charset = load_model_params(path)
-        return cls.from_params(params, charset)
+        params, arch, charset = load_model_params(path)
+        return cls.from_params(params, charset,
+                               arch.get("position_bands", FLAT))
 
     def architecture(self) -> dict:
         sizes = self.layer_sizes
@@ -123,7 +160,12 @@ class Model:
             "input_size": sizes[0],
             "hidden_sizes": sizes[1:-1],
             "num_classes": sizes[-1],
+            "position_bands": self.position_bands,
         }
+
+    def encode_query(self, text: str) -> np.ndarray:
+        """Tokenize a query the way this model was trained to expect."""
+        return trigram_encode(text, position_bands=self.position_bands)
 
     def save_npz(self, path: str) -> None:
         out: dict[str, np.ndarray] = {}
@@ -213,7 +255,7 @@ def generate(
     model: Model, query: str, max_len: int = MAX_OUTPUT_LEN, accum_bits: int = 16
 ) -> str:
     """Autoregressively generate a response, exactly as GENERATE does."""
-    query_vec = trigram_encode(query)
+    query_vec = model.encode_query(query)
     ctx_chars = " " * CONTEXT_LEN
     out: list[str] = []
     for _ in range(max_len):

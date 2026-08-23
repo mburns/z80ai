@@ -77,12 +77,14 @@ class TrigramEncoder:
     the network's first layer absorbs.
     """
 
-    def __init__(self, num_buckets: int = 128) -> None:
+    def __init__(self, num_buckets: int = 128,
+                 position_bands: int = libinfer.FLAT) -> None:
         self.num_buckets = num_buckets
+        self.position_bands = position_bands
 
     def encode(self, text: str) -> np.ndarray:
         """Encode text into bucket counts (raw counts, Z80-compatible)."""
-        vec = libinfer.trigram_encode(text, self.num_buckets)
+        vec = libinfer.trigram_encode(text, self.num_buckets, self.position_bands)
         return vec.astype(np.float32) / libinfer.BUCKET_WEIGHT
 
 
@@ -341,7 +343,8 @@ def parse_hidden_sizes(spec: str) -> list[int]:
 
 def train_chunked(chunk_size: int = 1000, epochs_per_chunk: int = 100, lr: float = 0.01,
                   save_best: bool = False, hidden_sizes: list[int] | None = None,
-                  checkpoint_file: str = 'command_model_autoreg.pt'):
+                  checkpoint_file: str = 'command_model_autoreg.pt',
+                  position_bands: int = libinfer.FLAT):
     """Train incrementally on chunks of data from stdin."""
     global CHARSET, CHAR_TO_IDX, IDX_TO_CHAR, EOS_IDX, NUM_CHARS
     import sys
@@ -374,7 +377,8 @@ def train_chunked(chunk_size: int = 1000, epochs_per_chunk: int = 100, lr: float
     NUM_CHARS = len(CHARSET)
     print(f"Charset ({NUM_CHARS} chars): {CHARSET[:-1]!r} + EOS")
 
-    query_encoder = TrigramEncoder(num_buckets=128)
+    query_encoder = TrigramEncoder(num_buckets=128,
+                                   position_bands=position_bands)
     context_encoder = ContextEncoder(num_buckets=128, context_len=8)
     if hidden_sizes is None:
         hidden_sizes = [256, 192, 128]
@@ -496,6 +500,7 @@ def train_chunked(chunk_size: int = 1000, epochs_per_chunk: int = 100, lr: float
                 'input_size': 256,
                 'hidden_sizes': hidden_sizes,
                 'num_classes': NUM_CHARS,
+                'position_bands': position_bands,
             },
             'charset': CHARSET,
             'total_epochs': total_epochs,
@@ -527,6 +532,9 @@ if __name__ == '__main__':
                         help='Training data file (default: stdin)')
     parser.add_argument('--chunk', '-c', type=int, default=0,
                         help='Chunk size for streaming (0 = one chunk)')
+    parser.add_argument('--position-bands', type=int, default=libinfer.FLAT,
+                        help='Position bands for the query encoder (1 = flat, '
+                             'order-insensitive; 8 makes it order-aware)')
     parser.add_argument('--save-best', action='store_true',
                         help='Save best model instead of latest')
     parser.add_argument('--hidden-sizes', type=str, default='256,192,128',
@@ -549,6 +557,7 @@ if __name__ == '__main__':
         save_best=args.save_best,
         hidden_sizes=hidden_sizes,
         checkpoint_file=args.output,
+        position_bands=args.position_bands,
     )
 
     # Interactive chat session
