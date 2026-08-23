@@ -36,7 +36,14 @@ def export_model(model_path: str, output_path: str) -> None:
 
     # Model owns the .npz layout, so the exporter and libinfer.Model.save_npz
     # cannot disagree about where the metadata goes.
-    model = Model.from_params(params, charset, arch.get('position_bands', FLAT))
+    #
+    # split_seed has to be carried across explicitly: feedme records which
+    # held-out split the model was trained against, and dropping it here would
+    # leave data/baseline.py unable to tell that it is scoring the wrong split -
+    # which is the whole reason the seed is recorded.
+    model = Model.from_params(params, charset,
+                              arch.get('position_bands', FLAT),
+                              arch.get('split_seed'))
     model.save_npz(output_path)
     print(f"Exported to {output_path}")
 
