@@ -138,6 +138,13 @@ def main() -> None:
         print(f"\nWrote {len(tap):,} bytes to {args.output}")
     else:
         builder.save(args.output)
+        # A phrasebook build produces two files: the binary and the replies it
+        # loads from the card. Writing them together is what keeps the offset
+        # table and the text it indexes in step.
+        if getattr(builder, "phrase_blob", b""):
+            import buildez80
+
+            buildez80.write_phrase_file(builder, args.output)
 
     size = len(builder.code)
     print(f"Target: {target}  layout: {layout}  size: {size:,} bytes "
