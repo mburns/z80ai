@@ -43,6 +43,12 @@ GOLDEN = {
                       "788d571fd54bf0aa459732428ecc84c62d48038bc03466d4de3e2309ab106e6e"),
     "CHAT.bin": (buildez80, "tinychat",
                  "b625752319916915e15091e38562c6be10e4aef932ac0f269cd365159fa62cba"),
+    "TALK.COM": (buildz80com, "smalltalk",
+                 "75842adb7a8ec135d54f71bc082aaf4fef62691def1306ed4242f59808353e51"),
+    "TALK-FAST.COM": (buildfastz80com, "smalltalk",
+                      "f30502d84d4b69518faed0a1ea5735dbbbcb37c02d1b5b4867ca0ae5fa96dc33"),
+    "TALK.bin": (buildez80, "smalltalk",
+                 "6efec989a6d3bb11af1c3f3846b0a98ebe26b0a4b80e9f48ce725e29d6b740b2"),
 }
 
 # The .TAP hashes cover the container, not the raw image, so they are checked
@@ -54,6 +60,8 @@ GOLDEN_TAP = {
                   "f357b874901daec1f8ced9df2b0ff529471eef04a7d1256165d232ad48b46d86"),
     "CHAT.TAP": ("tinychat",
                  "0287509b474133e1d57abdf76796d43a91d343559dc1055f67832ea0b113e59c"),
+    "TALK.TAP": ("smalltalk",
+                 "4db2e3f77b05b85165cee46fc16151cfa4a615a81b059ac8b2b5d9f647d58213"),
 }
 
 

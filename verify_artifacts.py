@@ -40,6 +40,10 @@ ARTIFACTS = {
     "CHAT-FAST.COM": ("examples/tinychat/model.npz", "cpm"),
     "CHAT.TAP": ("examples/tinychat/model.npz", "zx"),
     "CHAT.bin": ("examples/tinychat/model.npz", "agon"),
+    "TALK.COM": ("examples/smalltalk/model.npz", "cpm"),
+    "TALK-FAST.COM": ("examples/smalltalk/model.npz", "cpm"),
+    "TALK.TAP": ("examples/smalltalk/model.npz", "zx"),
+    "TALK.bin": ("examples/smalltalk/model.npz", "agon"),
 }
 
 

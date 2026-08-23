@@ -1,9 +1,12 @@
 # Training data
 
 ```bash
-python data/lint.py examples/guess/training-data.txt.gz
+python data/lint.py examples/guess/training-data.txt.gz      # is the data sound?
+python data/baseline.py examples/guess/training-data.txt.gz  # does it need a model?
 python data/lint.py my-data.txt --strict     # exits non-zero if anything is flagged
 ```
+
+Vendored source data lives in [clinc150/](clinc150/).
 
 ## Check the data before you train it
 
@@ -56,6 +59,22 @@ But:
 Both numbers say the same thing: on a task with a correct answer, write the
 parser. The model's only edge was fuzzy matching on unseen words, and it was not
 good enough to use.
+
+`data/baseline.py` makes that question routine — it builds a keyword table from
+the training half and scores it on the same held-out split, so you can see what
+the model is actually adding:
+
+| | majority answer | keyword table | model |
+|---|---:|---:|---:|
+| `examples/smalltalk/` | 3.5% | 59.4% | **96.7%** |
+| `examples/guess/` | 57.7% | 76.6% | **94.1%** |
+| `examples/tinychat/` | 8.5% | 10.5% | 61.0% |
+
+Read those rows carefully. `smalltalk` is the clean case: real phrasings, a word
+list gets nowhere near, the model earns its 39KB. `guess` is genuinely learned
+but a keyword table already gets three quarters of the way. `tinychat`'s table
+scores 10.5% because 502 responses defeat it — but the model only reaches 61%,
+so the task is beating both.
 
 So look for tasks where **being approximately right is acceptable** — where a
 "wrong" answer still reads as a plausible one. `guess` (four answers to

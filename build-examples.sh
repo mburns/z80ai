@@ -17,7 +17,7 @@ PYTHON="${PYTHON:-python3}"
 
 mkdir -p "$OUT"
 
-for example in guess:GUESS tinychat:CHAT; do
+for example in guess:GUESS tinychat:CHAT smalltalk:TALK; do
     model="examples/${example%%:*}/model.npz"
     name="${example##*:}"
 
