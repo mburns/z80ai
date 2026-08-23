@@ -31,7 +31,10 @@ from libinfer import CONTEXT_LEN, MAX_OUTPUT_LEN, NUM_BUCKETS, trigram_encode
 MAX_LABEL_SHARE = 0.40      # no response should dominate more than this
 MIN_LABEL_SHARE = 0.01      # below this a class is too rare to learn
 MAX_RESPONSES = 50          # distinct responses a 2-bit model handles well
-MAX_RESPONSE_LEN = 12       # characters; longer is slower and harder
+# Advisory, and deliberately not named MAX_RESPONSE_LEN: libdata has one of
+# those, and it is the hard limit at which a response is truncated (50). This
+# is the point past which a response is merely slow.
+SLOW_RESPONSE_LEN = 12      # characters; longer is slower and harder
 MAX_CONTRADICTION_RATE = 0.05
 
 
@@ -151,11 +154,11 @@ def report(pairs: list[tuple[str, str]]) -> list[str]:
             f"it caps accuracy at {accuracy_ceiling(pairs):.1%}. e.g. {detail}"
         )
 
-    long_responses = {r for _, r in pairs if len(r) > MAX_RESPONSE_LEN}
+    long_responses = {r for _, r in pairs if len(r) > SLOW_RESPONSE_LEN}
     if long_responses:
         shown = ', '.join(repr(r) for r in sorted(long_responses)[:4])
         problems.append(
-            f"{len(long_responses)} response(s) longer than {MAX_RESPONSE_LEN} "
+            f"{len(long_responses)} response(s) longer than {SLOW_RESPONSE_LEN} "
             f"characters ({shown}). Every character is another forward pass."
         )
 
