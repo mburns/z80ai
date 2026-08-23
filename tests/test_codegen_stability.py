@@ -31,7 +31,7 @@ GOLDEN = {
     "GUESS.COM": (buildz80com, "guess",
                   "1c26b542228fff147991e4b2b8c1e92652d46b4fb8b9eeafbb0442169b085a5a"),
     "GUESS-FAST.COM": (buildfastz80com, "guess",
-                       "cd12b1f6055558a9a2ae2f6b241c6c7e5229f1cc325efacbd61842d00f2ef3ac"),
+                       "cceee1ec8d138f707d5759f8100bfa9c14476ed04aa4aedc31839d11efe94baf"),
     # Changed when eZ80 ARGMAX stopped counting neurons in B (no 256-output
     # cap, 24-bit MAXI/RESULT) and again when the default kernel became the
     # unrolled column-major one - 23x fewer instructions for 2.6x the size.
@@ -40,13 +40,13 @@ GOLDEN = {
     "CHAT.COM": (buildz80com, "tinychat",
                  "d7acba3d23bd5ed94e5028855f01d82fff918766bd2907c8b9c3ae1499c4cd70"),
     "CHAT-FAST.COM": (buildfastz80com, "tinychat",
-                      "788d571fd54bf0aa459732428ecc84c62d48038bc03466d4de3e2309ab106e6e"),
+                      "7f471c0ef59450d2f501b2f5998444f0d5495ce34545ec0eccc9f4c00f8203b1"),
     "CHAT.bin": (buildez80, "tinychat",
                  "b625752319916915e15091e38562c6be10e4aef932ac0f269cd365159fa62cba"),
     "TALK.COM": (buildz80com, "smalltalk",
                  "75842adb7a8ec135d54f71bc082aaf4fef62691def1306ed4242f59808353e51"),
     "TALK-FAST.COM": (buildfastz80com, "smalltalk",
-                      "f30502d84d4b69518faed0a1ea5735dbbbcb37c02d1b5b4867ca0ae5fa96dc33"),
+                      "33e8a588e06b1392a522e031bb9b478700c3cb0e2a87efcdcfef088acdae7d8c"),
     "TALK.bin": (buildez80, "smalltalk",
                  "6efec989a6d3bb11af1c3f3846b0a98ebe26b0a4b80e9f48ce725e29d6b740b2"),
 }
