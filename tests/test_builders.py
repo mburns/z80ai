@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
+import buildcolz80com
 import buildfastz80com
 import buildz80com
 import buildz80tap
@@ -51,16 +53,17 @@ def images(tiny_model_path):
     return {
         "com": buildz80com.build_autoreg(tiny_model_path),
         "fast": buildfastz80com.build_autoreg(tiny_model_path),
+        "col": buildcolz80com.build_autoreg(tiny_model_path),
         "tap": buildz80tap.build_autoreg(tiny_model_path),
     }
 
 
-@pytest.mark.parametrize("target", ["com", "fast", "tap"])
+@pytest.mark.parametrize("target", ["com", "fast", "col", "tap"])
 def test_build_resolves_all_fixups(images, target):
     images[target].build()  # raises on an unresolved or out-of-range label
 
 
-@pytest.mark.parametrize("target", ["com", "fast"])
+@pytest.mark.parametrize("target", ["com", "fast", "col"])
 def test_com_fits_in_the_transient_program_area(images, target):
     builder = images[target]
     end = builder.org + len(builder.build())
@@ -99,7 +102,7 @@ def test_builder_refuses_an_image_that_would_not_load(guess_model_path):
         buildz80tap.build_autoreg(guess_model_path, org=0x8000)
 
 
-@pytest.mark.parametrize("target", ["com", "fast", "tap"])
+@pytest.mark.parametrize("target", ["com", "fast", "col", "tap"])
 def test_expected_entry_points_exist(images, target):
     labels = images[target].labels
     for name in ("START", "GENERATE", "ARGMAX", "TOKENIZE", "UPDATE_CTX", "CHARTBL"):
@@ -118,9 +121,34 @@ def test_packed_weights_are_embedded_verbatim(images, tiny_model):
     builder = images["com"]
     image = builder.build()
     for i, w in enumerate(tiny_model.weights, start=1):
-        base = builder.labels[f"WTS{i}"] - builder.org
-        expected = libinfer.pack_2bit(w, "rotated")
-        assert image[base : base + len(expected)] == expected
+        # Layer 1 is split: WTS1Q holds the query-half columns PREQ walks once
+        # per query, WTS1 the context-half columns walked per character.
+        if i == 1:
+            wq, wc = libinfer.split_query_half(w)
+            parts = [("WTS1Q", wq), ("WTS1", wc)]
+        else:
+            parts = [(f"WTS{i}", w)]
+        for label, part in parts:
+            base = builder.labels[label] - builder.org
+            expected = libinfer.pack_2bit(part, "rotated")
+            assert image[base : base + len(expected)] == expected
+
+
+def test_split_layer_one_reconstructs_the_trained_matrix(images, tiny_model):
+    """The two halves in the image must be the layer-1 matrix, nothing lost."""
+    builder = images["com"]
+    image = builder.build()
+    w = tiny_model.weights[0]
+    rows, cols = w.shape
+    half = cols // 2
+    halves = []
+    for label, width in (("WTS1Q", half), ("WTS1", cols - half)):
+        base = builder.labels[label] - builder.org
+        size = rows * libinfer.row_stride(width)
+        halves.append(
+            libinfer.unpack_2bit(image[base : base + size], (rows, width), "rotated")
+        )
+    np.testing.assert_array_equal(np.hstack(halves), w)
 
 
 def test_biases_are_embedded_as_little_endian_words(images, tiny_model):

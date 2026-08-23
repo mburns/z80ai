@@ -78,6 +78,16 @@ class Z80Builder:
         self.fixups.append((len(self.code), label, 'rel', 0))
         self.emit(0)
 
+    def fixup_page(self, label: str) -> None:
+        """Emit a placeholder byte for a 256-aligned label's page number.
+
+        Selecting a buffer by loading its page into ``H`` only works if the
+        buffer really is page-aligned, so this checks that when it resolves
+        rather than silently addressing 256 bytes of something else.
+        """
+        self.fixups.append((len(self.code), label, 'page', 0))
+        self.emit(0)
+
     def resolve(self) -> None:
         """Apply all fixups"""
         for offset, label, ftype, addend in self.fixups:
@@ -95,6 +105,13 @@ class Z80Builder:
                 if rel < -128 or rel > 127:
                     raise ValueError(f"Relative jump out of range: {label} = {rel}")
                 self.code[offset] = rel & 0xFF
+            elif ftype == 'page':
+                if target & 0xFF:
+                    raise ValueError(
+                        f"{label} is at {target:#06x}, not page-aligned, so its "
+                        f"page number does not address it"
+                    )
+                self.code[offset] = (target >> 8) & 0xFF
 
     def build(self) -> bytes:
         """Resolve fixups and return the finished image."""
@@ -186,25 +203,25 @@ class Z80Builder:
         self.emit(0x31)
         self.fixup_word(label)
 
-    def ld_hl_label(self, label: str) -> None:
+    def ld_hl_label(self, label: str, addend: int = 0) -> None:
         self.emit(0x21)
-        self.fixup_word(label)
+        self.fixup_word(label, addend)
 
-    def ld_bc_label(self, label: str) -> None:
+    def ld_bc_label(self, label: str, addend: int = 0) -> None:
         self.emit(0x01)
-        self.fixup_word(label)
+        self.fixup_word(label, addend)
 
-    def ld_de_label(self, label: str) -> None:
+    def ld_de_label(self, label: str, addend: int = 0) -> None:
         self.emit(0x11)
-        self.fixup_word(label)
+        self.fixup_word(label, addend)
 
-    def ld_ix_label(self, label: str) -> None:
+    def ld_ix_label(self, label: str, addend: int = 0) -> None:
         self.emit(0xDD, 0x21)
-        self.fixup_word(label)
+        self.fixup_word(label, addend)
 
-    def ld_iy_label(self, label: str) -> None:
+    def ld_iy_label(self, label: str, addend: int = 0) -> None:
         self.emit(0xFD, 0x21)
-        self.fixup_word(label)
+        self.fixup_word(label, addend)
 
     def ld_a_n(self, val: int) -> None: self.emit(0x3E, _byte(val))
     def ld_b_n(self, val: int) -> None: self.emit(0x06, _byte(val))
@@ -273,7 +290,16 @@ class Z80Builder:
     def ld_ixd_h(self, d: int) -> None: self.emit(0xDD, 0x74, d & 0xFF)  # LD (IX+d),H
     def ld_iyd_l(self, d: int) -> None: self.emit(0xFD, 0x75, d & 0xFF)  # LD (IY+d),L
     def ld_iyd_h(self, d: int) -> None: self.emit(0xFD, 0x74, d & 0xFF)  # LD (IY+d),H
+    def ld_a_ixd(self, d: int) -> None: self.emit(0xDD, 0x7E, _disp(d))  # LD A,(IX+d)
     def ld_a_iyd(self, d: int) -> None: self.emit(0xFD, 0x7E, _disp(d))  # LD A,(IY+d)
+    def ld_l_iyd(self, d: int) -> None: self.emit(0xFD, 0x6E, _disp(d))  # LD L,(IY+d)
+    def ld_iyd_d(self, d: int) -> None: self.emit(0xFD, 0x72, _disp(d))  # LD (IY+d),D
+    def ld_iyd_e(self, d: int) -> None: self.emit(0xFD, 0x73, _disp(d))  # LD (IY+d),E
+
+    def ld_h_page(self, label: str) -> None:
+        """LD H,<page of a 256-aligned label>: select a buffer with one byte."""
+        self.emit(0x26)
+        self.fixup_page(label)
     def ld_iyd_a(self, d: int) -> None: self.emit(0xFD, 0x77, _disp(d))  # LD (IY+d),A
 
     def ld_sp_hl(self) -> None: self.emit(0xF9)
@@ -343,6 +369,12 @@ class Z80Builder:
     def add_a_e(self) -> None: self.emit(0x83)
     def sub_l(self) -> None: self.emit(0x95)
     def sub_h(self) -> None: self.emit(0x94)
+    def sub_e(self) -> None: self.emit(0x93)
+    def sbc_a_d(self) -> None: self.emit(0x9A)
+    def or_e(self) -> None: self.emit(0xB3)
+    def ld_c_hl(self) -> None: self.emit(0x4E)  # LD C,(HL)
+    def sra_d(self) -> None: self.emit(0xCB, 0x2A)
+    def rr_e(self) -> None: self.emit(0xCB, 0x1B)
     def sub_a_hl(self) -> None: self.emit(0x96)
     def sbc_a_hl(self) -> None: self.emit(0x9E)
     def sub_hl_ind(self) -> None: self.emit(0x96)  # SUB (HL)

@@ -42,7 +42,9 @@ the bytes.
 | `test_packing.py` | Both 2-bit weight layouts round-trip; every neuron starts on a byte boundary |
 | `test_encoders.py` | Trigram/context hashing against an independent restatement of the spec |
 | `test_kernels.py` | Emulator memory vs. reference, value by value: tokenizer buckets, context buckets, output logits |
-| `test_end_to_end.py` | Generated text from all three Z80 targets vs. the reference |
+| `test_end_to_end.py` | Generated text from every Z80 target vs. the reference, and the three CP/M layouts against each other |
+| `test_column_kernel.py` | The column-major CP/M kernel: record layout, per-layer activations, and which columns it skips |
+| `test_hoisting.py` | That folding layer 1's query half into its bias is bit-identical, in NumPy and in the emitted code |
 | `test_ez80.py` | ADL encoding, the Agon header, and the same numeric comparisons for the eZ80 |
 | `test_ez80_kernels.py` | All three eZ80 kernels against the reference *and* against each other, plus the flooring/ReLU boundary, the active-column list, and kernel selection |
 | `test_ez80_argmax.py` | That the output layer is scanned in full however wide it is |
@@ -93,6 +95,11 @@ produce a byte-identical `OUTBUF`. Three independently generated programs
 agreeing exactly is very hard to achieve by accident, and it stays meaningful
 for models where writing down the expected answer by hand would not.
 
+The CP/M side now has the same property. `test_all_cpm_builds_agree` runs the
+packed, row-major and column-major builds on the same model and requires
+identical output; those three share their tokenizer and their argmax and
+essentially nothing else.
+
 ## When a correct test is not enough
 
 Some optimizations are invisible to correctness tests, because getting them
@@ -106,6 +113,12 @@ the answer. The second exists because the first missed the case: it used a
 natural model, and the only way a neuron reaches the shift and still comes out
 zero is a pre-shift accumulator in `[0, 3]` — ReLU catches everything more
 negative earlier. That band has to be arranged deliberately.
+`test_column_kernel.py` repeats both for the CP/M kernel.
+
+The query-half hoisting has the same shape of risk in reverse: running PREQ once
+per *character* instead of once per query would still be correct, just as slow as
+before. `test_preq_runs_once_per_response_not_once_per_character` checks where
+the call is, not what it computes.
 
 If an optimization can regress without failing anything, it needs a test that
 looks at the mechanism, not the output.
@@ -119,5 +132,5 @@ few million. The shipped examples are covered by the `slow`-marked tests.
 To time a target rather than check it:
 
 ```bash
-python bench.py --model examples/guess/model.npz --target com fast ez80
+python bench.py --model examples/guess/model.npz --target com fast col ez80
 ```

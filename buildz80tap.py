@@ -220,11 +220,19 @@ def build_autoreg(
 
     validate_z80_layers(layer_sizes)
 
-    packed_weights = [pack_2bit_weights(params[f"{n}_weight"]) for n in layer_names]
+    # Layer 1's query-half columns go into their own stream so PREQ can walk
+    # them once per query instead of once per generated character; see
+    # libinfer.forward_hoisted for why folding them into the bias is exact.
+    w1q, w1c = libinfer.split_query_half(params[f"{layer_names[0]}_weight"])
+    packed_query = pack_2bit_weights(w1q)
+    packed_weights = [pack_2bit_weights(w1c)] + [
+        pack_2bit_weights(params[f"{n}_weight"]) for n in layer_names[1:]
+    ]
     biases = [params[f"{n}_bias"] for n in layer_names]
 
     plat = ZXPlatform()
-    plans = libnn.plan_layers(layer_sizes, plat.buffer)
+    plans = libnn.plan_layers(layer_sizes, plat.buffer, hoist_query=True)
+    qplan = libnn.query_plan(layer_sizes, plat.buffer)
     b = Z80Builder(org=org)
 
     # === Entry ===
@@ -269,7 +277,7 @@ def build_autoreg(
 
     # === Shared engine ===
     libnn.emit_generate(b, plat, eos_idx, max_output_len,
-                        libnn.emit_layered_inference(plans))
+                        libnn.emit_layered_inference(plans), hoist_query=True)
     libnn.emit_printch(b, plat)
     libnn.emit_update_ctx(b, plat)
     libnn.emit_encode_ctx(b, plat)
@@ -277,6 +285,8 @@ def build_autoreg(
     libnn.emit_clear_ctx(b, plat)
     libnn.emit_layer_dispatch(b, plans)
     libnn.emit_layer(b)
+    libnn.emit_query_dispatch(b, qplan)
+    libnn.emit_layer(b, name="QLAYER", prefix="Q", scale=False)
     libnn.emit_muladd(b)
     libnn.emit_relu(b, plans)
     libnn.emit_argmax(b, output_size)
@@ -292,8 +302,9 @@ def build_autoreg(
     b.label("INPBUF")
     b.ds(MAX_INPUT_LEN)
 
-    libnn.emit_buffers(b, plat, layer_sizes)
+    libnn.emit_buffers(b, plat, layer_sizes, hoist_query=True)
     libnn.emit_weights(b, packed_weights, biases)
+    libnn.emit_query_weights(b, packed_query)
 
     # A .TAP whose image runs past FFFFh cannot load on any Spectrum, so refuse
     # to emit one rather than shipping a tape that fails halfway through.

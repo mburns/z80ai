@@ -175,16 +175,23 @@ system variables) or train a narrower model.
 Measured with `bench.py`, which runs the build in an emulator and counts cycles.
 For the shipped 256→256→192→128→11 model on a 3.5 MHz Z80:
 
-- **Inference**: 26,843,795 T-states per character — about **7.7 seconds**
-- **Total response**: roughly 7.7 seconds × the number of characters emitted
+- **Inference**: 20,698,833 T-states per character — about **5.9 seconds**
+- **Total response**: roughly 5.9 seconds × the number of characters emitted,
+  plus one `PREQ` pass per query costing about as much as one more character
 
 The ZX build shares its inner loop with the CP/M one (`libnn.emit_layer`). It
 used to carry its own slower copy, which cost 36% more instructions per
 character and was where the `MULADD` borrow bug survived a first fix.
 
-The CP/M `buildfastz80com.py` index-list layout is around 9x quicker again; it
-has not been ported to the ZX build, where the 40,960-byte ceiling makes the
-extra size hard to afford.
+It also shares the query-half hoisting: only the context half of the input
+changes while a response is generated, so `PREQ` folds layer 1's query columns
+into its bias once per query. That is worth 1.30× per character here, for 643
+more bytes of the 40,960 available.
+
+The CP/M index-list layouts are much quicker again — 9x for `buildfastz80com.py`
+and 24x for the column-major `buildcolz80com.py` — but neither has been ported
+to the ZX build, where the 40,960-byte ceiling makes the extra size hard to
+afford: the column layout of the shipped `guess` model alone is 47,872 bytes.
 
 ### Compatibility
 

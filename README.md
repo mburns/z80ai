@@ -78,7 +78,8 @@ Get running in under 5 minutes:
 
 **3. Run:**
 
-- **CP/M**: `iz-cpm CHAT.COM`
+- **CP/M**: `iz-cpm CHAT.COM` — or `CHAT-COL.COM`, the same model with the
+  fastest weight layout (24x quicker per character, 8KB larger)
 - **ZX Spectrum**: `fuse --tape CHAT.TAP`, then `CLEAR 24575`, `LOAD "" CODE` and `RANDOMIZE USR 24576`
 - **Agon Light / eZ80**: copy `CHAT.bin` to the SD card and run it by name
 
@@ -96,8 +97,9 @@ python build.py --model examples/guess/model.npz --target ez80 --output GUESS.bi
 ```
 
 The individual builders (`buildz80com.py`, `buildfastz80com.py`,
-`buildz80tap.py`, `buildez80.py`) still work standalone if you want a specific
-layout.
+`buildcolz80com.py`, `buildz80tap.py`, `buildez80.py`) still work standalone if
+you want a specific layout, as does `--target cpm-column`, `cpm-fast` or
+`cpm-packed`.
 
 ## Features
 
@@ -117,9 +119,13 @@ layout.
 
 Z80-μLM runs on multiple Z80-based platforms:
 
-- **CP/M**: Original target platform. Generates `.COM` files using `buildz80com.py`
-  (packed weights) or `buildfastz80com.py` (index lists, ~9x faster, slightly larger)
-  - Both share their code generator with the ZX build; see `libnn.py`
+- **CP/M**: Original target platform. Generates `.COM` files three ways, and
+  `build.py` picks the fastest that fits the TPA
+  - `buildz80com.py` — packed weights, 2 bits each. Always fits
+  - `buildfastz80com.py` — an index list per weight value, per neuron. ~9x faster
+  - `buildcolz80com.py` — index lists per input *column*, so zero activations
+    are skipped as well as zero weights. ~24x faster, about 3KB larger
+  - All three share their engine with the ZX build; see `libnn.py`
 - **ZX Spectrum 48K**: Full support via `buildz80tap.py`. See [ZX-SPECTRUM.md](ZX-SPECTRUM.md) for details
   - Generates `.TAP` files for emulators or real hardware
   - Uses ZX Spectrum ROM routines for I/O
@@ -142,16 +148,17 @@ costs. For the shipped 256→256→192→128→11 `guess` model:
 
 | target | size | instructions | Z80 T-states | seconds |
 |---|---|---|---|---|
-| CP/M, packed weights | 38,920 | 3,004,037 | 26,843,795 | 6.71 @ 4 MHz |
-| CP/M, index lists | 43,520 | 319,515 | 1,992,905 | 0.50 @ 4 MHz |
-| ZX Spectrum | 38,949 | 3,004,037 | 26,843,795 | 7.67 @ 3.5 MHz |
+| CP/M, packed weights | 39,563 | 2,313,383 | 20,698,833 | 5.17 @ 4 MHz |
+| CP/M, index lists | 44,800 | 256,473 | 1,598,895 | 0.40 @ 4 MHz |
+| CP/M, column-major | 47,872 | 95,243 | 758,657 | **0.19 @ 4 MHz** |
+| ZX Spectrum | 39,592 | 2,313,383 | 20,698,833 | 5.91 @ 3.5 MHz |
 | Agon eZ80, byte stream | 146,626 | 923,194 | — | — |
 | Agon eZ80, unrolled | 251,997 | 90,340 | — | — |
-| Agon eZ80, column-major | 384,397 | 39,605 | — | — |
+| Agon eZ80, column-major | 389,300 | 38,012 | — | — |
 
 ```bash
 python bench.py --model examples/guess/model.npz \
-                --target com fast ez80-compact ez80-row ez80
+                --target com fast col ez80-compact ez80-row ez80
 ```
 
 eZ80 T-states are omitted rather than quoted misleadingly: its per-instruction
@@ -165,6 +172,66 @@ takes the work from 37,865 multiply-accumulates down to 8,192. All three produce
 byte-identical output — that equality is the main thing
 [the tests](TESTING.md) check. `--target ez80` picks the fastest one that fits
 in Agon SRAM. See [EZ80.md](EZ80.md).
+
+### Column-major: skipping zero activations, not just zero weights
+
+The index-list layout walks each neuron's nonzero weights, which skips the ~73%
+of the model that is zero and nothing else. The *activations* are sparser than
+the weights — measured over the shipped models the input vector is ~17% nonzero
+and the hidden layers 14–45% — and a row-major kernel cannot exploit that,
+because which activations are zero changes with every character emitted.
+
+Turning the loop inside out fixes that. Each input column owns the list of
+neurons its weights reach, so a layer runs only the columns whose activation is
+nonzero:
+
+```
+for each active column c:              # about a fifth of them
+    x = act[c]
+    for each nonzero weight w[j][c]:
+        acc[j] += w * x
+```
+
+That takes one forward pass from 37,940 multiply-accumulates to 8,474. The
+accumulator has to move from a register into memory, so each one costs more
+instructions — worth it because most of them never happen. Net: **2.9× fewer
+instructions, 2.1× fewer T-states**, for about 3KB more.
+
+This is the same transformation the eZ80 `column` kernel makes, but without
+16MB to unroll into: at ~10 bytes of code per weight, unrolling this model would
+need 378KB. So the weights stay data and the inner loop walks them with `IY`.
+
+`build.py --target auto` now picks it whenever it fits the TPA, falling back
+through the index lists to packed weights. Release builds ship all three
+(`NAME.COM`, `NAME-FAST.COM`, `NAME-COL.COM`) and the tests check that they
+agree character for character — three independently generated programs reaching
+one answer is a stronger signal than any of them matching a reference alone.
+
+### The query half is computed once, not once per character
+
+The input vector is 128 query buckets followed by 128 context buckets, and only
+the context half changes while a response is being generated. So layer 1's
+contribution from the query is a constant for the whole response, and `PREQ`
+computes it once and hands it to layer 1 as its bias.
+
+This is exact, not an approximation. The accumulator is a sum modulo 2¹⁶ (2²⁴ on
+the eZ80) and addition mod 2ⁿ is associative, so regrouping the addends cannot
+change a bit — the same argument [EZ80.md](EZ80.md) makes for reordering the
+sum. What may *not* move is the `>>2`, which floors, so `PREQ` stops short of it.
+
+| target | before | after | per character |
+|---|---:|---:|---:|
+| CP/M, packed weights | 3,004,037 | 2,313,383 | **1.30×** |
+| CP/M, index lists | 318,417 | 256,473 | **1.24×** |
+| Agon eZ80, column-major | 41,565 | 35,774 | **1.16×** |
+
+The packed builds gain most because they walk every weight including the zeros,
+and layer 1's query half is 32,768 of the model's 140,672 weights. Measured on a
+30-character query; a shorter one activates fewer query buckets and gains less.
+`PREQ` itself costs roughly what one character used to, so a one-character
+response breaks even and everything longer wins. The `ez80-compact` and
+`ez80-row` kernels are unchanged, and still agree with the column kernel
+byte for byte.
 
 ## Interaction Style
 

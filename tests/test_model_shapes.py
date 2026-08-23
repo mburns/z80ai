@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import buildcolz80com
 import buildfastz80com
 import buildz80com
 import buildz80tap
@@ -38,7 +39,7 @@ def test_validate_rejects_layers_the_z80_cannot_count():
         libinfer.validate_z80_layers([256, 300, 11])
 
 
-@pytest.mark.parametrize("module", [buildz80com, buildfastz80com, buildz80tap])
+@pytest.mark.parametrize("module", [buildz80com, buildfastz80com, buildcolz80com, buildz80tap])
 def test_builders_reject_oversized_models(module, tmp_path, model_factory):
     """Without this the neuron loop silently counts the wrong number of times."""
     model = model_factory([256, 300, 8], charset=" AB\x00", seed=31)

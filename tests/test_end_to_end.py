@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+import buildcolz80com
 import buildfastz80com
 import buildz80com
 import buildz80tap
@@ -39,6 +40,11 @@ def tiny_fast_com(tiny_model_path):
 
 
 @pytest.fixture(scope="module")
+def tiny_col_com(tiny_model_path):
+    return buildcolz80com.build_autoreg(tiny_model_path, max_output_len=GEN_LEN).build()
+
+
+@pytest.fixture(scope="module")
 def tiny_tap(tiny_model_path):
     return buildz80tap.build_autoreg(tiny_model_path, max_output_len=GEN_LEN).build()
 
@@ -54,6 +60,11 @@ def test_fast_com_matches_reference(tiny_fast_com, tiny_model, query):
 
 
 @pytest.mark.parametrize("query", QUERIES)
+def test_col_com_matches_reference(tiny_col_com, tiny_model, query):
+    assert cpm_reply(tiny_col_com, query) == libinfer.generate(tiny_model, query, GEN_LEN)
+
+
+@pytest.mark.parametrize("query", QUERIES)
 def test_tap_matches_reference(tiny_tap, tiny_model, query):
     image = tiny_tap
     out, _host = run_zx(image, stdin=[query, "!"], max_cycles=400_000_000)
@@ -62,15 +73,23 @@ def test_tap_matches_reference(tiny_tap, tiny_model, query):
     assert expected in out, f"{expected!r} not in {out!r}"
 
 
-def test_all_three_builds_agree(tiny_com, tiny_fast_com, tiny_model):
+def test_all_cpm_builds_agree(tiny_com, tiny_fast_com, tiny_col_com, tiny_model):
+    """Three independently generated programs, one answer.
+
+    This is the strongest signal available and it needs no reference model:
+    the packed, row-major and column-major kernels share almost no code, so
+    agreement between them is hard to reach by accident.
+    """
     for query in QUERIES:
         assert cpm_reply(tiny_com, query) == cpm_reply(tiny_fast_com, query)
+        assert cpm_reply(tiny_com, query) == cpm_reply(tiny_col_com, query)
 
 
+@pytest.mark.parametrize("module", [buildz80com, buildfastz80com, buildcolz80com])
 @pytest.mark.parametrize("query", QUERIES[:2])
-def test_layer_widths_not_multiple_of_four(odd_model_path, odd_model, query):
+def test_layer_widths_not_multiple_of_four(module, odd_model_path, odd_model, query):
     """Packed weights must stay aligned when a layer width isn't a multiple of 4."""
-    image = buildz80com.build_autoreg(odd_model_path, max_output_len=GEN_LEN).build()
+    image = module.build_autoreg(odd_model_path, max_output_len=GEN_LEN).build()
     assert cpm_reply(image, query) == libinfer.generate(odd_model, query, GEN_LEN)
 
 
@@ -88,8 +107,9 @@ def test_empty_query_is_handled(tiny_com, tiny_model):
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("module", [buildz80com, buildfastz80com, buildcolz80com])
 @pytest.mark.parametrize("query", ["IS IT AN ANIMAL", "HELLO"])
-def test_full_model_matches_reference(guess_model_path, query):
+def test_full_model_matches_reference(module, guess_model_path, query):
     model = libinfer.Model.load(guess_model_path)
-    image = buildz80com.build_autoreg(guess_model_path, max_output_len=4).build()
+    image = module.build_autoreg(guess_model_path, max_output_len=4).build()
     assert cpm_reply(image, query) == libinfer.generate(model, query, 4)

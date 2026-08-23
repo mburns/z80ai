@@ -78,14 +78,21 @@ class FastCPMPlatform(CPMPlatform):
     weight_layout = "index"
 
 
-def pack_weights_and_biases(weights: np.ndarray, biases: np.ndarray) -> bytes:
-    """Convert weights into index lists by weight and append bias after"""
-    """each node."""
+def pack_weights_and_biases(weights: np.ndarray, biases: np.ndarray,
+                            first_column: int = 0) -> bytes:
+    """Convert weights into index lists by weight and append bias after
+    each node.
+
+    ``first_column`` is added to every emitted index, so a matrix that has been
+    split by column still names positions in the full activation buffer. Layer
+    1's context half is packed with ``first_column=128`` for exactly that
+    reason: its inputs sit in the upper half of the buffer INFER indexes.
+    """
     wt_bias = []
     for n in range(0, weights.shape[0]):
         flat = np.clip(weights[n], -2, 1).astype(np.int8)
         for w in (-2, -1, 1):
-            indices = [i for i, v in enumerate(flat) if v == w]
+            indices = [i + first_column for i, v in enumerate(flat) if v == w]
             wt_bias.append(len(indices))
             wt_bias += indices
         bias_val = int(biases[n]) & 0xFFFF
@@ -115,6 +122,129 @@ def sum_wt_carry(b: Z80Builder, w: int) -> None:
         b.sbc_a_hl()
 
 
+def emit_split(b: Z80Builder) -> None:
+    """Emit SPLIT: copy interleaved 16-bit values into the split hi/lo buffers.
+
+    ``HL`` is the source, ``DE`` the destination; the loop ends when ``E`` wraps
+    to zero, so the caller picks the count by where in the page it starts. PREQ
+    copies all 256 activations, the per-character path only the 128 that
+    changed.
+    """
+    b.label('SPLIT')
+    b.ld_a_hl()
+    b.inc_hl()
+    b.ld_de_a()
+    b.ld_a_hl()
+    b.inc_hl()
+    b.inc_d()
+    b.ld_de_a()
+    b.dec_d()
+    b.inc_e()
+    b.jr_nz('SPLIT')
+    b.ret()
+
+
+def emit_preq(b: Z80Builder) -> None:
+    """Emit PREQ: fold layer 1's query-half columns into its per-neuron bias.
+
+    The query does not change while a response is generated, so this runs once
+    per query rather than once per character - about a fifth of the whole
+    forward pass for the shipped models. Folding a partial sum into the bias is
+    exact, not an approximation; see :func:`libinfer.forward_hoisted`.
+
+    QWTS holds the query-half index lists in the same per-neuron record shape
+    INFER uses, each ending with the model's *original* bias. PREQ walks it with
+    ``IX`` while ``PQB`` walks layer 1's records inside NETWORK, whose bias
+    slots it overwrites. Keeping the two streams in lockstep is what lets INFER
+    stay byte-for-byte what it was: the hot loop never learns that any of this
+    happened.
+
+    ``DE`` accumulates, ``HL`` indexes the split activation buffer, ``B`` counts
+    the current list. Cold code - it runs once per query, so it is written for
+    clarity rather than for cycles.
+    """
+    b.label('PREQ')
+    b.ld_hl_label('INBUF')
+    b.ld_de_label('BUF_A')
+    b.call('SPLIT')
+
+    b.ld_ix_label('QWTS')
+    b.ld_hl_label('L1REC')
+    b.ld_mem_label_hl('PQB')
+    b.ld_a_mem_label('L1SIZE')  # zero means 256, which DEC A counts correctly
+    b.ld_mem_label_a('PQN')
+
+    b.label('PQ_NEUR')
+    b.ld_de_nn(0)
+    b.ld_hl_label('BUF_A')  # H selects the low page; L is set per index
+
+    for w in (-2, -1, 1):
+        tag = w + 2
+        b.ld_a_ixd(0)
+        b.inc_ix()
+        b.or_a()
+        b.jr_z(f'PQ_SKIP{tag}')
+        b.ld_b_a()
+
+        b.label(f'PQ_LOOP{tag}')
+        b.ld_a_ixd(0)
+        b.inc_ix()
+        b.ld_l_a()
+        for _ in range(2 if w == -2 else 1):
+            if w > 0:
+                b.ld_a_hl()
+                b.add_a_e()
+                b.ld_e_a()
+                b.inc_h()
+                b.ld_a_hl()
+                b.adc_a_d()
+            else:
+                b.ld_a_e()
+                b.sub_a_hl()
+                b.ld_e_a()
+                b.inc_h()
+                b.ld_a_d()
+                b.sbc_a_hl()
+            b.ld_d_a()
+            b.dec_h()
+        b.djnz(f'PQ_LOOP{tag}')
+
+        b.label(f'PQ_SKIP{tag}')
+
+    # The record's own bias is the model's BIAS1, kept here because the slot it
+    # used to live in is now PREQ's output and gets overwritten every query.
+    b.ld_a_ixd(0)
+    b.inc_ix()
+    b.add_a_e()
+    b.ld_e_a()
+    b.ld_a_ixd(0)
+    b.inc_ix()
+    b.adc_a_d()
+    b.ld_d_a()
+
+    # Step over this neuron's three lists in NETWORK to reach its bias slot.
+    b.ld_hl_mem_label('PQB')
+    for tag in range(3):
+        b.ld_a_hl()
+        b.inc_hl()
+        b.add_a_l()
+        b.ld_l_a()
+        b.jr_nc(f'PQ_NC{tag}')
+        b.inc_h()
+        b.label(f'PQ_NC{tag}')
+    b.ld_hl_e()
+    b.inc_hl()
+    b.ld_hl_d()
+    b.inc_hl()
+    b.ld_mem_label_hl('PQB')
+
+    b.ld_a_mem_label('PQN')
+    b.dec_a()
+    b.ld_mem_label_a('PQN')
+    b.jp_nz('PQ_NEUR')
+    b.ret()
+
+
 def build_autoreg(model_path: str = 'command_model_autoreg.pt',
                   max_output_len: int = MAX_OUTPUT_LEN) -> Z80Builder:
     """Build the autoregressive inference .COM"""
@@ -142,9 +272,22 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
 
     validate_z80_layers(layer_sizes)
 
+    libnn.validate_hoistable(layer_sizes)
+
+    # Layer 1 is split by column. The query half goes into QWTS, which PREQ
+    # walks once per query; the context half stays in NETWORK with its indices
+    # unchanged, since they already name the upper half of the activation
+    # buffer INFER indexes. NETWORK's layer-1 bias slots are PREQ's output, so
+    # they start at zero and the real BIAS1 travels with QWTS.
+    w1 = params[f'{layer_names[0]}_weight']
+    w1q, w1c = libinfer.split_query_half(w1)
+    bias1 = params[f'{layer_names[0]}_bias']
+    query_weights = pack_weights_and_biases(w1q, bias1)
     weights_biases = [
+        pack_weights_and_biases(w1c, np.zeros_like(bias1), libnn.NUM_BUCKETS)
+    ] + [
         pack_weights_and_biases(params[f'{name}_weight'], params[f'{name}_bias'])
-        for name in layer_names
+        for name in layer_names[1:]
     ]
 
     plat = FastCPMPlatform()
@@ -222,26 +365,18 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
 
     # === GENERATE: Main generation loop ===
     b.label('GENERATE')
+    b.call('PREQ')  # once per response: the query half cannot change during one
     b.ld_a_n(max_output_len)
     b.ld_mem_label_a('GENCNT')
 
     b.label('GENLOOP')
 
-    # Copy INBUF to BUF_A, splitting values as we go
-
-    b.ld_hl_label('INBUF')
-    b.ld_de_label('BUF_A')
-    b.label('INTOA')
-    b.ld_a_hl()
-    b.inc_hl()
-    b.ld_de_a()
-    b.ld_a_hl()
-    b.inc_hl()
-    b.inc_d()
-    b.ld_de_a()
-    b.dec_d()
-    b.inc_e()
-    b.jr_nz('INTOA')
+    # Copy the context half of INBUF into BUF_A, splitting values as we go.
+    # Only the context half: layer 1 no longer reads the query half at all, and
+    # BUF_A's lower half is scratch for a later layer by the time it matters.
+    b.ld_hl_label('INBUF', libnn.CONTEXT_OFFSET)
+    b.ld_de_label('BUF_A', libnn.NUM_BUCKETS)
+    b.call('SPLIT')
 
     # Run inference through all layers
     b.ld_hl_label('NETWORK')
@@ -267,6 +402,10 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ld_mem_label_a('GENCNT')
     b.jr_nz('GENLOOP')
     b.ret()
+
+    # === Query-half hoisting ===
+    emit_split(b)
+    emit_preq(b)
 
     # === Shared engine: printing, context encoding, tokenizing ===
     libnn.emit_printch(b, plat)
@@ -503,6 +642,11 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     # INFER parks the stack pointer here while it walks the weights with POP.
     b.label('SPSAV')
     b.dw(0)
+    # PREQ's cursor into NETWORK's layer-1 records, and its neuron countdown.
+    b.label('PQB')
+    b.dw(0)
+    b.label('PQN')
+    b.db(0)
     libnn.emit_engine_variables(b, position_bands)
 
     # Chat mode buffer (BDOS function 10 format)
@@ -517,8 +661,17 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.db(num_layers)
     # Weights and biases
     for i in range(num_layers):
+        if i == 0:
+            b.label('L1SIZE')
         b.db(layer_sizes[i + 1])
-        b.db(*weights_biases[i])
+        if i == 0:
+            b.label('L1REC')  # PREQ walks these records to find the bias slots
+        b.blob(weights_biases[i])
+
+    # Layer 1's query-half records, walked once per query by PREQ. Same shape as
+    # a NETWORK layer, minus the leading size byte PREQ reads from L1SIZE.
+    b.label('QWTS')
+    b.blob(query_weights)
 
     # Buffers
     b.align(256)

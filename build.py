@@ -2,19 +2,22 @@
 """
 One front-end for every build target, with automatic selection.
 
-There are two ways to lay out the weights for a Z80:
+There are three ways to lay out the weights for a Z80:
 
   packed  two bits per weight, four to a byte. Always fits, but the inner loop
-          spends most of its time unpacking - about 27 million T-states per
+          spends most of its time unpacking - about 21 million T-states per
           generated character for the shipped examples.
-  fast    an index list per weight value. Roughly 75% of trained weights are
-          zero and cost nothing at all, so it is around 13x quicker, but the
-          index lists are larger and a model with fewer zeros may not fit.
+  fast    an index list per weight value, one list per neuron. Roughly 75% of
+          trained weights are zero and cost nothing at all, so it is around 13x
+          quicker, but the index lists are larger and a model with fewer zeros
+          may not fit.
+  column  the same index lists, but per input column rather than per neuron, so
+          a zero *activation* costs nothing either. The activations are sparser
+          than the weights, which is worth another 2.9x for about 3KB more.
 
-`--target auto` (the default) builds the fast layout and falls back to packed
-only if the result would overrun the transient program area. That is the choice
-you want almost every time, and it is what buildfastz80com.py's own header
-asked for.
+`--target auto` (the default) takes the fastest layout that fits the transient
+program area, falling back through fast to packed. That is the choice you want
+almost every time.
 
 The eZ80 target applies the same fastest-that-fits policy to its own three
 kernels:
@@ -54,24 +57,37 @@ def _fits_in_tpa(builder: Z80Builder) -> bool:
     return builder.org + len(builder.build()) + CPM_STACK_MARGIN <= CPM_TPA_TOP
 
 
+#: CP/M weight layouts, fastest first. `auto` takes the first one that fits.
+CPM_LAYOUTS = ("column", "fast", "packed")
+
+
 def build_cpm(model: str, max_output_len: int,
               prefer: str = "auto") -> tuple[Z80Builder, str]:
     """Build a CP/M .COM, choosing the fastest weight layout that fits."""
+    import buildcolz80com
     import buildfastz80com
     import buildz80com
 
-    if prefer == "packed":
-        return buildz80com.build_autoreg(model, max_output_len=max_output_len), "packed"
+    modules = {
+        "column": buildcolz80com,
+        "fast": buildfastz80com,
+        "packed": buildz80com,
+    }
+    if prefer != "auto":
+        builder = modules[prefer].build_autoreg(model, max_output_len=max_output_len)
+        return builder, prefer
 
-    fast = buildfastz80com.build_autoreg(model, max_output_len=max_output_len)
-    if prefer == "fast" or _fits_in_tpa(fast):
-        return fast, "fast"
-
-    print(
-        f"\nFast layout needs {len(fast.build()):,} bytes and will not fit the "
-        f"TPA; falling back to packed weights."
-    )
-    return buildz80com.build_autoreg(model, max_output_len=max_output_len), "packed"
+    for layout in CPM_LAYOUTS:
+        builder = modules[layout].build_autoreg(model, max_output_len=max_output_len)
+        # Packed is the backstop: it always fits, so it is taken unconditionally
+        # rather than leaving the loop with nothing to return.
+        if layout == CPM_LAYOUTS[-1] or _fits_in_tpa(builder):
+            return builder, layout
+        print(
+            f"\n{layout} layout needs {len(builder.build()):,} bytes and will "
+            f"not fit the TPA; trying the next one down."
+        )
+    raise AssertionError("unreachable: the packed layout is the backstop")
 
 
 def build_zx(model: str, max_output_len: int) -> tuple[Z80Builder, str]:
@@ -98,9 +114,9 @@ def main() -> None:
                         help="Model file to load (.npz or .pt)")
     parser.add_argument("--output", "-o", required=True, help="Output file")
     parser.add_argument("--target", "-t", default="auto",
-                        choices=["auto", "cpm", "cpm-fast", "cpm-packed", "zx",
-                                 "ez80", "ez80-column", "ez80-row",
-                                 "ez80-compact"],
+                        choices=["auto", "cpm", "cpm-column", "cpm-fast",
+                                 "cpm-packed", "zx", "ez80", "ez80-column",
+                                 "ez80-row", "ez80-compact"],
                         help="Platform and weight layout (default: auto = cpm)")
     parser.add_argument("--max-output-len", type=int, default=50,
                         help="Maximum characters generated per response")
@@ -109,10 +125,9 @@ def main() -> None:
     target = args.target
     if target in ("auto", "cpm"):
         builder, layout = build_cpm(args.model, args.max_output_len, "auto")
-    elif target == "cpm-fast":
-        builder, layout = build_cpm(args.model, args.max_output_len, "fast")
-    elif target == "cpm-packed":
-        builder, layout = build_cpm(args.model, args.max_output_len, "packed")
+    elif target.startswith("cpm-"):
+        builder, layout = build_cpm(args.model, args.max_output_len,
+                                    target.split("-", 1)[1])
     elif target == "zx":
         builder, layout = build_zx(args.model, args.max_output_len)
     else:

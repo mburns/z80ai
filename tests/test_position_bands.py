@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import buildcolz80com
 import buildez80
 import buildfastz80com
 import buildz80com
@@ -153,7 +154,8 @@ def test_a_banded_build_answers_reordered_queries_differently(banded_model_path,
 
 
 @pytest.mark.parametrize(
-    "module", [buildz80com, buildz80tap, buildfastz80com, buildez80]
+    "module",
+    [buildz80com, buildz80tap, buildfastz80com, buildcolz80com, buildez80],
 )
 def test_every_backend_honours_the_band_setting(banded_model_path, module):
     """A backend that ignored it would build a model that tokenizes wrongly."""
@@ -162,7 +164,8 @@ def test_every_backend_honours_the_band_setting(banded_model_path, module):
 
 
 @pytest.mark.parametrize(
-    "module", [buildz80com, buildz80tap, buildfastz80com, buildez80]
+    "module",
+    [buildz80com, buildz80tap, buildfastz80com, buildcolz80com, buildez80],
 )
 def test_flat_models_emit_no_position_machinery(tiny_model_path, module):
     flat = module.build_autoreg(tiny_model_path, max_output_len=1)

@@ -102,11 +102,20 @@ def build_autoreg(
 
     validate_z80_layers(layer_sizes)
 
-    packed_weights = [pack_2bit_weights(params[f"{n}_weight"]) for n in layer_names]
+    # Layer 1's query-half columns are split off into their own stream: the
+    # query does not change while a response is being generated, so PREQ walks
+    # them once per query and hands layer 1 the result as its bias. Exact, not
+    # approximate - see libinfer.forward_hoisted.
+    w1q, w1c = libinfer.split_query_half(params[f"{layer_names[0]}_weight"])
+    packed_query = pack_2bit_weights(w1q)
+    packed_weights = [pack_2bit_weights(w1c)] + [
+        pack_2bit_weights(params[f"{n}_weight"]) for n in layer_names[1:]
+    ]
     biases = [params[f"{n}_bias"] for n in layer_names]
 
     plat = CPMPlatform()
-    plans = libnn.plan_layers(layer_sizes, plat.buffer)
+    plans = libnn.plan_layers(layer_sizes, plat.buffer, hoist_query=True)
+    qplan = libnn.query_plan(layer_sizes, plat.buffer)
     b = Z80Builder()
 
     # === Entry: a command tail means one query, no arguments means chat ===
@@ -168,7 +177,7 @@ def build_autoreg(
 
     # === Shared engine ===
     libnn.emit_generate(b, plat, eos_idx, max_output_len,
-                        libnn.emit_layered_inference(plans))
+                        libnn.emit_layered_inference(plans), hoist_query=True)
     libnn.emit_printch(b, plat)
     libnn.emit_update_ctx(b, plat)
     libnn.emit_encode_ctx(b, plat)
@@ -176,6 +185,8 @@ def build_autoreg(
     libnn.emit_clear_ctx(b, plat)
     libnn.emit_layer_dispatch(b, plans)
     libnn.emit_layer(b)
+    libnn.emit_query_dispatch(b, qplan)
+    libnn.emit_layer(b, name="QLAYER", prefix="Q", scale=False)
     libnn.emit_muladd(b)
     libnn.emit_relu(b, plans)
     libnn.emit_argmax(b, output_size)
@@ -195,8 +206,9 @@ def build_autoreg(
     b.label("CHATDAT")
     b.ds(CHAT_BUFFER_SIZE)
 
-    libnn.emit_buffers(b, plat, layer_sizes)
+    libnn.emit_buffers(b, plat, layer_sizes, hoist_query=True)
     libnn.emit_weights(b, packed_weights, biases)
+    libnn.emit_query_weights(b, packed_query)
 
     return b
 
