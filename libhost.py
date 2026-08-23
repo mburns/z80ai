@@ -15,6 +15,7 @@ silently reading zeroes.
 from __future__ import annotations
 
 import contextlib
+from typing import ClassVar
 
 # Entry points and memory maps come from the target modules rather than being
 # restated: the emulator's idea of where BDOS sits and the code generator's have
@@ -225,48 +226,184 @@ def run_zx(
 
 
 # --- Agon / eZ80 MOS ---------------------------------------------------------
+#
+# Function numbers and register conventions are from the MOS API reference,
+# https://agonplatform.github.io/agon-docs/mos/API/ - transcribed here rather
+# than remembered, following the same rule EZ80.md applies to opcode tables.
+#
+# Only mos_load is used by shipped code. The handle-based calls are implemented
+# so that a future streaming path has somewhere to land, and so that a build
+# script that reaches for one fails on a wrong argument rather than on "not
+# implemented" - but nothing calls them today.
 
 MOS_RST_OUTCHAR = 0x10
 MOS_RST_API = 0x08
-MOS_GETKEY = 0x00
+
+MOS_GETKEY = 0x00       # -> A = keycode
+MOS_LOAD = 0x01         # HL=filename, DE=address, BC=max size -> A=status, F=C
+MOS_FOPEN = 0x0A        # HL=filename, C=mode -> A=handle (0 = failed)
+MOS_FCLOSE = 0x0B       # C=handle
+MOS_FREAD = 0x1A        # C=handle, HL=buffer, DE=count -> DE=bytes read
+MOS_FLSEEK = 0x1C       # C=handle, HL=offset (low 24 bits), E=high byte
+
+FA_READ = 0x01
+
+#: Agon SRAM. A load outside this window would be discarded by the hardware or
+#: land in flash; the emulator's memory is a plain bytearray that would happily
+#: accept it, so the host is where that has to be caught.
+AGON_RAM_LO = 0x040000
+AGON_RAM_HI = 0x0C0000
 
 
 class AgonHost:
-    """eZ80 ADL-mode host implementing the two MOS entry points we use."""
+    """eZ80 ADL-mode host implementing the MOS entry points we use.
+
+    ``files`` is the SD card: a name -> bytes mapping, held in memory rather
+    than on disk so that a test states exactly which bytes were served, no test
+    needs a temporary directory, and there is no path-traversal surface to
+    think about.
+    """
 
     LOAD_ADDR = 0x040000
 
-    def __init__(self, stdin: list[str] | None = None, ram_size: int = 0x800000) -> None:
+    def __init__(self, stdin: list[str] | None = None, ram_size: int = 0x800000,
+                 files: dict[str, bytes] | None = None) -> None:
         self.cpu = Z80(adl=True, mem_size=ram_size)
         self.output: list[str] = []
         self.stdin = list(stdin or [])
         self.finished = False
+        #: name -> contents. Lookup is case-insensitive, like FAT.
+        self.files = {name.upper(): data for name, data in (files or {}).items()}
+        #: handle -> [name, position]. Handle 0 means failure, so start at 1.
+        self.handles: dict[int, list] = {}
+        #: Bytes served from the card. bench.py reports this rather than
+        #: pretending a hook that costs no T-states cost some.
+        self.io_bytes = 0
         self.cpu.hooks[MOS_RST_OUTCHAR] = self._out_char
         self.cpu.hooks[MOS_RST_API] = self._mos_api
         self.cpu.sp = 0x0BFF00
+
+    # --- memory helpers ------------------------------------------------------
+
+    def read_cstring(self, addr: int, limit: int = 256) -> str:
+        """A NUL-terminated filename out of emulated memory."""
+        out = bytearray()
+        for i in range(limit):
+            byte = self.cpu.peek((addr + i) & self.cpu.amask)
+            if byte == 0:
+                return out.decode('latin-1')
+            out.append(byte)
+        raise Z80Error(f"unterminated string at {addr:06X}")
+
+    def write_block(self, addr: int, data: bytes) -> None:
+        """Copy ``data`` into emulated RAM, refusing anything out of bounds.
+
+        Z80.load() grows its bytearray rather than failing, so without this a
+        file read to a wrong address would look perfectly fine in the emulator
+        and corrupt a real Agon. An emulator that cannot catch that is worse
+        than no emulator, because it says the binary is good.
+        """
+        end = addr + len(data)
+        if addr < AGON_RAM_LO or end > AGON_RAM_HI:
+            raise Z80Error(
+                f"load of {len(data)} bytes to {addr:06X} leaves Agon SRAM "
+                f"({AGON_RAM_LO:06X}-{AGON_RAM_HI - 1:06X})")
+        if end > len(self.cpu.mem):
+            raise Z80Error(f"load to {addr:06X} past the end of memory")
+        self.cpu.mem[addr:end] = data
+        self.io_bytes += len(data)
+
+    # --- MOS entry points ----------------------------------------------------
 
     def _out_char(self, cpu: Z80) -> bool:
         self.output.append(chr(cpu.a))
         cpu.pc = cpu._pop()
         return True
 
-    def _mos_api(self, cpu: Z80) -> bool:
-        fn = cpu.a
-        if fn == MOS_GETKEY:
-            if not self.stdin:
-                self.finished = True
-                cpu.halted = True
-                return True
-            line = self.stdin[0]
-            if line == "":
-                self.stdin.pop(0)
-                cpu.a = 13
-            else:
-                self.stdin[0] = line[1:]
-                cpu.a = ord(line[0])
+    def _getkey(self, cpu: Z80) -> bool:
+        if not self.stdin:
+            self.finished = True
+            cpu.halted = True
+            return False        # halted: do not pop a return address
+        line = self.stdin[0]
+        if line == "":
+            self.stdin.pop(0)
+            cpu.a = 13
         else:
-            raise Z80Error(f"unimplemented MOS API function {fn:02X}")
-        cpu.pc = cpu._pop()
+            self.stdin[0] = line[1:]
+            cpu.a = ord(line[0])
+        return True
+
+    def _load(self, cpu: Z80) -> bool:
+        """mos_load: whole file to an address, one call, no handle to leak."""
+        name = self.read_cstring(cpu.hl).upper()
+        data = self.files.get(name)
+        if data is None:
+            cpu.a = 4                       # FR_NO_FILE
+            return True
+        if len(data) > cpu.bc:
+            cpu.a = 5                       # would overrun the caller's buffer
+            return True
+        self.write_block(cpu.de, data)
+        cpu.a = 0                           # FR_OK
+        return True
+
+    def _fopen(self, cpu: Z80) -> bool:
+        name = self.read_cstring(cpu.hl).upper()
+        if (cpu.c & FA_READ) == 0:
+            raise Z80Error(f"mos_fopen mode {cpu.c:02X}: only reading is emulated")
+        if name not in self.files:
+            cpu.a = 0
+            return True
+        handle = next(i for i in range(1, 256) if i not in self.handles)
+        self.handles[handle] = [name, 0]
+        cpu.a = handle
+        return True
+
+    def _fclose(self, cpu: Z80) -> bool:
+        if cpu.c == 0:
+            self.handles.clear()
+        else:
+            self.handles.pop(cpu.c, None)
+        cpu.a = len(self.handles)
+        return True
+
+    def _fread(self, cpu: Z80) -> bool:
+        entry = self.handles.get(cpu.c)
+        if entry is None:
+            raise Z80Error(f"mos_fread on unopened handle {cpu.c}")
+        name, pos = entry
+        chunk = self.files[name][pos:pos + cpu.de]
+        self.write_block(cpu.hl, chunk)
+        entry[1] = pos + len(chunk)
+        cpu.de = len(chunk)
+        return True
+
+    def _flseek(self, cpu: Z80) -> bool:
+        entry = self.handles.get(cpu.c)
+        if entry is None:
+            raise Z80Error(f"mos_flseek on unopened handle {cpu.c}")
+        entry[1] = (cpu.hl & 0xFFFFFF) | (cpu.e << 24)
+        cpu.a = 0
+        return True
+
+    #: Dispatch on A. Anything absent raises, which is the property the module
+    #: docstring promises and the reason a typo fails loudly.
+    _API: ClassVar[dict] = {
+        MOS_GETKEY: _getkey,
+        MOS_LOAD: _load,
+        MOS_FOPEN: _fopen,
+        MOS_FCLOSE: _fclose,
+        MOS_FREAD: _fread,
+        MOS_FLSEEK: _flseek,
+    }
+
+    def _mos_api(self, cpu: Z80) -> bool:
+        handler = self._API.get(cpu.a)
+        if handler is None:
+            raise Z80Error(f"unimplemented MOS API function {cpu.a:02X}")
+        if handler(self, cpu):
+            cpu.pc = cpu._pop()
         return True
 
     def run(self, image: bytes, max_cycles: int = 2_000_000_000) -> str:
@@ -285,6 +422,7 @@ def run_agon(
     image: bytes,
     stdin: list[str] | None = None,
     max_cycles: int = 2_000_000_000,
+    files: dict[str, bytes] | None = None,
 ) -> tuple[str, AgonHost]:
-    host = AgonHost(stdin=stdin)
+    host = AgonHost(stdin=stdin, files=files)
     return host.run(image, max_cycles=max_cycles), host
