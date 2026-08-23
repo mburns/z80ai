@@ -181,12 +181,19 @@ class Model:
             "hidden_sizes": sizes[1:-1],
             "num_classes": sizes[-1],
             "position_bands": self.position_bands,
-            "split_seed": self.split_seed,
-            "accum_bits": self.accum_bits,
         }
-        # Rides in the architecture dict rather than its own npz key so that
-        # loadmodel.load_model_params keeps its three-value signature and every
-        # builder keeps working unchanged.
+        # These ride in the architecture dict rather than in npz keys of their
+        # own, so loadmodel.load_model_params keeps its three-value signature
+        # and every builder keeps working unchanged.
+        #
+        # Written only when they carry information. A model that records no
+        # split seed, accumulates in 16 bits and spells its own replies is
+        # every model that existed before phrasebooks, and its .npz should not
+        # grow three keys saying so.
+        if self.split_seed is not None:
+            arch["split_seed"] = self.split_seed
+        if self.accum_bits != 16:
+            arch["accum_bits"] = self.accum_bits
         if self.phrases is not None:
             arch["phrases"] = list(self.phrases)
         return arch
