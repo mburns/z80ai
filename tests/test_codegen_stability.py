@@ -22,10 +22,25 @@ import os
 import pytest
 
 import buildcolz80com
+import buildcpc
 import buildez80
 import buildfastz80com
+import buildnext
 import buildz80com
 import buildz80tap
+import libcpc
+import libzx
+from libz80 import Z80Builder
+
+
+def _tap(builder: Z80Builder, artifact: str) -> bytes:
+    """The .TAP the ZX and Next build scripts write."""
+    return libzx.build_tap(builder.build(), builder.org)
+
+
+def _amsdos(builder: Z80Builder, artifact: str) -> bytes:
+    """The AMSDOS binary the CPC build script writes, named as on disc."""
+    return libcpc.build_binary(builder.build(), builder.org, artifact.split(".")[0])
 
 # Every hash below changed when layer 1's query half was hoisted out of the
 # generation loop: the query cannot change while one response is generated, so
@@ -97,17 +112,35 @@ GOLDEN_PHRASEBOOK = {
         "1c2035adfad893479834c767a80e3ab1094b8d3bc35bb477cb69a38c23b04431"),
 }
 
-# The .TAP hashes cover the container, not the raw image, so they are checked
-# through the same header/data blocks the build script writes.
-GOLDEN_TAP = {
+# Some targets ship the image inside a container the machine's loader reads.
+# Those hashes cover the whole file, header included, because a wrong load
+# address or checksum is exactly as fatal as wrong code.
+#
+# artifact -> (module, wrap, example, sha256 of the file as written to disk)
+GOLDEN_WRAPPED = {
     # Changed when the ZX build adopted the CP/M inner loop: same arithmetic,
     # 26% fewer instructions, 32 bytes smaller.
-    "GUESS.TAP": ("guess",
+    "GUESS.TAP": (buildz80tap, _tap, "guess",
                   "9c6aa2b15841a2bc945b3d0c8468edb5b3432150b4d7f19b7bab5d96f2bb80dc"),
-    "CHAT.TAP": ("tinychat",
+    "CHAT.TAP": (buildz80tap, _tap, "tinychat",
                  "fbd66cf962521294e59440ef6d6c610b8953920527397f2589dc25f4b22abe20"),
-    "TALK.TAP": ("smalltalk",
+    "TALK.TAP": (buildz80tap, _tap, "smalltalk",
                  "b66150b7823e40b849cea774c1b205608decdba4fb04b19e91a266863be82540"),
+    # New: the Next build. Byte-for-byte the Spectrum's, plus the six bytes
+    # that ask for 28MHz, so its hash moves whenever the ZX one does.
+    "GUESS-NEXT.TAP": (buildnext, _tap, "guess",
+                       "c1f34daf0b1d6756af93c6c1ad41afca010aa87c628e249ce2c18ea3bc20d8de"),
+    "CHAT-NEXT.TAP": (buildnext, _tap, "tinychat",
+                      "9d4d904d2b556a81141bc17838f9e0786cbc36eea878628013dc898279fb4575"),
+    "TALK-NEXT.TAP": (buildnext, _tap, "smalltalk",
+                      "75a3717451a3f693ea7d7a6325fff3ec268655d290cd1b281c3a2b81acb668de"),
+    # New: the Amstrad CPC build, inside the AMSDOS header RUN" reads.
+    "GUESS-CPC.BIN": (buildcpc, _amsdos, "guess",
+                      "2e8f5c7b281426778e6bc9095b9a8a55a073feb0bfdc326b1716b71e44f79cfb"),
+    "CHAT-CPC.BIN": (buildcpc, _amsdos, "tinychat",
+                     "e6f5fc84a8a46f3f72e9f3dfb7d87fa1195bae1564c1556f868705aa63633055"),
+    "TALK-CPC.BIN": (buildcpc, _amsdos, "smalltalk",
+                     "e2dce867cbb6c2d26ac759ad535f4c6cf20ab003abbfc41636adf3d46a04bad4"),
 }
 
 
@@ -130,18 +163,15 @@ def test_generated_image_is_unchanged(artifact, examples_dir):
     )
 
 
-@pytest.mark.parametrize("artifact", sorted(GOLDEN_TAP))
-def test_generated_tap_is_unchanged(artifact, examples_dir):
-    example, expected = GOLDEN_TAP[artifact]
-    builder = buildz80tap.build_autoreg(model_path(examples_dir, example))
-    image = builder.build()
-    tap = buildz80tap.build_tap_header("CHAT", builder.org, len(image))
-    tap += buildz80tap.build_tap_data(image)
-    got = hashlib.sha256(tap).hexdigest()
+@pytest.mark.parametrize("artifact", sorted(GOLDEN_WRAPPED))
+def test_generated_file_is_unchanged(artifact, examples_dir):
+    module, wrap, example, expected = GOLDEN_WRAPPED[artifact]
+    builder = module.build_autoreg(model_path(examples_dir, example))
+    got = hashlib.sha256(wrap(builder, artifact)).hexdigest()
     assert got == expected, (
         f"{artifact} changed: {got}\n"
-        f"If that was intended, update GOLDEN_TAP in this file and say why in "
-        f"the commit message."
+        f"If that was intended, update GOLDEN_WRAPPED in this file and say why "
+        f"in the commit message."
     )
 
 
@@ -175,7 +205,7 @@ def test_every_shipped_artifact_is_covered():
     import verify_artifacts
 
     assert set(verify_artifacts.ARTIFACTS) == (
-        set(GOLDEN) | set(GOLDEN_TAP) | set(GOLDEN_PHRASEBOOK))
+        set(GOLDEN) | set(GOLDEN_WRAPPED) | set(GOLDEN_PHRASEBOOK))
     assert set(verify_artifacts.COMPANIONS) == set(GOLDEN_PHRASEBOOK)
     for artifact, companion in verify_artifacts.COMPANIONS.items():
         assert GOLDEN_PHRASEBOOK[artifact][2] == companion, artifact

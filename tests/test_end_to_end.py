@@ -12,11 +12,13 @@ from __future__ import annotations
 import pytest
 
 import buildcolz80com
+import buildcpc
 import buildfastz80com
+import buildnext
 import buildz80com
 import buildz80tap
 import libinfer
-from libhost import run_cpm, run_zx
+from libhost import run_cpc, run_cpm, run_next, run_zx
 
 QUERIES = ["HELLO", "ARE YOU A ROBOT", "X", "WHAT IS THIS THING"]
 GEN_LEN = 8  # keep emulated runs short; the code path is identical
@@ -64,6 +66,16 @@ def test_col_com_matches_reference(tiny_col_com, tiny_model, query):
     assert cpm_reply(tiny_col_com, query) == libinfer.generate(tiny_model, query, GEN_LEN)
 
 
+@pytest.fixture(scope="module")
+def tiny_next(tiny_model_path):
+    return buildnext.build_autoreg(tiny_model_path, max_output_len=GEN_LEN).build()
+
+
+@pytest.fixture(scope="module")
+def tiny_cpc(tiny_model_path):
+    return buildcpc.build_autoreg(tiny_model_path, max_output_len=GEN_LEN).build()
+
+
 @pytest.mark.parametrize("query", QUERIES)
 def test_tap_matches_reference(tiny_tap, tiny_model, query):
     image = tiny_tap
@@ -71,6 +83,50 @@ def test_tap_matches_reference(tiny_tap, tiny_model, query):
     # The ZX build is chat-only; strip the prompt/echo chrome around the reply.
     expected = libinfer.generate(tiny_model, query, GEN_LEN)
     assert expected in out, f"{expected!r} not in {out!r}"
+
+
+@pytest.mark.parametrize("query", QUERIES)
+def test_next_matches_reference(tiny_next, tiny_model, query):
+    out, host = run_next(tiny_next, stdin=[query, "!"], max_cycles=400_000_000)
+    expected = libinfer.generate(tiny_model, query, GEN_LEN)
+    assert expected in out, f"{expected!r} not in {out!r}"
+    assert host.cpu_speed == "28"
+
+
+@pytest.mark.parametrize("query", QUERIES)
+def test_cpc_matches_reference(tiny_cpc, tiny_model, query):
+    out, _host = run_cpc(tiny_cpc, stdin=[query, "!"], max_cycles=400_000_000)
+    expected = libinfer.generate(tiny_model, query, GEN_LEN)
+    assert expected in out, f"{expected!r} not in {out!r}"
+
+
+def test_next_build_still_runs_on_a_plain_spectrum(tiny_next, tiny_tap, tiny_model):
+    """Nothing on a 48K machine decodes the clock ports, so it should just run.
+
+    Driven through ZXHost, which has no Next registers at all - the writes go
+    nowhere, exactly as on real hardware.
+    """
+    out, _host = run_zx(tiny_next, stdin=["HELLO", "!"], max_cycles=400_000_000)
+    assert libinfer.generate(tiny_model, "HELLO", GEN_LEN) in out
+    # And it really is the Spectrum image plus the clock prologue, not a fork.
+    assert len(tiny_next) - len(tiny_tap) == 14
+
+
+def test_every_chat_target_agrees_with_the_cpm_build(
+    tiny_com, tiny_tap, tiny_next, tiny_cpc, tiny_model
+):
+    """Four machines, four I/O paths, one answer.
+
+    The kernels are shared, so what this pins is that no platform's entry code,
+    tokenizer wiring or input buffer quietly changes what gets encoded.
+    """
+    for query in QUERIES:
+        expected = cpm_reply(tiny_com, query)
+        for image, run in (
+            (tiny_tap, run_zx), (tiny_next, run_next), (tiny_cpc, run_cpc)
+        ):
+            out, _host = run(image, stdin=[query, "!"], max_cycles=400_000_000)
+            assert expected in out, f"{run.__name__}: {expected!r} not in {out!r}"
 
 
 def test_all_cpm_builds_agree(tiny_com, tiny_fast_com, tiny_col_com, tiny_model):

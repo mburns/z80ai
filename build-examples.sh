@@ -25,6 +25,8 @@ for example in guess:GUESS tinychat:CHAT smalltalk:TALK; do
     "$PYTHON" buildfastz80com.py -m "$model" -o "$OUT/$name-FAST.COM"
     "$PYTHON" buildcolz80com.py  -m "$model" -o "$OUT/$name-COL.COM"
     "$PYTHON" buildz80tap.py     -m "$model" -o "$OUT/$name.TAP"
+    "$PYTHON" buildnext.py       -m "$model" -o "$OUT/$name-NEXT.TAP"
+    "$PYTHON" buildcpc.py        -m "$model" -o "$OUT/$name-CPC.BIN"
     "$PYTHON" buildez80.py       -m "$model" -o "$OUT/$name.bin"
 done
 

@@ -9,6 +9,8 @@ about where the ROM routines live.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import libnn
 from libz80 import Z80Builder
 
@@ -141,13 +143,19 @@ def build_tap(image: bytes, org: int, filename: str = "CHAT") -> bytes:
     return build_tap_header(filename, org, len(image)) + build_tap_data(image)
 
 
-def emit_entry(b: Z80Builder) -> None:
+def emit_entry(b: Z80Builder, prologue: Callable[[Z80Builder], None] | None = None) -> None:
     """Emit START and the chat loop.
 
     There is no command tail on a Spectrum, so unlike the CP/M build there is
     only the interactive path: open the upper screen, clear it, then prompt.
+
+    ``prologue`` is emitted immediately after START, before the screen is
+    touched. Spectrum-compatible machines with something to configure first -
+    the Next sets its clock speed - use it rather than restating the entry.
     """
     b.label("START")
+    if prologue is not None:
+        prologue(b)
     b.di()
     b.ld_a_n(ZX_UPPER_SCREEN)
     b.call_addr(ZX_CHAN_OPEN)

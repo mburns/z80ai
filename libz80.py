@@ -451,6 +451,9 @@ class Z80Builder:
 
     # Block
     def out_n_a(self, port: int) -> None: self.emit(0xD3, port & 0xFF)  # OUT (n),A
+    # OUT (C),A addresses all 16 bits of the port from BC, which is what a
+    # machine with registers above port 255 - the Next's at 243Bh - needs.
+    def out_c_a(self) -> None: self.emit(0xED, 0x79)
     def ldir(self) -> None: self.emit(0xED, 0xB0)
 
     # Exchange

@@ -21,12 +21,14 @@ import argparse
 import os
 import sys
 
+import libcpc
 import libinfer
+import libnext
 from libcpm import TPA as CPM_TPA
 from libcpm import TPA_TOP as CPM_TPA_TOP
 from libez80 import AGON_LOAD_ADDR as AGON_LOAD
 from libez80 import AGON_SRAM_TOP, AGON_STACK_MARGIN
-from libhost import run_agon, run_cpm, run_zx
+from libhost import run_agon, run_cpc, run_cpm, run_next, run_zx
 from libzx import TAP_FLAG_DATA, TAP_FLAG_HEADER, ZX_RAM_TOP
 
 #: artifact name -> (model path, platform)
@@ -35,16 +37,22 @@ ARTIFACTS = {
     "GUESS-FAST.COM": ("examples/guess/model.npz", "cpm"),
     "GUESS-COL.COM": ("examples/guess/model.npz", "cpm"),
     "GUESS.TAP": ("examples/guess/model.npz", "zx"),
+    "GUESS-NEXT.TAP": ("examples/guess/model.npz", "next"),
+    "GUESS-CPC.BIN": ("examples/guess/model.npz", "cpc"),
     "GUESS.bin": ("examples/guess/model.npz", "agon"),
     "CHAT.COM": ("examples/tinychat/model.npz", "cpm"),
     "CHAT-FAST.COM": ("examples/tinychat/model.npz", "cpm"),
     "CHAT-COL.COM": ("examples/tinychat/model.npz", "cpm"),
     "CHAT.TAP": ("examples/tinychat/model.npz", "zx"),
+    "CHAT-NEXT.TAP": ("examples/tinychat/model.npz", "next"),
+    "CHAT-CPC.BIN": ("examples/tinychat/model.npz", "cpc"),
     "CHAT.bin": ("examples/tinychat/model.npz", "agon"),
     "TALK.COM": ("examples/smalltalk/model.npz", "cpm"),
     "TALK-FAST.COM": ("examples/smalltalk/model.npz", "cpm"),
     "TALK-COL.COM": ("examples/smalltalk/model.npz", "cpm"),
     "TALK.TAP": ("examples/smalltalk/model.npz", "zx"),
+    "TALK-NEXT.TAP": ("examples/smalltalk/model.npz", "next"),
+    "TALK-CPC.BIN": ("examples/smalltalk/model.npz", "cpc"),
     "TALK.bin": ("examples/smalltalk/model.npz", "agon"),
     "CLINC.bin": ("examples/clinc150/model.npz", "agon-phrasebook"),
     "TALK-PHR.bin": ("examples/smalltalk/phrasebook.npz", "agon-phrasebook"),
@@ -105,6 +113,46 @@ def parse_tap(data: bytes) -> tuple[bytes, int]:
     return image, start
 
 
+def parse_amsdos(data: bytes) -> tuple[bytes, int]:
+    """Unwrap an AMSDOS binary, validating the header checksum.
+
+    The header is the first 128 bytes of the file as stored on disc; AMSDOS
+    treats one whose checksum does not match as a headerless file and would
+    load it to the wrong address, so the checksum is the thing worth checking.
+
+    Returns:
+        The raw image and the load address declared in the header.
+    """
+    if len(data) <= libcpc.AMSDOS_HEADER_LEN:
+        raise VerificationError("file is shorter than an AMSDOS header")
+
+    head, image = data[:libcpc.AMSDOS_HEADER_LEN], data[libcpc.AMSDOS_HEADER_LEN:]
+    at = libcpc.AMSDOS_CHECKSUM_AT
+    want = sum(head[:at]) & 0xFFFF
+    got = head[at] | (head[at + 1] << 8)
+    if got != want:
+        raise VerificationError(
+            f"AMSDOS checksum mismatch: got {got:04X}, want {want:04X}"
+        )
+
+    if head[18] != libcpc.AMSDOS_TYPE_BINARY:
+        raise VerificationError(f"AMSDOS file type {head[18]} is not a binary")
+
+    load = head[21] | (head[22] << 8)
+    entry = head[26] | (head[27] << 8)
+    declared = head[64] | (head[65] << 8) | (head[66] << 16)
+    if declared != len(image):
+        raise VerificationError(
+            f"AMSDOS header declares {declared} bytes, file holds {len(image)}"
+        )
+    if entry != load:
+        raise VerificationError(
+            f"entry {entry:#06x} is not the load address {load:#06x}; "
+            f"RUN\" would start in the middle of the image"
+        )
+    return image, load
+
+
 def check_fits(org: int, size: int, top: int, where: str) -> None:
     """Refuse an artifact that cannot load on the machine it targets."""
     end = org + size
@@ -134,6 +182,25 @@ def run_artifact(path: str, platform: str, query: str,
         image, org = parse_tap(data)
         check_fits(org, len(image), ZX_RAM_TOP, "the top of 48K RAM")
         out, _host = run_zx(image, stdin=[query, "!"], org=org)
+        return out
+
+    if platform == "next":
+        image, org = parse_tap(data)
+        check_fits(org, len(image), ZX_RAM_TOP, "the top of 48K RAM")
+        out, host = run_next(image, stdin=[query, "!"], org=org)
+        # The whole reason this target exists. A Next build that forgot to ask
+        # for the faster clock is just the Spectrum build under another name.
+        if host.cpu_speed != libnext.DEFAULT_SPEED:
+            raise VerificationError(
+                f"asked the Next for {host.cpu_speed}MHz, expected "
+                f"{libnext.DEFAULT_SPEED}MHz"
+            )
+        return out
+
+    if platform == "cpc":
+        image, org = parse_amsdos(data)
+        check_fits(org, len(image), libcpc.CPC_HIMEM, "the CPC's HIMEM")
+        out, _host = run_cpc(image, stdin=[query, "!"], org=org)
         return out
 
     if platform in ("agon", "agon-phrasebook"):
@@ -175,8 +242,8 @@ def verify(dist: str, query: str) -> list[tuple[str, str, str, bool]]:
             expected = libinfer.generate(model, query, accum_bits=bits)
 
         printed = run_artifact(path, platform, query, files)
-        # CP/M single-query mode prints only the reply; the chat-driven ZX and
-        # Agon builds wrap it in prompt and echo chrome.
+        # CP/M single-query mode prints only the reply; every other target is
+        # chat-driven and wraps it in prompt and echo chrome.
         ok = printed == expected if platform == "cpm" else expected in printed
         results.append((name, expected, printed, ok))
     return results

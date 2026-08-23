@@ -27,11 +27,14 @@ the bytes.
   from the M-cycle structure — 4T per opcode fetch, 3T per memory access, plus
   explicit internal cycles — and are pinned against the documented Zilog
   timings in `test_emulator.py`.
-- **`libhost.py`** supplies the CP/M BDOS, ZX Spectrum ROM and Agon MOS entry
-  points the three platforms call, turning console traffic into Python strings.
-  It reads those addresses from `libcpm.py`, `libzx.py` and `libez80.py` — the
-  same modules the code generator emits calls from, so the emulator and the
-  generated code cannot drift apart about where a routine lives.
+- **`libhost.py`** supplies the CP/M BDOS, ZX Spectrum ROM, Amstrad CPC
+  firmware jumpblock and Agon MOS entry points the platforms call, turning
+  console traffic into Python strings. It reads those addresses from
+  `libcpm.py`, `libzx.py`, `libcpc.py` and `libez80.py` — the same modules the
+  code generator emits calls from, so the emulator and the generated code
+  cannot drift apart about where a routine lives. `NextHost` additionally
+  records writes to the Next registers, which is the only way to see that a
+  build asked for 28MHz: the emulator has one clock and does not speed up.
 - **`libinfer.py`** is the golden model: the same tokenizer, context encoder,
   quantized inference and argmax in NumPy, with the hardware's exact integer
   semantics (16-bit accumulator wrap, arithmetic-shift flooring).
@@ -59,6 +62,8 @@ the bytes.
 | `test_libnn.py` | Layer planning, the Platform contract, and that the public API stays annotated |
 | `test_libcpm.py` | The shared CP/M front end, and that all three `.COM` backends really emit it rather than a copy |
 | `test_libzx.py` | The shared ZX target: memory map, entry code, and that `libhost` hooks the ROM addresses the build calls |
+| `test_libcpc.py` | The Amstrad CPC target: firmware addresses, the HIMEM ceiling a ~40KB model has to fit under, and the AMSDOS header — where a bad checksum loads the file to the wrong address rather than failing |
+| `test_libnext.py` | The Next target: that it asks for 28MHz, that it is still the Spectrum image plus the prologue, and that a 48K machine ignores the clock write rather than crashing |
 | `test_build_inputs.py` | The shared build preamble: numeric layer ordering, geometry, and that codegen and the reference share one encoding |
 | `test_model_io.py` | That a `.pt` and the `.npz` exported from it build the same image (skipped without PyTorch) |
 | `test_bench.py` | The benchmark target table, and that the faster layouts really do retire fewer instructions |

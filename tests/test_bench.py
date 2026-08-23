@@ -44,10 +44,20 @@ def test_build_kwargs_are_empty_when_the_backend_has_one_kernel():
 def test_z80_clocks_are_the_real_machines_not_the_ez80s():
     assert bench.TARGETS["com"].clock == 4_000_000  # CP/M on a 4MHz Z80
     assert bench.TARGETS["tap"].clock == 3_500_000  # ZX Spectrum 48K
+    assert bench.TARGETS["cpc"].clock == 4_000_000  # Amstrad CPC, Z80A
     assert bench.TARGETS["ez80"].clock > bench.TARGETS["com"].clock
 
 
-@pytest.mark.parametrize("target", ["com", "tap"])
+def test_the_next_is_clocked_at_what_the_build_asks_for():
+    """The image is the Spectrum's, so only the clock makes it faster - if the
+    table said 3.5MHz the whole target would look pointless."""
+    import libnext
+
+    assert bench.TARGETS["next"].clock == libnext.SPEED_MHZ[libnext.DEFAULT_SPEED]
+    assert bench.TARGETS["next"].clock == 8 * bench.TARGETS["tap"].clock
+
+
+@pytest.mark.parametrize("target", ["com", "tap", "next", "cpc"])
 def test_measure_counts_one_forward_pass(target, tiny_model_path):
     """Both counters must advance: a zero would make every speedup infinite."""
     row = bench.measure(target, tiny_model_path, query="HI")

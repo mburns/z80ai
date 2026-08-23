@@ -77,6 +77,44 @@ def test_ez80_explicit_kernels_are_honoured(tiny_model_path):
         assert chosen == kernel
 
 
+def _run_build(monkeypatch, tiny_model_path, target, out):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["build.py", "-m", tiny_model_path, "-t", target, "-o", str(out),
+         "--max-output-len", "4"],
+    )
+    build.main()
+    return out.read_bytes()
+
+
+def test_next_target_writes_a_tap_with_the_clock_prologue(
+    monkeypatch, tmp_path, tiny_model_path
+):
+    import libnext
+
+    data = _run_build(monkeypatch, tiny_model_path, "next", tmp_path / "N.TAP")
+    assert data[:2] == bytes((19, 0))  # TAP header block
+    assert data[16] | (data[17] << 8) == libnext.ORG_ADDR
+
+
+def test_cpc_target_writes_an_amsdos_binary(monkeypatch, tmp_path, tiny_model_path):
+    import libcpc
+    import verify_artifacts
+
+    data = _run_build(monkeypatch, tiny_model_path, "cpc", tmp_path / "C.BIN")
+    image, org = verify_artifacts.parse_amsdos(data)
+    assert org == libcpc.ORG_ADDR
+    assert len(data) == len(image) + libcpc.AMSDOS_HEADER_LEN
+
+
+def test_cpc_binary_is_named_after_the_output_file(
+    monkeypatch, tmp_path, tiny_model_path
+):
+    """The name in the header is what a CPC reports while loading."""
+    data = _run_build(monkeypatch, tiny_model_path, "cpc", tmp_path / "MYCHAT.BIN")
+    assert data[1:9] == b"MYCHAT  "
+
+
 def test_zx_tap_is_named_after_the_output_file(monkeypatch, tmp_path, tiny_model_path):
     """The name in the header is what LOAD "" CODE reports, so it should match."""
     import libzx

@@ -29,9 +29,10 @@ select = [
 
 [lint.isort]
 known-first-party = [
-    "baseline", "bench", "build", "buildcolz80com", "buildez80",
-    "buildfastz80com", "buildz80com", "buildz80tap", "classify", "exportmodel",
-    "feedme", "libcpm", "libdata", "libez80", "libhost", "libinfer", "libnn",
-    "libqat", "libz80", "libz80emu", "libzx", "lint", "loadmodel",
+    "baseline", "bench", "build", "buildcolz80com", "buildcpc", "buildez80",
+    "buildfastz80com", "buildnext", "buildz80com", "buildz80tap", "classify",
+    "exportmodel", "feedme", "libcpc", "libcpm", "libdata", "libez80",
+    "libhost", "libinfer", "libnext", "libnn", "libqat", "libz80", "libz80emu",
+    "libzx", "lint", "loadmodel",
     "verify_artifacts",
 ]
