@@ -27,15 +27,15 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+# NUM_BUCKETS (hash buckets per half of the input vector), CONTEXT_LEN
+# (characters of output fed back) and BUCKET_WEIGHT (the fixed-point scale for
+# one n-gram occurrence) are re-exported from the reference model rather than
+# restated. They are not independent choices: code generated against a
+# different NUM_BUCKETS than libinfer encodes with computes the wrong thing,
+# and does so quietly.
+from libinfer import BUCKET_WEIGHT, CONTEXT_LEN, NUM_BUCKETS
 from libz80 import Z80Builder
 
-#: Hash buckets per half of the input vector. The first NUM_BUCKETS encode the
-#: query, the second NUM_BUCKETS the characters generated so far.
-NUM_BUCKETS = 128
-#: Characters of generated output fed back as context.
-CONTEXT_LEN = 8
-#: Fixed-point scale: one n-gram occurrence adds this much to its bucket.
-BUCKET_WEIGHT = 32
 #: Bytes per activation.
 ACTIVATION_SIZE = 2
 #: Byte offset from the start of the activation buffer to the context half.

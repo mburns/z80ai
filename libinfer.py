@@ -135,10 +135,7 @@ class Model:
     @classmethod
     def from_params(cls, params: dict, charset: str,
                     position_bands: int = FLAT) -> Model:
-        names = sorted(
-            {k.replace("_weight", "").replace("_bias", "") for k in params},
-            key=lambda n: int(n[2:]),
-        )
+        names = layer_names(params)
         return cls(
             weights=[np.asarray(params[f"{n}_weight"], dtype=np.int32) for n in names],
             biases=[np.asarray(params[f"{n}_bias"], dtype=np.int32) for n in names],
@@ -275,12 +272,21 @@ def forward_hoisted(
 Z80_MAX_LAYER = 256
 
 
-def discover_layers(params: dict) -> tuple[list[str], list[int]]:
-    """Return (ordered layer names, [input, hidden..., output] sizes)."""
-    names = sorted(
+def layer_names(params: dict) -> list[str]:
+    """Layer names in run order.
+
+    Sorted numerically, not lexically: a 10-layer model would otherwise run
+    ``fc10`` straight after ``fc1``.
+    """
+    return sorted(
         {k.replace("_weight", "").replace("_bias", "") for k in params},
         key=lambda n: int(n[2:]),
     )
+
+
+def discover_layers(params: dict) -> tuple[list[str], list[int]]:
+    """Return (ordered layer names, [input, hidden..., output] sizes)."""
+    names = layer_names(params)
     sizes: list[int] = []
     for i, name in enumerate(names):
         w = params[f"{name}_weight"]
@@ -298,6 +304,92 @@ def validate_z80_layers(layer_sizes: list[int]) -> None:
             f"layer sizes {oversized} exceed the Z80 limit of {Z80_MAX_LAYER}; "
             f"build for eZ80 with buildez80.py, which has no such limit"
         )
+
+
+@dataclass(frozen=True)
+class BuildInputs:
+    """A checkpoint unpacked into the form every backend starts from.
+
+    :class:`Model` is the reference implementation's view - dense arrays, ready
+    to run.  This is the code generator's view: the raw parameter dict, because
+    each backend packs the weights its own way, plus the names and sizes it
+    needs to lay out labels and count loops.
+    """
+
+    params: dict
+    charset: str
+    #: Position bands the query encoder was trained with; a build that
+    #: tokenizes differently from training produces confident nonsense.
+    position_bands: int
+    names: list[str]
+    layer_sizes: list[int]
+
+    @property
+    def num_layers(self) -> int:
+        return len(self.names)
+
+    @property
+    def input_size(self) -> int:
+        return self.layer_sizes[0]
+
+    @property
+    def output_size(self) -> int:
+        return self.layer_sizes[-1]
+
+    @property
+    def eos_idx(self) -> int:
+        """The charset's last entry, which GENERATE stops on."""
+        return len(self.charset) - 1
+
+    def weight(self, index: int) -> np.ndarray:
+        """Layer ``index``'s weight matrix, counting from zero."""
+        return self.params[f"{self.names[index]}_weight"]
+
+    def bias(self, index: int) -> np.ndarray:
+        """Layer ``index``'s bias vector, counting from zero."""
+        return self.params[f"{self.names[index]}_bias"]
+
+    def weights(self) -> list[np.ndarray]:
+        return [self.weight(i) for i in range(self.num_layers)]
+
+    def biases(self) -> list[np.ndarray]:
+        return [self.bias(i) for i in range(self.num_layers)]
+
+
+def load_for_build(model_path: str, report_io: bool = True) -> BuildInputs:
+    """Load a model and report what a backend is about to assemble.
+
+    Args:
+        model_path: A ``.npz`` or ``.pt`` model.
+        report_io: Also print the input vector's query/context split. The eZ80
+            backend leaves it out, since its layer widths are unconstrained and
+            the line is only interesting next to the Z80's 256-neuron cap.
+
+    Returns:
+        The parameters, charset and layer geometry, ready to pack.
+    """
+    # Deferred, as in Model.load: the .pt branch of the loader reaches for
+    # torch, and this module is meant to stay importable without it.
+    from loadmodel import load_model_params
+
+    print(f"Loading model from {model_path}...")
+    params, arch, charset = load_model_params(model_path)
+    names, layer_sizes = discover_layers(params)
+
+    print(f"Charset ({len(charset)} chars): {charset[:-1]!r} + EOS")
+    print(f"Architecture: {' → '.join(map(str, layer_sizes))}")
+    if report_io:
+        print(f"Input: {layer_sizes[0]} "
+              f"({NUM_BUCKETS} query + {NUM_BUCKETS} context)")
+        print(f"Output: {layer_sizes[-1]} characters")
+
+    return BuildInputs(
+        params=params,
+        charset=charset,
+        position_bands=arch.get("position_bands", FLAT),
+        names=names,
+        layer_sizes=layer_sizes,
+    )
 
 
 def argmax(values: np.ndarray) -> int:

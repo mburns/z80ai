@@ -57,13 +57,21 @@ from __future__ import annotations
 import numpy as np
 
 from libez80 import AGON_LOAD_ADDR, AGON_MAX_IMAGE, EZ80Builder, agon_header
-from libinfer import FLAT, SHIFT, discover_layers
-from loadmodel import load_model_params
+from libinfer import (
+    CONTEXT_LEN,
+    MAX_OUTPUT_LEN,
+    NUM_BUCKETS,
+    SHIFT,
+    BuildInputs,
+    load_for_build,
+)
 
-MAX_OUTPUT_LEN = 50
 MAX_INPUT_LEN = 120
-NUM_BUCKETS = 128
-CONTEXT_LEN = 8
+
+#: Routines whose address a standalone build prints, for cross-referencing a
+#: disassembly. Which of these exist depends on the kernel.
+KEY_LABELS = ('START', 'GENERATE', 'LAYER', 'LAYER1', 'ARGMAX', 'TOKENIZE',
+              'NEUREND', 'BIASES', 'WTS1')
 
 # MOS entry points.
 MOS_API = 0x08  # RST 08h, function number in A
@@ -338,8 +346,7 @@ def _emit_shift(b: EZ80Builder) -> None:
         b.rr_hl_ind()
 
 
-def _emit_layers_column(b: EZ80Builder, params: dict, layer_names: list[str],
-                        num_layers: int) -> None:
+def _emit_layers_column(b: EZ80Builder, model: BuildInputs) -> None:
     """Emit every layer column-major, visiting only nonzero activations.
 
     Row-major cannot skip a zero activation, because which activations are zero
@@ -359,10 +366,11 @@ def _emit_layers_column(b: EZ80Builder, params: dict, layer_names: list[str],
     and RET stay usable, which is what lets the per-neuron epilogue be shared
     instead of inlined 587 times.
     """
-    for i, name in enumerate(layer_names):
+    num_layers = model.num_layers
+    for i in range(num_layers):
         in_buf, out_buf = layer_buffers(i, num_layers)
-        weights = np.clip(np.asarray(params[f'{name}_weight']), -2, 1)
-        biases = np.asarray(params[f'{name}_bias']).astype(np.int64)
+        weights = np.clip(np.asarray(model.weight(i)), -2, 1)
+        biases = np.asarray(model.bias(i)).astype(np.int64)
         num_out, num_in = weights.shape
         last = i == num_layers - 1
 
@@ -424,10 +432,10 @@ def _emit_layers_column(b: EZ80Builder, params: dict, layer_names: list[str],
             b.ld_iyd_hl(0)                       # terminate the next layer's list
             b.jp(f'LAYER{i+2}')
 
-    _emit_query_pass(b, params, layer_names[0])
+    _emit_query_pass(b, model)
 
 
-def _emit_query_pass(b: EZ80Builder, params: dict, first_layer: str) -> None:
+def _emit_query_pass(b: EZ80Builder, model: BuildInputs) -> None:
     """Emit PREQ: layer 1's query half, run once per query rather than per step.
 
     Threaded code makes this nearly free to express. PREQ reuses layer 1's own
@@ -439,7 +447,7 @@ def _emit_query_pass(b: EZ80Builder, params: dict, first_layer: str) -> None:
     addition mod 2**n is associative, so splitting it in two cannot move a bit.
     See :func:`libinfer.forward_hoisted`.
     """
-    biases = np.asarray(params[f'{first_layer}_bias']).astype(np.int64)
+    biases = np.asarray(model.bias(0)).astype(np.int64)
 
     b.label('PREQ')
     for j, bias in enumerate(biases):
@@ -488,8 +496,7 @@ def _emit_input_scan(b: EZ80Builder, name: str, columns: range,
     b.ret()
 
 
-def _emit_layers_unrolled(b: EZ80Builder, params: dict, layer_names: list[str],
-                          num_layers: int) -> None:
+def _emit_layers_unrolled(b: EZ80Builder, model: BuildInputs) -> None:
     """Emit every layer as straight-line code, one instruction pair per weight.
 
     With a 24-bit address space ``LD DE,(nnnnnn)`` reaches any activation in
@@ -500,10 +507,11 @@ def _emit_layers_unrolled(b: EZ80Builder, params: dict, layer_names: list[str],
     Nothing in this region may use JR: it is a quarter of a megabyte long and
     every relative jump would be out of range.
     """
-    for i, name in enumerate(layer_names):
+    num_layers = model.num_layers
+    for i in range(num_layers):
         in_buf, out_buf = layer_buffers(i, num_layers)
-        weights = np.clip(np.asarray(params[f'{name}_weight']), -2, 1)
-        biases = np.asarray(params[f'{name}_bias']).astype(np.int64)
+        weights = np.clip(np.asarray(model.weight(i)), -2, 1)
+        biases = np.asarray(model.bias(i)).astype(np.int64)
         epilogue = 'NEUREND_OUT' if i == num_layers - 1 else 'NEUREND'
 
         b.label(f'LAYER{i+1}')
@@ -546,28 +554,22 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
         raise ValueError(
             f"unknown kernel {kernel!r}; choose from {['auto', *KERNELS]}"
         )
-    print(f"Loading model from {model_path}...")
-    params, arch, charset = load_model_params(model_path)
-    position_bands = arch.get('position_bands', FLAT)
-
-    eos_idx = len(charset) - 1
-    num_chars = len(charset)
-    print(f"Charset ({num_chars} chars): {charset[:-1]!r} + EOS")
-
-    layer_names, layer_sizes = discover_layers(params)
-    num_layers = len(layer_names)
-
-    output_size = layer_sizes[-1]
+    # The input/output split is a Z80 concern - here layers may be any width -
+    # so the report leaves it out.
+    model = load_for_build(model_path, report_io=False)
+    layer_sizes = model.layer_sizes
+    num_layers, output_size = model.num_layers, model.output_size
+    # Named locally: the emit sequence below reads them dozens of times.
+    charset, eos_idx = model.charset, model.eos_idx
+    position_bands = model.position_bands
     if output_size < 2:
         raise ValueError("charset must have at least two entries")
-
-    print(f"Architecture: {' → '.join(map(str, layer_sizes))}")
 
     # The unrolled kernels bake the weights into the code, so only the compact
     # one needs a weight stream and a bias table in the data section.
     if kernel == 'compact':
-        weight_blobs = [encode_weights(params[f'{n}_weight']) for n in layer_names]
-        bias_blob = b''.join(encode_biases(params[f'{n}_bias']) for n in layer_names)
+        weight_blobs = [encode_weights(w) for w in model.weights()]
+        bias_blob = b''.join(encode_biases(bias) for bias in model.biases())
     else:
         weight_blobs, bias_blob = [], b''
 
@@ -1054,13 +1056,13 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     # is far too long for a relative jump to reach across.
     if kernel == 'row':
         _emit_neuron_epilogue(b)
-        _emit_layers_unrolled(b, params, layer_names, num_layers)
+        _emit_layers_unrolled(b, model)
     elif kernel == 'column':
         _emit_column_epilogue(b)
         _emit_input_scan(b, 'SCAN_QUERY', range(NUM_BUCKETS), 'QEPI')
         _emit_input_scan(b, 'SCAN_CTX',
                          range(NUM_BUCKETS, layer_sizes[0]), 'LEPI1')
-        _emit_layers_column(b, params, layer_names, num_layers)
+        _emit_layers_column(b, model)
 
     # === DATA ================================================================
     b.label('CHARTBL')
@@ -1194,11 +1196,7 @@ def main() -> None:
     b = build_autoreg(args.model, max_output_len=args.max_output_len,
                       kernel=args.kernel)
 
-    print("\nKey addresses:")
-    for name in ('START', 'GENERATE', 'LAYER', 'LAYER1', 'ARGMAX', 'TOKENIZE',
-                 'NEUREND', 'BIASES', 'WTS1'):
-        if name in b.labels:
-            print(f"  {name}: {b.labels[name]:06X}h")
+    b.report_labels(KEY_LABELS)
 
     b.save(args.output)
     size = len(b.code)
