@@ -72,11 +72,74 @@ exactly on a synthetic command set tried earlier. Real utterances vary in ways a
 word list cannot cover, which is the condition under which a fuzzy 128-bucket
 encoder is worth its size.
 
+## The same 19 answers, in sentences
+
+On an Agon there is an SD card, so the reply text does not have to be in the
+model. `phrasebook.npz` is the same 19 intents and the same utterances, trained
+as a classifier that emits an *index* into `TALK-PHR.DAT` instead of spelling a
+reply out character by character.
+
+```
+> are you a robot
+YES I AM A BOT
+> what is the point of it all
+NOBODY HAS TOLD ME YET
+> whats the stock price of apple
+I DO NOT KNOW THAT ONE
+```
+
+It is also **more accurate**, on the same labels and the same split:
+
+| | on device | overall | macro |
+|---|---:|---:|---:|
+| keyword table | 1.7 KB | 59.4% | 62.1% |
+| nearest centroid | 4.8 KB | 74.6% | 74.8% |
+| character decoder (`model.npz`) | 35.9 KB | 80.6% | 80.7% |
+| 1-NN over the whole corpus | 130.9 KB | 84.1% | 84.3% |
+| **phrasebook (`phrasebook.npz`)** | **38.5 KB** | **86.6%** | **87.2%** |
+
+Six and a half points of macro for two and a half kilobytes, because the decoder
+was spending capacity on *spelling* `IM A BOT` rather than on deciding it. Three
+training seeds land within 1.1 points of each other, so that is not the seed.
+
+Note the row it passes on the way. Everywhere else in this project a plain
+nearest-neighbour retriever over the training corpus beats the model once
+storage is free — see [data/README.md](../../data/README.md). This is the one
+place it does not: **87.2% against 84.3%, in less than a third of the bytes.**
+Giving the model back the capacity it was spending on spelling is what closed a
+gap that more weights and more epochs had not.
+
+```bash
+../../data/clinc150/subset.py --recipe smalltalk-phrasebook \
+    | gzip -9n > phrasebook-data.txt.gz
+../../classify.py --file phrasebook-data.txt.gz -o phrasebook.npz \
+                  --hidden-sizes 384,256 --epochs 600
+../../buildez80.py -m phrasebook.npz -o TALK-PHR.bin --phrases TALK-PHR.DAT
+```
+
+**The same swap does nothing for `tinychat`.** Its eleven replies are two and
+three letters long, so there is almost no spelling to save: across three seeds
+the classifier scores 38.3–46.2% macro against the decoder's 44.4%, a spread
+that swallows the difference whole. The head pays in proportion to how much
+reply vocabulary the decoder was carrying, and `tinychat` deliberately has none.
+
+Nor does a bigger vocabulary help it. Retrained as a phrasebook at each level:
+
+| replies | pairs per class | macro |
+|---:|---:|---:|
+| 11 | 186 | **38.3%** |
+| 21 | 96 | 25.3% |
+| 325 | 5 | 15.5% |
+
+Reply text being free does not make evidence free. The collapse from 502 replies
+to 11 was answering the second constraint, and that one has not moved.
+
 ## What it cannot do
 
 The 19 replies are the entire vocabulary. Anything outside the 18 intents comes
 back `IDK`, which is a deliberate improvement on the other examples — `guess`
 has no way to express "I don't know" at all — but it is still a closed world.
+The phrasebook makes those 19 answers longer, not more numerous.
 
 CLINC ships 150 utterances per intent, so this trains on ~2,550 pairs against
 `guess`'s 28,718. It works, but there is not much headroom; widening the recipe
