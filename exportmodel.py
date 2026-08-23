@@ -9,57 +9,39 @@ Usage:
     python exportmodel.py --model model.pt --output model.npz
 """
 
-import argparse
-import json
+from __future__ import annotations
 
-import numpy as np
+import argparse
+
 import torch
 
-from feedme import AutoregressiveModel
+from libinfer import FLAT, Model
+from loadmodel import quantize_checkpoint
 
 
 def export_model(model_path: str, output_path: str) -> None:
-    """Export PyTorch checkpoint to NumPy npz format."""
+    """Export a PyTorch checkpoint to the .npz the build scripts read.
+
+    Args:
+        model_path: A ``.pt`` checkpoint as saved by ``feedme.py``.
+        output_path: Where to write the ``.npz``.
+    """
     print(f"Loading model from {model_path}...")
     checkpoint = torch.load(model_path, weights_only=True)
-    arch = checkpoint['architecture']
-    charset = checkpoint['charset']
-    num_chars = len(charset)
+    params, arch, charset = quantize_checkpoint(checkpoint)
 
     print(f"Architecture: input={arch['input_size']}, "
-          f"hidden={arch['hidden_sizes']}, output={num_chars}")
-    print(f"Charset ({num_chars} chars): {charset[:-1]!r} + EOS")
+          f"hidden={arch['hidden_sizes']}, output={len(charset)}")
+    print(f"Charset ({len(charset)} chars): {charset[:-1]!r} + EOS")
 
-    # Create and load model
-    model = AutoregressiveModel(
-        input_size=arch['input_size'],
-        hidden_sizes=arch['hidden_sizes'],
-        num_chars=num_chars
-    )
-    model.load_state_dict(checkpoint['model_state'])
-    model.eval()
-
-    # Get quantized parameters
-    params = model.get_quantized_params()
-
-    # Build export dict
-    export_data = dict(params)
-
-    # Metadata rides along as encoded strings.
-    export_data['_architecture'] = np.array(json.dumps(arch).encode('utf-8'))
-    export_data['_charset'] = np.array(charset.encode('utf-8'))
-
-    # Save to npz
-    np.savez(output_path, **export_data)
+    # Model owns the .npz layout, so the exporter and libinfer.Model.save_npz
+    # cannot disagree about where the metadata goes.
+    model = Model.from_params(params, charset, arch.get('position_bands', FLAT))
+    model.save_npz(output_path)
     print(f"Exported to {output_path}")
 
-    # Print summary
-    layer_names = sorted({k.replace('_weight', '').replace('_bias', '')
-                            for k in params})
-    for name in layer_names:
-        w = params[f'{name}_weight']
-        b = params[f'{name}_bias']
-        print(f"  {name}: weight {w.shape}, bias {b.shape}")
+    for i, (w, b) in enumerate(zip(model.weights, model.biases, strict=True), start=1):
+        print(f"  fc{i}: weight {w.shape}, bias {b.shape}")
 
 
 def main() -> None:

@@ -5,61 +5,78 @@ This module allows build scripts to work with either format, enabling
 CI environments to run without PyTorch installed.
 """
 
+from __future__ import annotations
+
 import json
 
 import numpy as np
 
 
 def load_model_params(model_path: str) -> tuple[dict, dict, str]:
-    """
-    Load model parameters from .pt or .npz file.
+    """Load model parameters from a .pt or .npz file.
+
+    Args:
+        model_path: Path ending in ``.npz`` or ``.pt``.
 
     Returns:
-        params: dict of quantized weights/biases (fc1_weight, fc1_bias, etc.)
-        arch: architecture dict with input_size, hidden_sizes
-        charset: character set string
+        ``(params, arch, charset)``: the quantized weights and biases keyed
+        ``fc1_weight``/``fc1_bias`` and so on, the architecture dict, and the
+        character set.
+
+    Raises:
+        ValueError: If the path has neither extension.
     """
     if model_path.endswith('.npz'):
         return _load_npz(model_path)
-    elif model_path.endswith('.pt'):
+    if model_path.endswith('.pt'):
         return _load_pt(model_path)
-    else:
-        raise ValueError(f"Unknown model format: {model_path} (expected .pt or .npz)")
+    raise ValueError(f"Unknown model format: {model_path} (expected .pt or .npz)")
 
 
 def _load_npz(model_path: str) -> tuple[dict, dict, str]:
     """Load from NumPy npz format."""
     data = np.load(model_path)
 
-    # Extract metadata
+    # Metadata rides along as encoded strings under underscore-prefixed keys,
+    # which is also how the parameters are told apart from it.
     arch = json.loads(bytes(data['_architecture']).decode('utf-8'))
     charset = bytes(data['_charset']).decode('utf-8')
-
-    # Extract params (everything except metadata)
     params = {k: data[k] for k in data.files if not k.startswith('_')}
 
     return params, arch, charset
+
+
+def quantize_checkpoint(checkpoint: dict) -> tuple[dict, dict, str]:
+    """Rebuild the trained model from a checkpoint and quantize it.
+
+    Shared by :func:`_load_pt` and ``exportmodel.py`` so there is one answer to
+    "what does a .pt turn into", rather than two that can drift.
+
+    Args:
+        checkpoint: A dict as saved by ``feedme.py``: ``model_state``,
+            ``architecture`` and ``charset``.
+
+    Returns:
+        The same ``(params, arch, charset)`` triple as :func:`load_model_params`.
+    """
+    from feedme import AutoregressiveModel
+
+    arch = checkpoint['architecture']
+    charset = checkpoint['charset']
+
+    model = AutoregressiveModel(
+        input_size=arch['input_size'],
+        hidden_sizes=arch['hidden_sizes'],
+        num_chars=len(charset),
+    )
+    model.load_state_dict(checkpoint['model_state'])
+    model.eval()
+
+    return model.get_quantized_params(), arch, charset
 
 
 def _load_pt(model_path: str) -> tuple[dict, dict, str]:
     """Load from PyTorch checkpoint format."""
     import torch
 
-    from feedme import AutoregressiveModel
-
-    checkpoint = torch.load(model_path, weights_only=True)
-    arch = checkpoint['architecture']
-    charset = checkpoint['charset']
-    num_chars = len(charset)
-
-    model = AutoregressiveModel(
-        input_size=arch['input_size'],
-        hidden_sizes=arch['hidden_sizes'],
-        num_chars=num_chars
-    )
-    model.load_state_dict(checkpoint['model_state'])
-    model.eval()
-
-    params = model.get_quantized_params()
-
-    return params, arch, charset
+    return quantize_checkpoint(torch.load(model_path, weights_only=True))
