@@ -35,6 +35,9 @@ A 20 Questions game where the model knows a secret topic and answers YES/NO/MAYB
 
 Includes tools for generating training data with LLMs (Ollama or Claude API) and balancing class distributions.
 
+See [data/README.md](data/README.md) for what makes a dataset suit a 2-bit
+model, and `data/lint.py` for checking one before you train it.
+
 ## Quickstart
 
 Get running in under 5 minutes:
