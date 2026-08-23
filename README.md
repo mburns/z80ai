@@ -35,6 +35,25 @@ A 20 Questions game where the model knows a secret topic and answers YES/NO/MAYB
 
 Includes tools for generating training data with LLMs (Ollama or Claude API) and balancing class distributions.
 
+### [smalltalk](examples/smalltalk/)
+
+The same idea as tinychat, but trained on **real crowdsourced utterances** —
+[CLINC150](data/clinc150/), CC BY 3.0 — instead of hand-written ones, with an
+explicit `IDK` for anything it was not trained on.
+
+```
+> are you a robot
+IM A BOT
+> what is the point of it all
+WHO KNOWS
+> whats the stock price of apple
+IDK
+```
+
+96.7% on held-out queries, against 59.4% for a keyword table built from the same
+data — which is the check that the model is doing something a word list cannot.
+Run `python data/baseline.py examples/smalltalk/training-data.txt.gz` to see it.
+
 See [data/README.md](data/README.md) for what makes a dataset suit a 2-bit
 model, and `data/lint.py` for checking one before you train it.
 
