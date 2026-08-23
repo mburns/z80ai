@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections import Counter
 
 import pytest
 
@@ -212,6 +213,65 @@ def test_colliding_queries_are_only_flagged_when_they_disagree(lint, capsys):
     problems = lint.report(_clean() + disagree)
     capsys.readouterr()
     assert any("hash to the same" in p for p in problems)
+
+
+# --- the vendored CLINC150 data ----------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def subset(repo_root):
+    sys.path.insert(0, os.path.join(repo_root, "data", "clinc150"))
+    import subset as module
+
+    return module
+
+
+def test_smalltalk_data_matches_its_recipe(subset, examples_dir):
+    """The shipped training file must be what subset.py produces.
+
+    Vendoring third-party data is only worth anything if the derivation from it
+    is reproducible; otherwise the checked-in file is just more invented data
+    with a citation attached.
+    """
+    # Both sides through parse_pair: the file on disk holds full queries, and
+    # the 60-character truncation happens when they are read back.
+    generated = [
+        libdata.parse_pair(f"{q}|{r}")
+        for q, r in subset.build(subset.RECIPES["smalltalk"], seed=0)
+    ]
+    shipped = libdata.read_files(
+        [os.path.join(examples_dir, "smalltalk", "training-data.txt.gz")]
+    )
+    assert generated == shipped, "training-data.txt.gz is stale; regenerate it"
+
+
+def test_smalltalk_recipe_is_balanced_and_clean(subset):
+    pairs = subset.build(subset.RECIPES["smalltalk"], seed=0)
+    counts = Counter(reply for _, reply in pairs)
+
+    assert len(counts) == len(subset.RECIPES["smalltalk"])
+    assert len(set(counts.values())) == 1, "classes are not balanced"
+    assert libdata.accuracy_ceiling(pairs) > 0.99
+    assert max(len(r) for r in counts) <= 12
+    assert len(libdata.build_charset(pairs)) < 30, "charset too wide"
+
+
+def test_out_of_scope_is_capped_with_the_rest(subset):
+    """CLINC ships 1,200 oos against 150 per intent; uncapped it would dominate."""
+    pairs = subset.build(subset.RECIPES["smalltalk"], seed=0)
+    counts = Counter(reply for _, reply in pairs)
+    assert counts["IDK"] / len(pairs) < 0.1
+
+
+def test_subset_is_deterministic(subset):
+    a = subset.build(subset.RECIPES["smalltalk"], seed=0)
+    assert a == subset.build(subset.RECIPES["smalltalk"], seed=0)
+    assert a != subset.build(subset.RECIPES["smalltalk"], seed=1)
+
+
+def test_an_unknown_intent_is_rejected(subset):
+    with pytest.raises(SystemExit, match="no such intent"):
+        subset.build({"not_a_real_intent": "NOPE"})
 
 
 def test_the_shipped_datasets_parse(examples_dir):

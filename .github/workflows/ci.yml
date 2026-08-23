@@ -175,5 +175,9 @@ jobs:
             dist/CHAT-FAST.COM
             dist/CHAT.TAP
             dist/CHAT.bin
+            dist/TALK.COM
+            dist/TALK-FAST.COM
+            dist/TALK.TAP
+            dist/TALK.bin
           fail_on_unmatched_files: true
           generate_release_notes: true
