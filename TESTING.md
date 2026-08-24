@@ -39,6 +39,32 @@ the bytes.
   quantized inference and argmax in NumPy, with the hardware's exact integer
   semantics (16-bit accumulator wrap, arithmetic-shift flooring).
 
+## Reading the generated code
+
+`tools/disasm.py` disassembles a build, annotated with the labels that produced
+it. Addresses that land on a label are named, so a listing reads as code rather
+than as a wall of hex:
+
+```bash
+python tools/disasm.py --model examples/guess/model.npz --at MULADD --count 8
+python tools/disasm.py --model examples/guess/model.npz --target ez80 --at PREQ
+python tools/disasm.py --model examples/guess/model.npz --labels
+```
+
+```
+MULADD:
+  03D3  2A 2A 05      LD HL,(ACC)
+  03D6  3D            DEC A
+  03D7  28 0C         JR Z,MA_P1
+  03D9  ED 52         SBC HL,DE
+```
+
+It decodes with the same `x/y/z/p/q` decomposition as `libz80emu`, and the two
+are checked against each other: `test_disasm.py` runs a real build and requires
+that they agree about where all 49,000 executed instructions end. Bytes that
+decode to nothing render as `DB`, so pointing it at a weight blob produces a
+listing rather than an exception.
+
 ## What each file covers
 
 | File | What it pins down |
@@ -67,6 +93,8 @@ the bytes.
 | `test_build_inputs.py` | The shared build preamble: numeric layer ordering, geometry, and that codegen and the reference share one encoding |
 | `test_model_io.py` | That a `.pt` and the `.npz` exported from it build the same image (skipped without PyTorch) |
 | `test_bench.py` | The benchmark target table, and that the faster layouts really do retire fewer instructions |
+| `test_disasm.py` | The disassembler, chiefly by requiring it and the emulator to agree about every instruction boundary in a real build |
+| `test_release_manifest.py` | That the build script, the manifest, the pins and the release list all name the same artifacts |
 | `test_codegen_stability.py` | The exact bytes each backend emits, by hash |
 | `test_agon_files.py` | MOS file I/O, and that a load outside Agon SRAM raises instead of growing the emulator's memory |
 | `test_baseline.py` | Every row of the accuracy claim, including the retrievers that beat the model once storage is free |
