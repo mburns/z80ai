@@ -96,6 +96,7 @@ listing rather than an exception.
 | `test_disasm.py` | The disassembler, chiefly by requiring it and the emulator to agree about every instruction boundary in a real build |
 | `test_release_manifest.py` | That the build script, the manifest, the pins and the release list all name the same artifacts |
 | `test_codegen_stability.py` | The exact bytes each backend emits, by hash |
+| `test_performance.py` | What one generated character costs on each target, pinned exactly — the hashes say codegen moved, these say which way |
 | `test_agon_files.py` | MOS file I/O, and that a load outside Agon SRAM raises instead of growing the emulator's memory |
 | `test_baseline.py` | Every row of the accuracy claim, including the retrievers that beat the model once storage is free |
 | `test_datasets.py` | The CLINC150 recipes, and that lint's thresholds judge a balanced 151-way set correctly |
