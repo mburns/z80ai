@@ -616,7 +616,9 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
             f"the output layer has {output_size} neurons but there are "
             f"{model.num_outputs} {label}; one of them is wrong")
 
-    phrase_blob = encode_phrases(phrases) if phrasebook else b''
+    # Keyed off `phrases` rather than `phrasebook`: the two say the same thing,
+    # but only this one shows that encode_phrases cannot be handed None.
+    phrase_blob = encode_phrases(phrases) if phrases is not None else b''
 
 
     # The unrolled kernels bake the weights into the code, so only the compact
@@ -1195,7 +1197,9 @@ def write_phrase_file(builder: EZ80Builder, binary_path: str) -> str | None:
     the text it prints cannot drift apart - which they would the moment the
     two were produced by separate commands.
     """
-    if not builder.phrase_blob:
+    # The blob and its name are set together, so testing the name covers both
+    # and leaves nothing for the join below to be handed None.
+    if not builder.phrase_blob or builder.phrases_file is None:
         return None
     path = os.path.join(os.path.dirname(binary_path) or '.', builder.phrases_file)
     with open(path, 'wb') as fh:

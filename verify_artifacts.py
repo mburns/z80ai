@@ -181,18 +181,18 @@ def run_artifact(path: str, platform: str, query: str,
         # artifact as a Spectrum would actually see it.
         image, org = parse_tap(data)
         check_fits(org, len(image), ZX_RAM_TOP, "the top of 48K RAM")
-        out, _host = run_zx(image, stdin=[query, "!"], org=org)
+        out, _zx_host = run_zx(image, stdin=[query, "!"], org=org)
         return out
 
     if platform == "next":
         image, org = parse_tap(data)
         check_fits(org, len(image), ZX_RAM_TOP, "the top of 48K RAM")
-        out, host = run_next(image, stdin=[query, "!"], org=org)
+        out, next_host = run_next(image, stdin=[query, "!"], org=org)
         # The whole reason this target exists. A Next build that forgot to ask
         # for the faster clock is just the Spectrum build under another name.
-        if host.cpu_speed != libnext.DEFAULT_SPEED:
+        if next_host.cpu_speed != libnext.DEFAULT_SPEED:
             raise VerificationError(
-                f"asked the Next for {host.cpu_speed}MHz, expected "
+                f"asked the Next for {next_host.cpu_speed}MHz, expected "
                 f"{libnext.DEFAULT_SPEED}MHz"
             )
         return out
@@ -200,13 +200,13 @@ def run_artifact(path: str, platform: str, query: str,
     if platform == "cpc":
         image, org = parse_amsdos(data)
         check_fits(org, len(image), libcpc.CPC_HIMEM, "the CPC's HIMEM")
-        out, _host = run_cpc(image, stdin=[query, "!"], org=org)
+        out, _cpc_host = run_cpc(image, stdin=[query, "!"], org=org)
         return out
 
     if platform in ("agon", "agon-phrasebook"):
         check_fits(AGON_LOAD, len(data), AGON_SRAM_TOP - AGON_STACK_MARGIN,
                    "the top of Agon SRAM")
-        out, _host = run_agon(data, stdin=[query, "!"], files=files)
+        out, _agon_host = run_agon(data, stdin=[query, "!"], files=files)
         return out
 
     raise VerificationError(f"unknown platform {platform}")

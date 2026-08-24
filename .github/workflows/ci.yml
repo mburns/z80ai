@@ -45,6 +45,12 @@ jobs:
       - name: Check for defects
         run: ruff check --output-format=github .
 
+      # Gated: annotations that contradict the code. tests/test_libnn.py already
+      # requires the library modules to be annotated; this checks they are right.
+      # See mypy.ini for what is excluded and why.
+      - name: Check types
+        run: mypy
+
       # Not gated: the wider default rule set flags pre-existing style debt.
       # Surfacing it keeps it visible without blocking a merge on it.
       - name: Style report

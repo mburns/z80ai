@@ -221,7 +221,11 @@ class Z80:
         if idx is not None and i in (4, 5):
             base = self.ix if idx == "ix" else self.iy
             return (base >> 8) & 0xFF if i == 4 else base & 0xFF
-        return getattr(self, self._R_NAMES[i])
+        # Slot 6 is (HL), which the guard above already returned for, so the
+        # name here is never the None in _R_NAMES. Asserting that would cost a
+        # branch in the emulator's hottest function to tell a checker something
+        # three lines of code already say.
+        return getattr(self, self._R_NAMES[i])  # type: ignore[arg-type]
 
     def _set_r(self, i: int, val: int, idx: str | None = None, disp: int = 0) -> None:
         val &= 0xFF
@@ -239,7 +243,7 @@ class Z80:
             else:
                 self.iy = base
             return
-        setattr(self, self._R_NAMES[i], val)
+        setattr(self, self._R_NAMES[i], val)  # type: ignore[arg-type]  # see _get_r
 
     def _get_rp(self, p: int, idx: str | None, use_af: bool = False) -> int:
         if p == 0:
