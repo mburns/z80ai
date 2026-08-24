@@ -86,7 +86,16 @@ def test_a_lead_is_cut_at_a_sentence_boundary(ingest):
 
 DUMP = """<mediawiki>
 <page><title>Hamlet</title><ns>0</ns>
-<text xml:space="preserve">'''Hamlet''' is a play by [[William Shakespeare]].</text>
+<text xml:space="preserve">{{Infobox play
+| name = Hamlet
+| writer = [[William Shakespeare]]
+| genre = [[Tragedy|Tragic play]]
+| premiere = {{start date|1602}}
+| image = Hamlet.jpg
+| image_size = 250px
+| caption = A scene from the play
+}}
+'''Hamlet''' is a play by [[William Shakespeare]].</text>
 </page>
 <page><title>Bill Shakespeare</title><ns>0</ns><redirect title="Hamlet" />
 <text xml:space="preserve">#REDIRECT [[Hamlet]]</text>
@@ -169,6 +178,69 @@ def test_two_sources_can_share_one_database(ingest, tmp_path):
                       ).fetchone()[0] == 1
 
 
+def test_infobox_fields_become_facts(ingest, tmp_path):
+    """An infobox is a hand-curated set of facts about its article, which is
+    what an oracle answers from - prose is what a search engine answers with."""
+    db, _, _ = build_db(ingest, tmp_path)
+    facts = dict(db.execute(
+        "SELECT property, value FROM fact WHERE subject = 'Hamlet'"))
+    assert facts["writer"] == "William Shakespeare"
+    assert facts["genre"] == "Tragic play"      # [[target|shown]] shows shown
+
+
+def test_layout_fields_are_not_facts(ingest, tmp_path):
+    """Roughly a third of infobox fields position the page rather than say
+    anything about the subject, and none of them answers a question."""
+    db, _, _ = build_db(ingest, tmp_path)
+    props = {p for (p,) in db.execute(
+        "SELECT property FROM fact WHERE subject = 'Hamlet'")}
+    assert not props & {"image", "image_size", "caption"}
+
+
+def test_a_template_valued_field_is_dropped_rather_than_stored_raw(ingest, tmp_path):
+    """`{{start date|1602}}` cleans to nothing useful, so it is not a fact.
+    Storing the braces would put them on screen."""
+    db, _, _ = build_db(ingest, tmp_path)
+    value = db.execute("SELECT value FROM fact WHERE subject='Hamlet' "
+                       "AND property='premiere'").fetchone()
+    assert value is None or "{{" not in value[0]
+
+
+def test_facts_are_replaced_on_reingest(ingest, tmp_path):
+    db, _, _ = build_db(ingest, tmp_path)
+    assert db.execute("SELECT COUNT(*) FROM fact").fetchone()[0] > 0
+
+    newer = tmp_path / "newer.xml"
+    newer.write_text("""<mediawiki>
+<page><title>Photosynthesis</title><ns>0</ns>
+<text xml:space="preserve">Plants make food.</text>
+</page>
+</mediawiki>
+""")
+    ingest.ingest(db, newer, "simplewiki")
+    db.commit()
+    assert db.execute("SELECT COUNT(*) FROM fact").fetchone()[0] == 0
+
+
+def test_the_fact_table_supports_both_lookup_directions(ingest, tmp_path):
+    """Forward is the primary key; backwards is fact_value, and it is what
+    turns "who wrote Hamlet" into "what did Shakespeare write" for free."""
+    db, _, _ = build_db(ingest, tmp_path)
+    forward = db.execute("SELECT value FROM fact WHERE source=? AND subject=? "
+                         "AND property=?", ("simplewiki", "Hamlet", "writer")
+                         ).fetchone()
+    assert forward[0] == "William Shakespeare"
+
+    backward = db.execute("SELECT subject FROM fact WHERE source=? AND value=?",
+                          ("simplewiki", "William Shakespeare")).fetchall()
+    assert ("Hamlet",) in backward
+
+    plan = db.execute("EXPLAIN QUERY PLAN SELECT subject FROM fact "
+                      "WHERE source=? AND value=?", ("simplewiki", "x")
+                      ).fetchall()
+    assert any("fact_value" in str(row) for row in plan), plan
+
+
 def test_the_schema_uses_the_features_it_claims_to(ingest, tmp_path):
     db, _, _ = build_db(ingest, tmp_path)
     sql = dict(db.execute(
@@ -177,13 +249,15 @@ def test_the_schema_uses_the_features_it_claims_to(ingest, tmp_path):
     # Text primary keys, so the hidden rowid and its btree are dead weight.
     assert "WITHOUT ROWID" in sql["redirect"]
     assert "WITHOUT ROWID" in sql["meta"]
+    assert "WITHOUT ROWID" in sql["fact"]
     # article's id IS the rowid, and the card build reads rows in that order.
     assert "WITHOUT ROWID" not in sql["article"]
-    # The one index that is not implicit, covering both redirect queries.
-    assert "redirect_target" in sql
+    # Every index answers a query something actually asks.
+    assert {"redirect_target", "fact_value"} <= set(sql)
 
     if sqlite3.sqlite_version_info >= (3, 37, 0):
-        assert all("STRICT" in sql[t] for t in ("meta", "article", "redirect"))
+        assert all("STRICT" in sql[t]
+                   for t in ("meta", "article", "redirect", "fact"))
 
 
 def test_strict_rejects_a_blob_in_a_text_column(ingest, tmp_path):

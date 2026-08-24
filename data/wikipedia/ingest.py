@@ -37,7 +37,7 @@ from pathlib import Path
 DB_PATH = Path(__file__).resolve().parent.parent / "simple_english_wikipedia.db"
 #: Bumped whenever the table definitions change. The database is derived data,
 #: so a mismatch is resolved by re-ingesting rather than by migrating.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 #: Characters of lead text kept per article. A 40x24 Agon screen holds about
 #: 960, so this is a third of one - enough to say what a thing is.
@@ -62,10 +62,23 @@ def _schema() -> str:
     19% saving. ``article`` keeps its rowid, because ``id`` *is* the rowid and
     the card build reads rows in that order.
 
-    **redirect_target** - the only non-implicit index, and it earns its place
-    twice: resolving redirects onto articles, and counting how many point at
-    each article, which is how a limited card picks the notable ones. It
-    covers both queries outright, so neither touches the table.
+    **The indexes**, each answering a query something actually asks:
+
+    - ``redirect_target`` resolves redirects onto articles, and counts how many
+      point at each one, which is how a limited card picks the notable ones. It
+      covers both outright, so neither touches the table.
+    - ``fact``'s primary key *is* the lookup an oracle performs -
+      ``(subject, property) -> value`` - so that costs no separate index.
+    - ``fact_value`` is the same lookup backwards: "who was born in Edinburgh"
+      from the rows that say where people were born. Inverse relations are
+      about a third of what a real question set asks - SimpleQuestions labels
+      them explicitly - and without this each one scans two million rows.
+
+    An index on ``(source, property)`` was measured and rejected: it cost 86MB
+    and took the one query that wanted it, the property histogram in
+    ``stats()``, from 0.68s to 0.15s. Half a second on a command run by hand,
+    for a fifth of the database. Nothing else groups by property, because the
+    card build reads facts in bulk rather than looking them up.
 
     **STRICT** - a modest guarantee, and worth being accurate about. TEXT
     affinity already converts a stray number to text in an ordinary table, so
@@ -97,6 +110,16 @@ CREATE TABLE IF NOT EXISTS redirect (
 ) {STRICT}WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS redirect_target ON redirect (source, target);
+
+CREATE TABLE IF NOT EXISTS fact (
+    source   TEXT NOT NULL,
+    subject  TEXT NOT NULL,
+    property TEXT NOT NULL,
+    value    TEXT NOT NULL,
+    PRIMARY KEY (source, subject, property)
+) {STRICT}WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS fact_value ON fact (source, value);
 """
 
 # --- dump parsing -------------------------------------------------------------
@@ -218,6 +241,102 @@ def lead_of(markup: str) -> str:
     return window[:cut + 1] if cut >= LEAD_CHARS // 2 else text[:LEAD_CHARS]
 
 
+# --- infobox facts ------------------------------------------------------------
+#
+# An infobox is a hand-curated set of typed key/value pairs about its article,
+# which is to say a set of facts. The lead throws them away as furniture; this
+# keeps them, because a question like "where was Bell born" is answered by a
+# lookup and not by reading prose.
+
+INFOBOX = re.compile(r"\{\{\s*Infobox\b", re.I)
+
+#: Infobox keys that lay the page out rather than saying anything about the
+#: subject. About a third of all fields, and none of them answers a question.
+FURNITURE = re.compile(
+    r"^(image|img|photo|logo|map|flag|seal|banner|cover|picture)(_|$)"
+    r"|^(caption|alt|size|width|height|align|float|style|colour|color|border)(_|$)"
+    r"|(_(image|img|photo|caption|alt|size|width|height|align|style|colour|color"
+    r"|flag|map|link|ref|note|footnote|upright|padding))$"
+    r"|^(module|embed|child|nocat|fetchwikidata|onlysourced|suppressfields"
+    r"|dateformat|coordinates|latd|latm|lats|longd|longm|longs|pushpin.*)$",
+    re.I)
+
+#: Values that survived cleaning but say nothing: markup scraps, bare units,
+#: template flags.
+JUNK_VALUE = re.compile(r"^[\s|=*#:;{}\[\]<>/-]*$|^\d+\s*px$|^(yes|no|y|n|on|off"
+                        r"|none|null|unknown|n/a|tbd|ALL)$", re.I)
+
+#: A value longer than this is a paragraph that wandered into a field.
+MAX_VALUE_LEN = 120
+
+
+def infobox_body(markup: str) -> str | None:
+    """The text between the first Infobox's braces, nesting respected."""
+    m = INFOBOX.search(markup)
+    if not m:
+        return None
+    depth, i, start = 0, m.start(), m.start()
+    while i < len(markup):
+        if markup.startswith("{{", i):
+            depth += 1
+            i += 2
+        elif markup.startswith("}}", i):
+            depth -= 1
+            i += 2
+            if depth == 0:
+                return markup[start + 2:i - 2]
+        else:
+            i += 1
+    return None
+
+
+def infobox_fields(body: str) -> list[tuple[str, str]]:
+    """Top-level ``| key = value`` pairs.
+
+    Split by hand rather than by regex: a value may itself contain ``|`` inside
+    a nested template or a piped link, and splitting on those turns one field
+    into several fragments, none of which is a fact.
+    """
+    fields: list[str] = []
+    brace = brack = 0
+    current: list[str] = []
+    for i, ch in enumerate(body):
+        if body.startswith("{{", i):
+            brace += 1
+        elif body.startswith("}}", i):
+            brace = max(0, brace - 1)
+        elif body.startswith("[[", i):
+            brack += 1
+        elif body.startswith("]]", i):
+            brack = max(0, brack - 1)
+
+        if ch == "|" and brace == 0 and brack == 0:
+            fields.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    fields.append("".join(current))
+
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for field in fields[1:]:                      # [0] is the template name
+        key, sep, value = field.partition("=")
+        if not sep:
+            continue
+        key = re.sub(r"\s+", "_", key.strip().lower())
+        if not key or key in seen or FURNITURE.search(key):
+            continue
+        # The same cleaner the lead uses, so entities are resolved before tags
+        # are stripped rather than after - the bug that put "<ref></ref>" on
+        # screen would otherwise put "&lt;br&gt;" in every multi-part value.
+        value = clean(value)
+        if not value or JUNK_VALUE.match(value) or len(value) > MAX_VALUE_LEN:
+            continue
+        seen.add(key)
+        out.append((key, value))
+    return out
+
+
 def pages(path: Path):
     """Yield (title, redirect_target_or_None, lead) for every ns0 page."""
     opener = bz2.open if path.suffix == ".bz2" else open
@@ -266,7 +385,13 @@ def pages(path: Path):
 
             if "</page>" in line and title is not None:
                 if ns == 0:
-                    yield title, redirect, "" if redirect else lead_of("".join(body))
+                    markup = "".join(body)
+                    if redirect:
+                        yield title, redirect, "", []
+                    else:
+                        box = infobox_body(markup)
+                        yield (title, None, lead_of(markup),
+                               infobox_fields(box) if box else [])
                 title = None
 
 
@@ -300,14 +425,18 @@ def connect(path: Path, migrate: bool = False) -> sqlite3.Connection:
     return db
 
 
-def ingest(db: sqlite3.Connection, dump: Path, source: str) -> tuple[int, int]:
+def ingest(db: sqlite3.Connection, dump: Path,
+           source: str) -> tuple[int, int, int]:
     """Replace ``source``'s rows with the contents of ``dump``, atomically."""
     db.execute("CREATE TEMP TABLE new_article (title TEXT PRIMARY KEY, lead TEXT)")
     db.execute("CREATE TEMP TABLE new_redirect (title TEXT PRIMARY KEY, target TEXT)")
+    db.execute("CREATE TEMP TABLE new_fact "
+               "(subject TEXT, property TEXT, value TEXT, "
+               " PRIMARY KEY (subject, property))")
 
-    articles = redirects = 0
+    articles = redirects = facts = 0
     started = time.time()
-    for title, target, lead in pages(dump):
+    for title, target, lead, fields in pages(dump):
         if target:
             db.execute("INSERT OR REPLACE INTO new_redirect VALUES (?, ?)",
                        (title, target))
@@ -316,31 +445,41 @@ def ingest(db: sqlite3.Connection, dump: Path, source: str) -> tuple[int, int]:
             db.execute("INSERT OR REPLACE INTO new_article VALUES (?, ?)",
                        (title, lead))
             articles += 1
+            if fields:
+                db.executemany(
+                    "INSERT OR REPLACE INTO new_fact VALUES (?, ?, ?)",
+                    [(title, key, value) for key, value in fields])
+                facts += len(fields)
         total = articles + redirects
         if total % 50_000 == 0:
             rate = total / (time.time() - started)
-            print(f"  {total:,} pages ({rate:,.0f}/s)", flush=True)
+            print(f"  {total:,} pages, {facts:,} facts ({rate:,.0f}/s)", flush=True)
 
     # One transaction: an interrupted run leaves the old corpus untouched.
     with db:
         db.execute("DELETE FROM article WHERE source = ?", (source,))
         db.execute("DELETE FROM redirect WHERE source = ?", (source,))
+        db.execute("DELETE FROM fact WHERE source = ?", (source,))
         db.execute("INSERT INTO article (source, title, lead) "
                    "SELECT ?, title, lead FROM new_article", (source,))
         db.execute("INSERT INTO redirect (source, title, target) "
                    "SELECT ?, title, target FROM new_redirect", (source,))
+        db.execute("INSERT INTO fact (source, subject, property, value) "
+                   "SELECT ?, subject, property, value FROM new_fact", (source,))
         for key, value in (
             ("schema_version", str(SCHEMA_VERSION)),
             (f"{source}.dump", dump.name),
             (f"{source}.ingested", time.strftime("%Y-%m-%dT%H:%M:%S")),
             (f"{source}.articles", str(articles)),
             (f"{source}.redirects", str(redirects)),
+            (f"{source}.facts", str(facts)),
         ):
             db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
 
     db.execute("DROP TABLE new_article")
     db.execute("DROP TABLE new_redirect")
-    return articles, redirects
+    db.execute("DROP TABLE new_fact")
+    return articles, redirects, facts
 
 
 def stats(db: sqlite3.Connection) -> None:
@@ -366,6 +505,19 @@ def stats(db: sqlite3.Connection) -> None:
         print(f"  {source}: {a:,} articles, {r:,} redirects "
               f"({resolved / r:.1%} resolve), {chars / 1e6:.0f} MB of lead text")
 
+        f, subjects, properties = db.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT subject), COUNT(DISTINCT property) "
+            "FROM fact WHERE source = ?", (source,)).fetchone()
+        if f:
+            print(f"  {' ' * len(source)}  {f:,} facts over {subjects:,} "
+                  f"subjects ({subjects / a:.0%} of articles), "
+                  f"{properties:,} properties")
+            top = db.execute(
+                "SELECT property, COUNT(*) n FROM fact WHERE source = ? "
+                "GROUP BY property ORDER BY n DESC LIMIT 8", (source,)).fetchall()
+            print(f"  {' ' * len(source)}  most common: "
+                  + ", ".join(f"{p} ({n:,})" for p, n in top))
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -388,8 +540,8 @@ def main() -> None:
         raise SystemExit(f"no such dump: {args.dump}")
 
     print(f"ingesting {args.dump.name} as '{args.source}' into {args.db}")
-    articles, redirects = ingest(db, args.dump, args.source)
-    print(f"\n{articles:,} articles, {redirects:,} redirects\n")
+    articles, redirects, facts = ingest(db, args.dump, args.source)
+    print(f"\n{articles:,} articles, {redirects:,} redirects, {facts:,} facts\n")
     stats(db)
     # ANALYZE so the planner has real distributions: the notability ranking in
     # buildwikisearch is a correlated subquery per article, and it should use

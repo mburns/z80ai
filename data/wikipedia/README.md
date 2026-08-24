@@ -93,6 +93,44 @@ Most of that time is the two passes over the accumulator — clearing 277 KB and
 then scanning it for the best three. The retrieval itself is a few thousand
 postings.
 
+## Facts, for the oracle this is not
+
+The database also carries **1,950,164 facts** pulled from infoboxes — an
+infobox is a hand-curated set of typed key/value pairs, which is to say a set
+of facts about its article. The lead throws them away as furniture; the `fact`
+table keeps them.
+
+```sql
+SELECT value FROM fact WHERE subject = 'Alexander Graham Bell'
+                         AND property = 'birth_place';
+-- Edinburgh, Scotland
+```
+
+They are here because answering *"where was Bell born"* is a **lookup**, not
+reading. That is the difference between a search box and an oracle, and it is
+the only route to one on this hardware: extracting an answer from prose is
+comprehension, and out of reach.
+
+The pieces an oracle would need, and where they stand:
+
+| | mechanism | measured |
+|---|---|---|
+| "bell" → the article | the search index here | works |
+| "where was … born" → `birth_place` | the phrasebook classifier | **85.6% macro** over 44 relations |
+| `(subject, property)` → value | this table's primary key | a lookup |
+
+The relation number is from [SimpleQuestions](https://github.com/askplatypus/wikidata-simplequestions)
+mapped to Wikidata — 12,888 real human-written questions over 44 relations, in
+39KB of weights.
+
+**What stops it being built today is coverage, not accuracy.** Only 46% of
+articles have an infobox, and a good share of those fields are layout rather
+than fact. An oracle over this corpus would be confidently right about where
+someone was born and silent about most else.
+
+Nothing on the card uses these yet. They are here because they were already in
+the dump, and extracting them costs one pass we were making anyway.
+
 ## Redirects earn their place
 
 Wikipedia's 114,771 redirects are indexed as alternate names scoring into their
