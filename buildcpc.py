@@ -97,13 +97,13 @@ def build_autoreg(
     libcpc.emit_read_input(b)
 
     # === Shared engine ===
-    libnn.emit_generate(b, plat, model.eos_idx, max_output_len,
+    libnn.emit_generate(b, model.eos_idx, max_output_len,
                         libnn.emit_layered_inference(plans), hoist_query=True)
     libnn.emit_printch(b, plat)
-    libnn.emit_update_ctx(b, plat)
+    libnn.emit_update_ctx(b)
     libnn.emit_encode_ctx(b, plat)
     libnn.emit_ctx_hash(b, plat)
-    libnn.emit_clear_ctx(b, plat)
+    libnn.emit_clear_ctx(b)
     libnn.emit_layer_dispatch(b, plans)
     libnn.emit_layer(b)
     libnn.emit_query_dispatch(b, qplan)

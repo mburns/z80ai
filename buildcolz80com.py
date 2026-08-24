@@ -57,7 +57,6 @@ class ColumnCPMPlatform(CPMPlatform):
     """Same I/O as the packed CP/M build; the weights are laid out by column."""
 
     name = "CP/M (column-major)"
-    weight_layout = "column"
 
 
 def column_records(weights: np.ndarray) -> tuple[bytes, list[int]]:
@@ -420,13 +419,13 @@ def build_autoreg(
     libcpm.emit_entry(b)
 
     # === Shared engine =======================================================
-    libnn.emit_generate(b, plat, model.eos_idx, max_output_len,
+    libnn.emit_generate(b, model.eos_idx, max_output_len,
                         emit_inference(layer_sizes), hoist_query=True)
     libnn.emit_printch(b, plat)
-    libnn.emit_update_ctx(b, plat)
+    libnn.emit_update_ctx(b)
     libnn.emit_encode_ctx(b, plat)
     libnn.emit_ctx_hash(b, plat)
-    libnn.emit_clear_ctx(b, plat)
+    libnn.emit_clear_ctx(b)
     libnn.emit_argmax(b, output_size)
     libnn.emit_tokenizer(b, plat, model.position_bands)
     libnn.emit_tok_hash(b, plat, model.position_bands)

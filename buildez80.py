@@ -954,14 +954,9 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ret()
 
     # === CLEAR_CTX / UPDATE_CTX / ENCODE_CTX =================================
-    b.label('CLEAR_CTX')
-    b.ld_hl_label('CTXCHARS')
-    b.ld_b_n(CONTEXT_LEN)
-    b.label('CLR_LP')
-    b.ld_hl_n(ord(' '))
-    b.inc_hl()
-    b.djnz('CLR_LP')
-    b.jp('ENCODE_CTX')
+    # Identical on both machines - the context window is eight bytes wide
+    # whatever an activation costs, and DJNZ counts it on the eZ80 too.
+    libnn.emit_clear_ctx(b, unrolled=False)
 
     b.label('UPDATE_CTX')
     b.ld_hl_label('CTXCHARS')
@@ -1063,9 +1058,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
         _emit_layers_column(b, model)
 
     # === DATA ================================================================
-    b.label('CHARTBL')
-    for c in charset:
-        b.db(0 if c == '\x00' else ord(c))
+    libnn.emit_charset_table(b, charset)
 
     scratch = ['TOKLEN', 'TOKC1', 'TOKC2', 'TOKC3']
     if position_bands > 1:
