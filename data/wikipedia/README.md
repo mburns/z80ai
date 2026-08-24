@@ -35,13 +35,13 @@ $ python data/wikipedia/ingest.py --stats
   simplewiki.digest            adf8cbb46aabe719
   simplewiki.dump              simplewiki-20260801-pages-articles.xml.bz2
   simplewiki.edges             150335
-  simplewiki.facts             1916652
+  simplewiki.facts             1945061
   simplewiki.ingested          2026-08-24T02:33:39
   simplewiki.redirects         114771
   simplewiki.url               https://dumps.wikimedia.org/simplewiki/20260801/...
 
   simplewiki: 283,997 articles, 114,771 redirects (97.6% resolve), 68 MB of lead
-              1,916,652 facts over 129,721 subjects (46% of articles), 9,077 properties
+              1,945,061 facts over 129,725 subjects (46% of articles), 9,509 properties
               values: text 74%, number 22%, date 4%, url 0%
               47 properties map to a relation; biggest unmapped: name (95,626),
               subdivision_type (40,770), years (34,988), clubs (34,323), ...
@@ -141,7 +141,7 @@ postings.
 
 ## Facts, for the oracle this is not
 
-The database also carries **1,916,652 facts** pulled from infoboxes — an
+The database also carries **1,945,061 facts** pulled from infoboxes — an
 infobox is a hand-curated set of typed key/value pairs, which is to say a set
 of facts about its article. The lead throws them away as furniture; the `fact`
 table keeps them.
@@ -168,7 +168,10 @@ judgement about this corpus that belongs where the judgement is made.
 | `subdivision_name1..7` → `(property, ordinal)` | **27.6% of facts** were positional variants |
 | values typed `text`/`number`/`date`/`url` | 22% are numbers, which sorted lexically as text |
 
-That takes the vocabulary from 13,387 properties to **9,077**.
+That takes the vocabulary from 13,387 properties to **9,509**, and costs
+5,103 facts — 0.26%, all of them keys with no letters in them, keys longer
+than 64 characters, or fields that only existed because a comment ran into
+the key after them.
 
 The index split is the one that needed care. `subdivision_name2` is the second
 subdivision; `area_km2` is square kilometres, and splitting it invents a field
