@@ -825,71 +825,13 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ret()
 
     # === TOKENIZE: query text -> first 128 buckets ===========================
-    b.label('TOKENIZE')
-    if position_bands > 1:
-        b.xor_a()
-        b.ld_mem_label_a('TOKPOS')
-    b.ld_hl_label('INBUF')
-    b.ld_de_label('INBUF')
-    b.inc_de()
-    b.ld_bc_nn(NUM_BUCKETS * 3 - 1)
-    b.ld_hl_n(0)
-    b.ldir()
-
-    b.ld_a_mem_label('INPLEN')
-    b.or_a()
-    b.jp_z('TOK_DONE')
-    b.ld_mem_label_a('TOKLEN')
-    b.ld_de_label('INPBUF')
-
-    b.label('TOK_SKIP')
-    b.ld_a_mem_label('TOKLEN')
-    b.or_a()
-    b.jp_z('TOK_DONE')
-    b.ld_a_de()
-    b.cp_n(ord(' '))
-    b.jr_nz('TOK_START')
-    b.inc_de()
-    b.call('TOK_DECLEN')
-    b.jr('TOK_SKIP')
-
-    b.label('TOK_START')
-    b.ld_a_n(ord(' '))
-    b.ld_mem_label_a('TOKC1')
-    b.ld_a_de()
-    b.call('LOWER')
-    b.ld_mem_label_a('TOKC2')
-    b.inc_de()
-    b.call('TOK_DECLEN')
-
-    b.label('TOK_LOOP')
-    b.ld_a_mem_label('TOKLEN')
-    b.or_a()
-    b.jr_z('TOK_TRAIL')
-    b.ld_a_de()
-    b.call('LOWER')
-    b.ld_mem_label_a('TOKC3')
-    b.call('TOK_HASH')
-    b.ld_a_mem_label('TOKC2')
-    b.ld_mem_label_a('TOKC1')
-    b.ld_a_mem_label('TOKC3')
-    b.ld_mem_label_a('TOKC2')
-    b.inc_de()
-    b.call('TOK_DECLEN')
-    b.jr('TOK_LOOP')
-
-    b.label('TOK_TRAIL')
-    b.ld_a_n(ord(' '))
-    b.ld_mem_label_a('TOKC3')
-    b.call('TOK_HASH')
+    # The state machine is libnn's, and TOK_HASH below is what it calls. The
+    # trigram walk is where a divergence would be silent: two tokenizers that
+    # disagree still both produce plausible buckets, and the model would answer
+    # confidently and wrongly rather than crash.
+    libnn.emit_tokenizer(b, plat, position_bands)
 
     b.label('TOK_DONE')
-    b.ret()
-
-    b.label('TOK_DECLEN')
-    b.ld_a_mem_label('TOKLEN')
-    b.dec_a()
-    b.ld_mem_label_a('TOKLEN')
     b.ret()
 
     # === TOK_HASH: h = ((c1*31 + c2)*31 + c3), bucket = h & 127 ==============

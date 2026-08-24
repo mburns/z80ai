@@ -712,13 +712,13 @@ def emit_tokenizer(b: Z80Builder, plat: Platform, position_bands: int = 1) -> No
         b.xor_a()
         b.ld_mem_label_a("TOKPOS")
 
-    # Clear the query half of the activation buffer.
+    # Clear the query half of the activation buffer. Its width is the one
+    # thing the eZ80 changes here: 128 buckets of three bytes, not two.
     b.ld_hl_label(plat.buffer)
     b.ld_de_label(plat.buffer)
     b.inc_de()
-    b.ld_bc_nn(CONTEXT_OFFSET - 1)
-    b.ld_a_n(0)
-    b.ld_hl_a()
+    b.ld_bc_nn(NUM_BUCKETS * plat.activation_size - 1)
+    b.ld_hl_n(0)
     b.ldir()
 
     plat.load_query_length(b)
