@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from typing import Literal
 
 import libcpc
 import libinfer
@@ -31,8 +32,13 @@ from libez80 import AGON_SRAM_TOP, AGON_STACK_MARGIN
 from libhost import run_agon, run_cpc, run_cpm, run_next, run_zx
 from libzx import TAP_FLAG_DATA, TAP_FLAG_HEADER, ZX_RAM_TOP
 
+#: Every machine run_artifact knows how to boot. A closed set, so a typo in
+#: ARTIFACTS is a type error rather than something that reaches the unknown-
+#: platform fallback at release time.
+Platform = Literal["cpm", "zx", "next", "cpc", "agon", "agon-phrasebook"]
+
 #: artifact name -> (model path, platform)
-ARTIFACTS = {
+ARTIFACTS: dict[str, tuple[str, Platform]] = {
     "GUESS.COM": ("examples/guess/model.npz", "cpm"),
     "GUESS-FAST.COM": ("examples/guess/model.npz", "cpm"),
     "GUESS-COL.COM": ("examples/guess/model.npz", "cpm"),
@@ -163,7 +169,7 @@ def check_fits(org: int, size: int, top: int, where: str) -> None:
         )
 
 
-def run_artifact(path: str, platform: str, query: str,
+def run_artifact(path: str, platform: Platform, query: str,
                  files: dict[str, bytes] | None = None) -> str:
     """Boot the artifact on its platform and return what it printed."""
     with open(path, "rb") as fh:
