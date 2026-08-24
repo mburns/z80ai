@@ -19,6 +19,18 @@ Measured over Simple English Wikipedia, collapsing those synonyms onto one
 subjects completing to **40.7%**, and ``death_place -> country`` from 1.0% to
 48.2%. The graph was never sparse. It was inconsistently named.
 
+## Asking for a type, not a number of hops
+
+A question asks for a country, not for two hops. How many hops that takes is a
+property of the graph: for the 42,033 people this corpus records a birthplace
+for, the birthplace is *already* a country 26.2% of the time, one hop away
+35.7%, two hops 1.6%. A fixed two-hop path is right for about a third of them
+and destroys a correct answer for the quarter that needed none.
+
+So `in_country` climbs `located_in` until the value is something the corpus
+calls a country, and stops immediately if it already is. That takes the share
+of people for whom a country can be named at all from **30.6% to 45.6%**.
+
 ## What this can and cannot do
 
 Traversal is lookups, so chaining, inverses and counting all fall out of the
@@ -69,6 +81,30 @@ FIELD_RELATION: dict[str, tuple[str, int]] = {
     for rank, field_name in enumerate(fields)
 }
 
+#: Pseudo-relations that climb rather than step: repeat a relation until the
+#: value is of a given type.
+#:
+#: "What country was X born in" does not ask for one more hop. It asks for an
+#: answer of type country, and how many hops that takes is a property of the
+#: graph rather than of the question. Measured over the 42,033 people this
+#: corpus records a birthplace for, the distance from that birthplace to a
+#: country is 0 hops for 26.2% of them, 1 hop for 35.7% and 2 for 1.6%. A fixed
+#: two-hop path is right for about a third and actively destroys the answer for
+#: the quarter whose birthplace was already the country.
+CLIMB: dict[str, tuple[str, str]] = {
+    "in_country": ("located_in", "country"),
+}
+
+#: How many times a climb may step before giving up. Containment hierarchies
+#: are shallow, and a cycle in the data - two places each inside the other -
+#: would otherwise not terminate.
+CLIMB_LIMIT = 6
+
+#: An entity has to be named a country by this many independent infoboxes for
+#: the corpus to be taken at its word. At 3 it yields 182 countries; at 1 it
+#: yields 353 and starts admitting things like "Washington (state)".
+TYPE_FLOOR = 3
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS edge (
     source   TEXT NOT NULL,
@@ -79,6 +115,13 @@ CREATE TABLE IF NOT EXISTS edge (
 ) {strict}WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS edge_object ON edge (source, object, relation);
+
+CREATE TABLE IF NOT EXISTS entity_type (
+    source TEXT NOT NULL,
+    kind   TEXT NOT NULL,
+    entity TEXT NOT NULL,
+    PRIMARY KEY (source, kind, entity)
+) {strict}WITHOUT ROWID;
 """
 
 
@@ -162,7 +205,45 @@ def build(db: sqlite3.Connection, source: str,
     db.execute("DELETE FROM edge WHERE source = ?", (source,))
     db.executemany("INSERT OR REPLACE INTO edge VALUES (?, ?, ?, ?)", rows)
     report(f"  {len(rows):,} edges, {dropped:,} values naming no article")
+
+    kinds = types(db, source, resolve)
+    db.execute("DELETE FROM entity_type WHERE source = ?", (source,))
+    db.executemany("INSERT OR REPLACE INTO entity_type VALUES (?, ?, ?)",
+                   [(source, kind, entity) for kind, entity in kinds])
+    report(f"  {len(kinds):,} typed entities")
     return len(rows), dropped
+
+
+#: The infobox field whose values name a type, per type. `country = France` is
+#: an author asserting that France is a country; enough authors saying so is
+#: the corpus defining the word, which beats a hand-written list that would go
+#: stale and would not match this corpus's spellings.
+TYPE_FIELD = {"country": "country"}
+
+
+def types(db: sqlite3.Connection, source: str,
+          resolve: Resolver) -> list[tuple[str, str]]:
+    """(kind, entity) for everything the corpus repeatedly calls a kind.
+
+    Collapsing `country` onto `located_in` is what made chaining work, and it
+    threw away exactly what "what COUNTRY was X born in" needs. The signal
+    survives in the fact table, which still records the field name.
+    """
+    counts: dict[tuple[str, str], int] = {}
+    for kind, field_name in TYPE_FIELD.items():
+        for (value,) in db.execute(
+                "SELECT value FROM fact WHERE source = ? AND property = ?",
+                (source, field_name)):
+            target = resolve(value)
+            if target:
+                counts[(kind, target)] = counts.get((kind, target), 0) + 1
+    return sorted(k for k, n in counts.items() if n >= TYPE_FLOOR)
+
+
+def is_a(db: sqlite3.Connection, source: str, entity: str, kind: str) -> bool:
+    return db.execute(
+        "SELECT 1 FROM entity_type WHERE source = ? AND kind = ? AND entity = ?",
+        (source, kind, entity)).fetchone() is not None
 
 
 # --- traversal ----------------------------------------------------------------
@@ -194,9 +275,16 @@ def follow(db: sqlite3.Connection, source: str, subject: str,
     walk is an absent edge, and the answer says which one, because a partial
     path is worth reporting rather than discarding.
     """
-    here = subject
+    here: str = subject
     walked = [subject]
     for relation in relations:
+        if relation in CLIMB:
+            step, kind = CLIMB[relation]
+            reached = _climb(db, source, here, walked, step, kind)
+            if reached is None:
+                return Answer(None, walked, relation)
+            here = reached
+            continue
         row = db.execute(
             "SELECT object FROM edge WHERE source = ? AND subject = ? "
             "AND relation = ? LIMIT 1", (source, here, relation)).fetchone()
@@ -205,6 +293,31 @@ def follow(db: sqlite3.Connection, source: str, subject: str,
         here = row[0]
         walked.append(here)
     return Answer(here, walked)
+
+
+def _climb(db: sqlite3.Connection, source: str, here: str, walked: list[str],
+           step: str, kind: str) -> str | None:
+    """Repeat ``step`` until ``here`` is a ``kind``, or the trail runs out.
+
+    The type check comes first, so an entity that is already what was asked for
+    is returned rather than stepped past - which is the whole point, since a
+    quarter of the birthplaces in this corpus are countries already.
+
+    Intermediate nodes are appended to ``walked`` even when the climb fails, so
+    a caller can report "born in Ulm, which is in Baden-Wurttemberg" rather
+    than only that it did not find a country.
+    """
+    for _ in range(CLIMB_LIMIT):
+        if is_a(db, source, here, kind):
+            return here
+        row = db.execute(
+            "SELECT object FROM edge WHERE source = ? AND subject = ? "
+            "AND relation = ? LIMIT 1", (source, here, step)).fetchone()
+        if row is None:
+            return None
+        here = row[0]
+        walked.append(here)
+    return None
 
 
 def inverse(db: sqlite3.Connection, source: str, obj: str,

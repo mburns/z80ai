@@ -4,8 +4,8 @@ An oracle that is wrong about half the time, and says so usefully.
 Three parts, each measured separately and each doing only what it wins at:
 
     which entity        the BM25 search index          works on names
-    which relation      the phrasebook classifier      92.5% macro, 9 relations
-    which path          the same classifier            43.8% on unseen phrasings
+    which relation      the phrasebook classifier      93.8% macro, 9 relations
+    which path          the same classifier            51.6% on unseen phrasings
     the answer          a walk over libgraph edges     a lookup
 
 The two classifier numbers come from the same model and are not comparable.
@@ -125,9 +125,13 @@ class Oracle:
     def relation(self, question: str) -> list[str] | None:
         """The relations a question is asking to walk, in order.
 
-        A phrase may name several - "born_in located_in" is the two-hop chain
-        for "what country was X born in" - so the model's vocabulary is paths
-        rather than single relations, and a one-hop path is just the short case.
+        A phrase may name several - "born_in in_country" is what "what country
+        was X born in" asks for - so the model's vocabulary is paths rather
+        than single relations, and a one-hop path is just the short case.
+
+        `in_country` is a climb rather than a step: it repeats `located_in`
+        until the value is a country. The question asks for a type, and how
+        many hops that takes is the graph's business, not the model's.
         """
         if self.relations is None:
             return None
@@ -203,6 +207,7 @@ READABLE = {
     "created_by": "who made it", "spouse_of": "who they married",
     "member_of": "what they belong to", "language_is": "its language",
     "genre_is": "its kind", "preceded_by": "what came before",
+    "in_country": "what country that is",
     "followed_by": "what came after",
 }
 

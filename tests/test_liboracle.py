@@ -121,6 +121,18 @@ def test_a_chain_that_breaks_says_what_it_did_learn(db, monkeypatch):
     assert "does not record" in liboracle.speak(r)
 
 
+def test_a_climb_that_runs_out_names_the_type_it_wanted(db, monkeypatch):
+    """"...does not record what country that is" - not "what contains it".
+
+    The climb asked for a type, so the apology has to name the type, or the
+    machine sounds like it does not know what it was looking for.
+    """
+    o = oracle(db, "born_in in_country", monkeypatch)
+    r = o.ask("what country was jane austen born in")
+    assert r.kind == liboracle.PARTIAL
+    assert "does not record what country that is" in liboracle.speak(r)
+
+
 def test_no_fact_falls_back_to_the_article_and_says_so(db, monkeypatch):
     o = oracle(db, "capital_is", monkeypatch)     # nothing has a capital
     r = o.ask("what is the capital of jane austen")
