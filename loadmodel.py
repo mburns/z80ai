@@ -8,11 +8,14 @@ CI environments to run without PyTorch installed.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import numpy as np
 
+from libinfer import Arch, Params
 
-def load_model_params(model_path: str) -> tuple[dict, dict, str]:
+
+def load_model_params(model_path: str) -> tuple[Params, Arch, str]:
     """Load model parameters from a .pt or .npz file.
 
     Args:
@@ -33,7 +36,7 @@ def load_model_params(model_path: str) -> tuple[dict, dict, str]:
     raise ValueError(f"Unknown model format: {model_path} (expected .pt or .npz)")
 
 
-def _load_npz(model_path: str) -> tuple[dict, dict, str]:
+def _load_npz(model_path: str) -> tuple[Params, Arch, str]:
     """Load from NumPy npz format."""
     data = np.load(model_path)
 
@@ -46,7 +49,7 @@ def _load_npz(model_path: str) -> tuple[dict, dict, str]:
     return params, arch, charset
 
 
-def quantize_checkpoint(checkpoint: dict) -> tuple[dict, dict, str]:
+def quantize_checkpoint(checkpoint: dict[str, Any]) -> tuple[Params, Arch, str]:
     """Rebuild the trained model from a checkpoint and quantize it.
 
     Shared by :func:`_load_pt` and ``exportmodel.py`` so there is one answer to
@@ -75,7 +78,7 @@ def quantize_checkpoint(checkpoint: dict) -> tuple[dict, dict, str]:
     return model.get_quantized_params(), arch, charset
 
 
-def _load_pt(model_path: str) -> tuple[dict, dict, str]:
+def _load_pt(model_path: str) -> tuple[Params, Arch, str]:
     """Load from PyTorch checkpoint format."""
     import torch
 

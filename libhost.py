@@ -15,7 +15,8 @@ silently reading zeroes.
 from __future__ import annotations
 
 import contextlib
-from typing import ClassVar
+from collections.abc import Callable
+from typing import Any, ClassVar
 
 # Entry points and memory maps come from the target modules rather than being
 # restated: the emulator's idea of where BDOS sits and the code generator's have
@@ -452,7 +453,7 @@ class AgonHost(_StdinKeys):
         #: name -> contents. Lookup is case-insensitive, like FAT.
         self.files = {name.upper(): data for name, data in (files or {}).items()}
         #: handle -> [name, position]. Handle 0 means failure, so start at 1.
-        self.handles: dict[int, list] = {}
+        self.handles: dict[int, list[Any]] = {}
         #: Bytes served from the card. bench.py reports this rather than
         #: pretending a hook that costs no T-states cost some.
         self.io_bytes = 0
@@ -553,7 +554,7 @@ class AgonHost(_StdinKeys):
 
     #: Dispatch on A. Anything absent raises, which is the property the module
     #: docstring promises and the reason a typo fails loudly.
-    _API: ClassVar[dict] = {
+    _API: ClassVar[dict[int, Callable[[AgonHost, Z80], bool]]] = {
         MOS_GETKEY: _getkey,
         MOS_LOAD: _load,
         MOS_FOPEN: _fopen,

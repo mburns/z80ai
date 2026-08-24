@@ -39,6 +39,7 @@ reaches the other half of it.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 
 import numpy as np
 
@@ -46,7 +47,7 @@ import libcpm
 import libinfer
 import libnn
 from libcpm import CPMPlatform
-from libinfer import MAX_OUTPUT_LEN, validate_z80_layers
+from libinfer import MAX_OUTPUT_LEN, NUM_BUCKETS, validate_z80_layers
 from libz80 import Z80Builder
 
 #: The three weight values that reach the inner loop; zero is what we skip.
@@ -361,7 +362,7 @@ def emit_preq(b: Z80Builder, layer_sizes: list[int]) -> None:
     b.ld_hl_label("INBUF")
     b.ld_de_label("ACT_A")
     b.ld_iy_label("COLLIST")
-    b.ld_b_n(libnn.NUM_BUCKETS)
+    b.ld_b_n(NUM_BUCKETS)
     b.call("SPLITSCAN")
     b.call("DRIVE1")
     for offset, target in ((0, "QBASELO"), (256, "QBASEHI")):
@@ -372,13 +373,13 @@ def emit_preq(b: Z80Builder, layer_sizes: list[int]) -> None:
     b.ret()
 
 
-def emit_inference(layer_sizes: list[int]):
+def emit_inference(layer_sizes: list[int]) -> Callable[[Z80Builder], None]:
     """One forward pass: re-split the context half, then run every layer."""
     def emit(b: Z80Builder) -> None:
         b.ld_hl_label("INBUF", libnn.CONTEXT_OFFSET)
-        b.ld_de_label("ACT_A", libnn.NUM_BUCKETS)
+        b.ld_de_label("ACT_A", NUM_BUCKETS)
         b.ld_iy_label("COLLIST")
-        b.ld_b_n(libnn.NUM_BUCKETS)
+        b.ld_b_n(NUM_BUCKETS)
         b.call("SPLITSCAN")
         for i in range(len(layer_sizes) - 1):
             b.call(f"LAYER{i + 1}")
@@ -478,7 +479,7 @@ def build_autoreg(
         b.blob(blob)
 
     b.label("COLLIST")
-    b.ds(libnn.NUM_BUCKETS * 2 + 1)
+    b.ds(NUM_BUCKETS * 2 + 1)
 
     # The split pages: low bytes in one, high bytes in the next, so a neuron
     # index is a whole address and INC H reaches its other half.
