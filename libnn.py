@@ -12,13 +12,15 @@ comes from, how a character reaches the screen, and how the weights are laid
 out for the inner loop.
 
 ``buildez80`` is the exception, and knowingly so. Its activations are 24 bits
-wide and its loops have no DJNZ byte counters, so every routine here that
-touches a buffer has to exist twice. What it *does* share is the encoder
-arithmetic - :func:`emit_hash_step`, :func:`emit_times_seven` and
-:func:`emit_band_index` - which is 16-bit on both machines and is the part
-where a divergence would be silent, since two hash functions that disagree
-still both produce plausible-looking buckets. The rest is held together by
-``tests/test_encoder_conformance.py``, which runs one corpus against every
+wide, so every routine here that touches a buffer has to exist twice. What it
+*does* share is everything that does not: the encoder arithmetic
+(:func:`emit_hash_step`, :func:`emit_times_seven`, :func:`emit_band_index`),
+:func:`emit_lower_fold`, :func:`emit_clear_ctx` and
+:func:`emit_charset_table`. Those are the parts where a divergence would be
+silent - two hash functions that disagree still both produce plausible-looking
+buckets, and a lower-case fold that disagrees with :func:`libinfer._lower`
+makes the model answer confidently rather than fail. The rest is held together
+by ``tests/test_encoder_conformance.py``, which runs one corpus against every
 backend and against the reference.
 
 Register and memory conventions shared by every routine below:
@@ -281,11 +283,7 @@ def emit_update_ctx(b: Z80Builder) -> None:
     b.ld_a_hl()
 
     # Lower-case A-Z only, matching the hashing done at training time.
-    b.cp_n(ord("A"))
-    b.jr_c("UPD_STORE")
-    b.cp_n(ord("Z") + 1)
-    b.jr_nc("UPD_STORE")
-    b.add_a_n(0x20)
+    emit_lower_fold(b, "UPD_STORE")
 
     b.label("UPD_STORE")
     b.ld_hl_label("CTXCHARS")
@@ -713,11 +711,7 @@ def emit_tokenizer(b: Z80Builder, plat: Platform, position_bands: int = 1) -> No
     b.ld_a_n(ord(" "))  # the leading pad
     b.ld_mem_label_a("TOKC1")
     b.ld_a_de()
-    b.cp_n(ord("A"))
-    b.jr_c("TOK_FIRST_LOW")
-    b.cp_n(ord("Z") + 1)
-    b.jr_nc("TOK_FIRST_LOW")
-    b.add_a_n(0x20)
+    emit_lower_fold(b, "TOK_FIRST_LOW")
     b.label("TOK_FIRST_LOW")
     b.ld_mem_label_a("TOKC2")
     b.inc_de()
@@ -730,11 +724,7 @@ def emit_tokenizer(b: Z80Builder, plat: Platform, position_bands: int = 1) -> No
     b.or_a()
     b.jr_z("TOK_TRAIL")
     b.ld_a_de()
-    b.cp_n(ord("A"))
-    b.jr_c("TOK_LOW1")
-    b.cp_n(ord("Z") + 1)
-    b.jr_nc("TOK_LOW1")
-    b.add_a_n(0x20)
+    emit_lower_fold(b, "TOK_LOW1")
     b.label("TOK_LOW1")
     b.ld_mem_label_a("TOKC3")
     b.call("TOK_HASH")
@@ -804,6 +794,33 @@ def emit_times_seven(b: Z80Builder, scratch: str = "de") -> None:
     b.add_hl_hl()
     b.add_hl_hl()  # * 8
     _pop_sub(b, scratch)
+
+
+def emit_lower_fold(b: Z80Builder, skip: str | None = None) -> None:
+    """Emit the A-Z lower-case fold on the byte in A, leaving the rest alone.
+
+    :func:`libinfer._lower` is the definition this has to match. If it does not,
+    generated code hashes text differently than training did, and the model
+    answers plausibly rather than failing - which is why four copies of five
+    instructions were worth collapsing into one.
+
+    Args:
+        b: The builder.
+        skip: Label to branch past the fold when A is not a letter. ``None``
+            emits the early RETs a subroutine wants instead, which is the form
+            the eZ80 build uses.
+    """
+    b.cp_n(ord("A"))
+    if skip is None:
+        b.ret_c()
+    else:
+        b.jr_c(skip)
+    b.cp_n(ord("Z") + 1)
+    if skip is None:
+        b.ret_nc()
+    else:
+        b.jr_nc(skip)
+    b.add_a_n(0x20)
 
 
 def emit_band_index(b: Z80Builder, bands: int) -> None:
