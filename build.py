@@ -125,7 +125,8 @@ def build_ez80(model: str, max_output_len: int,
     builder = buildez80.build_autoreg(
         model, max_output_len=max_output_len, kernel=kernel
     )
-    return builder, builder.kernel
+    # kernel is only None before build_autoreg sets it, which it always does.
+    return builder, builder.kernel or kernel
 
 
 def main() -> None:
@@ -178,7 +179,9 @@ def main() -> None:
         # A phrasebook build produces two files: the binary and the replies it
         # loads from the card. Writing them together is what keeps the offset
         # table and the text it indexes in step.
-        if getattr(builder, "phrase_blob", b""):
+        from libez80 import EZ80Builder
+
+        if isinstance(builder, EZ80Builder) and builder.phrase_blob:
             import buildez80
 
             buildez80.write_phrase_file(builder, args.output)

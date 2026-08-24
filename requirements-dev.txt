@@ -4,3 +4,6 @@
 numpy>=1.24
 pytest>=7.0
 ruff>=0.6
+# Type checking, gated in CI. See mypy.ini. feedme.py is excluded there because
+# it is the one torch consumer and torch's stubs are the noise, not the code.
+mypy>=1.11

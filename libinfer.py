@@ -209,11 +209,18 @@ class Model:
             out[f"fc{i}_bias"] = b.astype(np.int16)
         out["_architecture"] = np.array(json.dumps(self.architecture()).encode())
         out["_charset"] = np.array(self.charset.encode())
-        np.savez(path, **out)
+        # numpy's stub types savez's second parameter rather than its **kwds,
+        # so passing arrays by name looks like a type error and is not.
+        np.savez(path, **out)  # type: ignore[arg-type]
 
 
-def wrap(v: np.ndarray | int, bits: int) -> np.ndarray | int:
-    """Wrap to a signed value of ``bits`` width, as the accumulator does."""
+def wrap(v: np.ndarray | int, bits: int) -> np.ndarray:
+    """Wrap to a signed value of ``bits`` width, as the accumulator does.
+
+    Always an array, including for a scalar argument: np.asarray makes a 0-d
+    one. The return used to say ``| int``, which meant every caller looked as
+    though it might have to handle a plain int and none of them did.
+    """
     half = 1 << (bits - 1)
     return ((np.asarray(v, dtype=np.int64) + half) & ((1 << bits) - 1)) - half
 
@@ -378,7 +385,10 @@ class BuildInputs:
         Worth having in one place: the output layer's width is set by the weight
         shapes and the decode table's by this, and nothing compared them.
         """
-        return len(self.phrases) if self.is_phrasebook else len(self.charset)
+        # Tested against `phrases` rather than `is_phrasebook`: they mean the
+        # same thing, but only this one tells a reader (or a type checker) that
+        # the len() below cannot be reached with None.
+        return len(self.phrases) if self.phrases is not None else len(self.charset)
 
     @property
     def num_layers(self) -> int:

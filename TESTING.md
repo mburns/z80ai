@@ -110,6 +110,7 @@ matter are in `build`:
 | Check | What it stops |
 |---|---|
 | `ruff check` | pycodestyle, pyflakes, bugbear, comprehensions, simplifications, modern syntax, import order and performance rules. Two justified `noqa`s remain, both explained inline - see `ruff.toml` |
+| `mypy` | Annotations that contradict the code. `test_libnn.py` already requires the library modules to *be* annotated; this checks they are *right*. See `mypy.ini` for the two exclusions and why |
 | Test matrix | Python 3.10 through 3.13, `fail-fast: false` so one version failing doesn't hide the rest |
 | Reproducible build | Builds everything twice and compares byte for byte. A build that picks up dict ordering or a hash seed would stop matching what anyone can rebuild |
 | Artifact verification | Boots every release binary in the emulator and compares its output to the reference. **A binary that assembles but computes the wrong answer cannot reach a release** |

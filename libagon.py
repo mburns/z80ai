@@ -67,12 +67,10 @@ def emit_entry(b: EZ80Builder, answer: Callable[[EZ80Builder], None],
         phrase_bytes: Size of the reply file to load at startup, for a
             phrasebook build. ``None`` means the replies are in the image.
     """
-    phrasebook = phrase_bytes is not None
-
     b.label('START')
-    b.jp('LOAD_PHRASES' if phrasebook else 'CHAT_LOOP')
+    b.jp('CHAT_LOOP' if phrase_bytes is None else 'LOAD_PHRASES')
 
-    if phrasebook:
+    if phrase_bytes is not None:
         emit_load_phrases(b, phrase_bytes)
 
     b.label('CHAT_LOOP')

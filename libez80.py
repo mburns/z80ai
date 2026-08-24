@@ -38,6 +38,16 @@ class EZ80Builder(Z80Builder):
         super().__init__(org=org)
         #: Which layer kernel produced this image; set by buildez80.build_autoreg.
         self.kernel: str | None = None
+        #: A phrasebook build's replies, to be written beside the binary. Empty
+        #: for a character decoder, which spells its answers out of the image.
+        #: Declared here rather than attached to the instance afterwards: it is
+        #: load-bearing - build.py reads it to decide whether there is a second
+        #: file to write - and an attribute that only sometimes exists is one
+        #: nothing can check.
+        self.phrase_blob: bytes = b""
+        #: The name that blob must have on the SD card. The image carries the
+        #: string it asks MOS for, so this is part of what was built.
+        self.phrases_file: str | None = None
 
     # --- 24-bit data ---------------------------------------------------------
 
