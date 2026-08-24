@@ -30,15 +30,27 @@ back to a snapshot without asking anyone:
 
 ```console
 $ python data/wikipedia/ingest.py --stats
-  schema_version               4
+  schema_version               6
   simplewiki.articles          283997
-  simplewiki.digest            a3f21c9d4e7b8012
+  simplewiki.digest            adf8cbb46aabe719
   simplewiki.dump              simplewiki-20260801-pages-articles.xml.bz2
-  simplewiki.facts             1950164
-  simplewiki.ingested          2026-08-23T19:42:59
+  simplewiki.edges             150335
+  simplewiki.facts             1916652
+  simplewiki.ingested          2026-08-24T02:33:39
   simplewiki.redirects         114771
   simplewiki.url               https://dumps.wikimedia.org/simplewiki/20260801/...
+
+  simplewiki: 283,997 articles, 114,771 redirects (97.6% resolve), 68 MB of lead
+              1,916,652 facts over 129,721 subjects (46% of articles), 9,077 properties
+              values: text 74%, number 22%, date 4%, url 0%
+              47 properties map to a relation; biggest unmapped: name (95,626),
+              subdivision_type (40,770), years (34,988), clubs (34,323), ...
 ```
+
+That last line is the one to read. It is the corpus telling you what it knows
+that nothing yet understands - and the biggest entries are a footballer's
+career table, which is a fair summary of what Simple English Wikipedia is
+mostly made of.
 
 The URL is reconstructed from the filename, since a Wikimedia dump name
 carries its wiki and its date. A dump named anything else records no URL
@@ -129,7 +141,7 @@ postings.
 
 ## Facts, for the oracle this is not
 
-The database also carries **1,950,164 facts** pulled from infoboxes — an
+The database also carries **1,916,652 facts** pulled from infoboxes — an
 infobox is a hand-curated set of typed key/value pairs, which is to say a set
 of facts about its article. The lead throws them away as furniture; the `fact`
 table keeps them.
@@ -140,30 +152,69 @@ SELECT value FROM fact WHERE subject = 'Alexander Graham Bell'
 -- Edinburgh, Scotland
 ```
 
+### What the ingest normalizes, and what it refuses to
+
+An infobox is hand-typed by thousands of people, so what arrives is a
+folksonomy: before any cleaning, 13,387 distinct property names, 3,740 of them
+used exactly once. The ingest normalizes **form** and leaves **meaning** to
+`libgraph`, and the line matters — form is mechanical and decidable from the
+data, while *"`subdivision_name` and `country` are the same question"* is a
+judgement about this corpus that belongs where the judgement is made.
+
+| | |
+|---|---|
+| comments stripped before splitting | a comment between two pipes ran into the next key |
+| keys cleaned and shape-checked | only values went through the cleaner before |
+| `subdivision_name1..7` → `(property, ordinal)` | **27.6% of facts** were positional variants |
+| values typed `text`/`number`/`date`/`url` | 22% are numbers, which sorted lexically as text |
+
+That takes the vocabulary from 13,387 properties to **9,077**.
+
+The index split is the one that needed care. `subdivision_name2` is the second
+subdivision; `area_km2` is square kilometres, and splitting it invents a field
+called `area_km` that nobody wrote. Nothing in the name tells you which — only
+whether the rest of the vocabulary agrees there is a series. Requiring more
+than one index under a base separates 743 real series from 137 lone names, and
+every one of those 137 ends in `km2`.
+
+What cannot be normalized is recorded. The `property` table holds the
+vocabulary with its counts and the relation `libgraph` reads it as, so *"what
+is used often and mapped to nothing"* is a query rather than an afternoon with
+a dump:
+
+```sql
+SELECT name, uses FROM property
+ WHERE source = 'simplewiki' AND relation IS NULL
+ ORDER BY uses DESC LIMIT 10;
+```
+
+The last property that query would have surfaced was `subdivision_name`, and
+adding it took chaining from 1.7% to 40.7%.
+
 They are here because answering *"where was Bell born"* is a **lookup**, not
 reading. That is the difference between a search box and an oracle, and it is
 the only route to one on this hardware: extracting an answer from prose is
 comprehension, and out of reach.
 
-The pieces an oracle would need, and where they stand:
+The pieces, and where they stand — `oracle.py` puts them together:
 
 | | mechanism | measured |
 |---|---|---|
 | "bell" → the article | the search index here | works |
-| "where was … born" → `birth_place` | the phrasebook classifier | **85.6% macro** over 44 relations |
-| `(subject, property)` → value | this table's primary key | a lookup |
+| "where was … born" → `born_in` | the phrasebook classifier | **93.8% macro**, 9 relations |
+| "what country was … born in" → a path | the same classifier | **51.6%** on unseen phrasings |
+| `(subject, property, ordinal)` → value | this table's primary key | a lookup |
 
 The relation number is from [SimpleQuestions](https://github.com/askplatypus/wikidata-simplequestions)
-mapped to Wikidata — 12,888 real human-written questions over 44 relations, in
-39KB of weights.
+mapped to Wikidata — real human-written questions. The path number is over
+phrasings this repo wrote and then withheld from training, which is why it is
+so much lower and why it is the one to believe.
 
-**What stops it being built today is coverage, not accuracy.** Only 46% of
-articles have an infobox, and a good share of those fields are layout rather
-than fact. An oracle over this corpus would be confidently right about where
-someone was born and silent about most else.
-
-Nothing on the card uses these yet. They are here because they were already in
-the dump, and extracting them costs one pass we were making anyway.
+**What stops it being better is coverage, not accuracy.** Only 46% of articles
+have an infobox, so a chain that hops onto one of the other 54% cannot
+continue. The oracle is confidently right about where someone was born and
+silent about a great deal else — and the design leans into that, reporting how
+far a walk got rather than only that it failed.
 
 ## Redirects earn their place
 

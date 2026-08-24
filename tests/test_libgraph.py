@@ -13,29 +13,36 @@ that a broken chain says *where* it broke rather than only that it did.
 from __future__ import annotations
 
 import sqlite3
+import sys
+from pathlib import Path
 
 import pytest
 
 import libgraph
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "data" / "wikipedia"))
+import ingest
+
 
 @pytest.fixture
 def db():
     conn = sqlite3.connect(":memory:")
-    conn.executescript("""
-        CREATE TABLE article (source TEXT, title TEXT, lead TEXT);
-        CREATE TABLE redirect (source TEXT, title TEXT, target TEXT);
-        CREATE TABLE fact (source TEXT, subject TEXT, property TEXT, value TEXT);
-    """)
-    conn.executescript(libgraph.schema(strict=False))
+    # The real schema, not a hand-written stand-in. A copy is how these tests
+    # kept passing against a `fact` table the ingest had already changed.
+    conn.executescript(ingest._schema())
     return conn
 
 
 def load(db, articles, facts, redirects=()):
-    db.executemany("INSERT INTO article VALUES ('w', ?, '')",
-                   [(a,) for a in articles])
+    """`facts` are (subject, property, value) or (subject, property, ordinal,
+    value) - the ordinal defaults to 0, the way an unindexed field does."""
+    db.executemany("INSERT INTO article (source, title, lead) "
+                   "VALUES ('w', ?, '')", [(a,) for a in articles])
     db.executemany("INSERT INTO redirect VALUES ('w', ?, ?)", redirects)
-    db.executemany("INSERT INTO fact VALUES ('w', ?, ?, ?)", facts)
+    db.executemany(
+        "INSERT OR REPLACE INTO fact (source, subject, property, ordinal, "
+        "value, kind, num) VALUES ('w', ?, ?, ?, ?, 'text', NULL)",
+        [(f[0], f[1], 0, f[2]) if len(f) == 3 else f for f in facts])
     libgraph.build(db, "w")
 
 
@@ -200,10 +207,12 @@ def test_sources_do_not_leak_into_each_other(db):
 
 def countries(db, *names, times=libgraph.TYPE_FLOOR):
     """Make the corpus call something a country, TYPE_FLOOR authors deep."""
-    db.executemany("INSERT INTO fact VALUES ('w', ?, 'country', ?)",
-                   [(f"Article {i}", name)
-                    for name in names for i in range(times)])
-    db.executemany("INSERT INTO article VALUES ('w', ?, '')",
+    db.executemany(
+        "INSERT OR REPLACE INTO fact (source, subject, property, ordinal, "
+        "value, kind, num) VALUES ('w', ?, 'country', 0, ?, 'text', NULL)",
+        [(f"Article {i}", name) for name in names for i in range(times)])
+    db.executemany("INSERT OR REPLACE INTO article (source, title, lead) "
+                   "VALUES ('w', ?, '')",
                    [(f"Article {i}",) for i in range(times)])
 
 

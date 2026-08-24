@@ -9,10 +9,14 @@ its values resolved to article titles, so a hop can continue.
 
 Infoboxes are written by thousands of people reaching for hundreds of
 templates, so the property vocabulary is a folksonomy rather than a schema. A
-city records what country it is in as ``subdivision_name``, or
-``subdivision_name1``, or ``state``, or ``country``, depending on which
-template the author used. A chain asking for ``country`` therefore fails on a
-graph that plainly contains the answer.
+city records what country it is in as ``subdivision_name``, or ``state``, or
+``country``, depending on which template the author used. A chain asking for
+``country`` therefore fails on a graph that plainly contains the answer.
+
+The ingest normalizes the *form* of a property - splitting the index off
+``subdivision_name1``, checking the shape, typing the value. What a property
+**means** is decided here instead, because meaning is a judgement about this
+particular corpus and form is not.
 
 Measured over Simple English Wikipedia, collapsing those synonyms onto one
 ``located_in`` relation takes ``birth_place -> country`` from **1.7%** of
@@ -54,10 +58,13 @@ from dataclasses import dataclass, field
 #: ``country`` and ``subdivision_name`` contributes one edge rather than two
 #: that disagree.
 CANONICAL: dict[str, tuple[str, ...]] = {
+    # `subdivision_name1` and `subdivision_name2` used to be listed here as
+    # separate fields. The ingest now splits the index off into `fact.ordinal`,
+    # so they arrive as one property and the ordinal decides which is preferred.
     "located_in": (
-        "country", "subdivision_name", "subdivision_name1", "state",
-        "province", "region", "municipality_name", "arrondissement", "canton",
-        "department", "district", "county", "prefecture", "subdivision_name2",
+        "country", "subdivision_name", "state", "province", "region",
+        "municipality_name", "arrondissement", "canton", "department",
+        "district", "county", "prefecture",
     ),
     "born_in": ("birth_place", "place_of_birth", "birthplace"),
     "died_in": ("death_place", "place_of_death", "deathplace"),
@@ -180,22 +187,26 @@ def build(db: sqlite3.Connection, source: str,
         "SELECT title, target FROM redirect WHERE source = ?", (source,)))
     resolve = Resolver(titles, redirects)
 
-    # subject -> relation -> (rank, value): the best-ranked field wins.
-    best: dict[str, dict[str, tuple[int, str]]] = {}
-    for subject, prop, value in db.execute(
-            "SELECT subject, property, value FROM fact WHERE source = ?",
-            (source,)):
+    # subject -> relation -> (rank, ordinal, value): the best-ranked field
+    # wins, and within one field the lowest ordinal does. A template writes a
+    # list as `subdivision_name1`, `subdivision_name2`; the ingest splits that
+    # index into `ordinal`, so the tie-break that used to be spelled out in
+    # CANONICAL as two separate fields is now just a smaller number.
+    best: dict[str, dict[str, tuple[int, int, str]]] = {}
+    for subject, prop, ordinal, value in db.execute(
+            "SELECT subject, property, ordinal, value FROM fact "
+            "WHERE source = ?", (source,)):
         hit = FIELD_RELATION.get(prop)
         if hit is None:
             continue
         relation, rank = hit
         slot = best.setdefault(subject, {})
-        if relation not in slot or rank < slot[relation][0]:
-            slot[relation] = (rank, value)
+        if relation not in slot or (rank, ordinal) < slot[relation][:2]:
+            slot[relation] = (rank, ordinal, value)
 
     rows, dropped = [], 0
     for subject, relations in best.items():
-        for relation, (_rank, value) in relations.items():
+        for relation, (_rank, _ordinal, value) in relations.items():
             target = resolve(value)
             if target is None:
                 dropped += 1        # a value that names no article we hold
