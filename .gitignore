@@ -17,6 +17,10 @@ dist/
 *.db
 *.db-wal
 *.db-shm
+
+# Question sets fetched from their upstreams by data/questions/*.py, which
+# record the URLs they came from.
+data/questions/cache/
 *.IDX
 *.DAT
 .venv/

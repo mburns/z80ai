@@ -32,8 +32,13 @@ import bz2
 import hashlib
 import re
 import sqlite3
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+import libgraph
 
 DB_PATH = Path(__file__).resolve().parent.parent / "simple_english_wikipedia.db"
 #: Bumped whenever the table definitions change. The database is derived data,
@@ -149,7 +154,7 @@ CREATE TABLE IF NOT EXISTS fact (
 ) {STRICT}WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS fact_value ON fact (source, value);
-"""
+""" + libgraph.schema(strict=bool(STRICT))
 
 # --- dump parsing -------------------------------------------------------------
 #
@@ -618,7 +623,19 @@ def main() -> None:
 
     print(f"ingesting {args.dump.name} as '{args.source}' into {args.db}")
     articles, redirects, facts = ingest(db, args.dump, args.source)
-    print(f"\n{articles:,} articles, {redirects:,} redirects, {facts:,} facts\n")
+    print(f"\n{articles:,} articles, {redirects:,} redirects, {facts:,} facts")
+
+    # The walkable graph, built from the facts: property synonyms collapsed
+    # onto canonical relations and values resolved to article titles. Derived
+    # rather than stored twice, so it cannot disagree with the facts it came
+    # from - and rebuilt here because it is cheap next to the parse.
+    print("\nbuilding the graph...")
+    edges, _dropped = libgraph.build(db, args.source, report=print)
+    db.commit()
+    db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)",
+               (f"{args.source}.edges", str(edges)))
+    db.commit()
+    print()
     stats(db)
     # ANALYZE so the planner has real distributions: the notability ranking in
     # buildwikisearch is a correlated subquery per article, and it should use
