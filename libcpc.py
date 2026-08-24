@@ -76,7 +76,6 @@ class CPCPlatform(libnn.Platform):
 
     name = "Amstrad CPC"
     buffer = "TOKBUF"
-    weight_layout = "rotated"
 
     def print_char(self, b: Z80Builder) -> None:
         b.call_addr(TXT_OUTPUT)

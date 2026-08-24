@@ -71,7 +71,6 @@ class FastCPMPlatform(CPMPlatform):
     """
 
     name = "CP/M (index lists)"
-    weight_layout = "index"
 
 
 def pack_weights_and_biases(weights: np.ndarray, biases: np.ndarray,
@@ -329,10 +328,10 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
 
     # === Shared engine: printing, context encoding, tokenizing ===
     libnn.emit_printch(b, plat)
-    libnn.emit_update_ctx(b, plat)
+    libnn.emit_update_ctx(b)
     libnn.emit_encode_ctx(b, plat)
     libnn.emit_ctx_hash(b, plat)
-    libnn.emit_clear_ctx(b, plat, unrolled=False)
+    libnn.emit_clear_ctx(b, unrolled=False)
 
     # === Inference Evaluation ===
     # HL points to NETWORK:

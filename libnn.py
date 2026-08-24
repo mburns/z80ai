@@ -63,8 +63,6 @@ class Platform(ABC):
     name: str = "unknown"
     #: Label of the activation buffer holding both halves of the input vector.
     buffer: str = "INBUF"
-    #: Which :func:`libinfer.pack_2bit` layout the inner loop expects.
-    weight_layout: str = "rotated"
 
     @abstractmethod
     def print_char(self, b: Z80Builder) -> None:
@@ -209,7 +207,6 @@ def emit_layered_inference(plans: list[LayerPlan]) -> Callable[[Z80Builder], Non
 
 def emit_generate(
     b: Z80Builder,
-    plat: Platform,
     eos_idx: int,
     max_output_len: int,
     emit_inference: Callable[[Z80Builder], None],
@@ -267,7 +264,7 @@ def emit_printch(b: Z80Builder, plat: Platform) -> None:
 # --- context encoding --------------------------------------------------------
 
 
-def emit_update_ctx(b: Z80Builder, plat: Platform) -> None:
+def emit_update_ctx(b: Z80Builder) -> None:
     """Emit UPDATE_CTX: shift the context window and append the new character."""
     b.label("UPDATE_CTX")
     b.ld_hl_label("CTXCHARS")
@@ -427,7 +424,7 @@ def emit_ctx_hash(b: Z80Builder, plat: Platform) -> None:
     b.ret()
 
 
-def emit_clear_ctx(b: Z80Builder, plat: Platform, unrolled: bool = True) -> None:
+def emit_clear_ctx(b: Z80Builder, unrolled: bool = True) -> None:
     """Emit CLEAR_CTX: fill the context window with spaces and re-encode.
 
     ``unrolled`` picks between straight-line stores and a DJNZ loop; the two

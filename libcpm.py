@@ -52,7 +52,6 @@ class CPMPlatform(libnn.Platform):
 
     name = "CP/M"
     buffer = "INBUF"
-    weight_layout = "rotated"
 
     def print_char(self, b: Z80Builder) -> None:
         b.ld_e_a()
