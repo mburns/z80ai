@@ -38,6 +38,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 # NUM_BUCKETS (hash buckets per half of the input vector), CONTEXT_LEN
 # (characters of output fed back) and BUCKET_WEIGHT (the fixed-point scale for
@@ -47,6 +48,11 @@ from dataclasses import dataclass
 # and does so quietly.
 from libinfer import BUCKET_WEIGHT, CONTEXT_LEN, NUM_BUCKETS, BuildInputs
 from libz80 import Z80Builder
+
+#: The register pair an emitter may borrow to shift-and-subtract through.
+#: Closed set: CTX_HASH holds a character pointer in DE for the length of its
+#: loop and cannot lend it out, and neither can the eZ80's.
+Scratch = Literal["de", "bc"]
 
 #: Bytes per activation.
 ACTIVATION_SIZE = 2
@@ -760,19 +766,25 @@ def emit_tokenizer(b: Z80Builder, plat: Platform, position_bands: int = 1) -> No
 # length of its loop and cannot lend it out, and neither can the eZ80's.
 
 
-def _pop_sub(b: Z80Builder, scratch: str) -> None:
-    """``POP ss / OR A / SBC HL,ss`` - the subtract half of a shift-and-subtract."""
+def _pop_sub(b: Z80Builder, scratch: Scratch) -> None:
+    """``POP ss / OR A / SBC HL,ss`` - the subtract half of a shift-and-subtract.
+
+    Two values, so it is a Literal rather than a str with a runtime guard. The
+    guard used to be a ValueError three lines above a bare ``if/else`` that
+    would otherwise have emitted ``SBC HL,BC`` for anything unrecognised - total
+    only because the raise got there first.
+    """
     if scratch == "de":
         b.pop_de()
-    elif scratch == "bc":
-        b.pop_bc()
+        b.or_a()  # clear carry; SBC would otherwise borrow whatever was left
+        b.sbc_hl_de()
     else:
-        raise ValueError(f"scratch must be 'de' or 'bc', not {scratch!r}")
-    b.or_a()  # clear carry; SBC would otherwise borrow whatever was left
-    b.sbc_hl_de() if scratch == "de" else b.sbc_hl_bc()
+        b.pop_bc()
+        b.or_a()
+        b.sbc_hl_bc()
 
 
-def emit_hash_step(b: Z80Builder, scratch: str = "de") -> None:
+def emit_hash_step(b: Z80Builder, scratch: Scratch = "de") -> None:
     """Emit ``HL *= 31``, as ``HL * 32 - HL``.
 
     One round of :func:`libinfer.hash16`. There is no multiply on a Z80, and
@@ -784,7 +796,7 @@ def emit_hash_step(b: Z80Builder, scratch: str = "de") -> None:
     _pop_sub(b, scratch)
 
 
-def emit_times_seven(b: Z80Builder, scratch: str = "de") -> None:
+def emit_times_seven(b: Z80Builder, scratch: Scratch = "de") -> None:
     """Emit ``HL *= 7``, as ``HL * 8 - HL``.
 
     :data:`libinfer.BAND_SEED`, and the same trick as :func:`emit_hash_step`.

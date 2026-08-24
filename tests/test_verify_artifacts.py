@@ -6,6 +6,8 @@ A verifier that silently passes everything is worse than no verifier.
 
 from __future__ import annotations
 
+import typing
+
 import pytest
 
 import buildz80tap
@@ -88,9 +90,12 @@ def test_agon_images_are_checked_against_sram_not_the_16mb_address_space():
         va.check_fits(va.AGON_LOAD, usable + 1, top, "the top of Agon SRAM")
 
 
-#: Every platform run_artifact knows how to boot. An artifact naming anything
-#: else would reach its `unknown platform` fallback only at release time.
-PLATFORMS = {"cpm", "zx", "next", "cpc", "agon", "agon-phrasebook"}
+#: Every platform run_artifact knows how to boot, taken from the Literal that
+#: now declares them rather than restated here. An artifact naming anything else
+#: used to reach the `unknown platform` fallback only at release time; mypy
+#: rejects it outright now, and this keeps the runtime checks below honest about
+#: the same set.
+PLATFORMS = set(typing.get_args(va.Platform))
 
 
 def test_every_known_artifact_names_a_model_that_exists(examples_dir):
@@ -114,11 +119,17 @@ def test_every_phrasebook_artifact_declares_its_companion():
 
 
 def test_an_unknown_platform_is_refused(tmp_path):
-    """The fallback in run_artifact, reached before a release rather than during."""
+    """The fallback in run_artifact, which type-correct code can no longer reach.
+
+    `platform` is a Literal now, so mypy rejects a bad one at the call site and
+    this deliberately passes an invalid value to prove the runtime guard is
+    still there. Belt and braces: the annotation stops a typo in ARTIFACTS, and
+    this stops the guard being quietly deleted as unreachable.
+    """
     path = tmp_path / "X.BIN"
     path.write_bytes(b"\x00" * 256)
     with pytest.raises(va.VerificationError, match="unknown platform"):
-        va.run_artifact(str(path), "commodore", "HELLO")
+        va.run_artifact(str(path), "commodore", "HELLO")  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("platform", sorted(PLATFORMS))
