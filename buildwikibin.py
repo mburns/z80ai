@@ -12,7 +12,7 @@ with an unchanged binary.
     for each word, up to eight that are actually in the index:
         hash -> bucket -> one seek -> walk that bucket's chain
         add each posting's weight into the accumulator
-    scan the accumulator for the three largest
+    scan the pages the query touched for the three largest
     read those three titles and leads off the card and print them
 
 There is no arithmetic beyond addition. BM25's multiply, divide and per-document
@@ -20,6 +20,11 @@ length all happened at build time, and each posting arrives as a five-bit weight
 that is simply added. That is what keeps the accumulator at one byte per
 article - 277KB for 284,000 of them, resident, no sharding - and it is why this
 runs in milliseconds rather than seconds.
+
+The accumulator is tiered: one flag byte per 256-article page, set when a
+posting lands. The clear and report passes walk the flags and visit only
+flagged pages, so a query pays for the pages it touched rather than for the
+whole corpus - the two whole-corpus passes were the dominant per-query cost.
 
 ## Memory
 
@@ -70,6 +75,7 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
           text_name: str = "WIKI.DAT",
           org: int = AGON_LOAD_ADDR) -> EZ80Builder:
     """Emit the search program for a card holding ``num_docs`` articles."""
+    num_pages = (num_docs + 255) >> 8
     acc_base = accumulator_base(num_docs)
     b = EZ80Builder(org=org)
     agon_header(b, "START")
@@ -195,16 +201,9 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
 
     # --- accumulator ---------------------------------------------------------
     #
-    # One byte per article, cleared per query. Whole-corpus memset: 284,000
-    # stores, a few milliseconds, and far cheaper than tracking which slots the
-    # last query touched.
-    b.label("CLEAR_ACC")
-    b.ld_hl_nn(acc_base)
-    b.ld_de_nn(acc_base + 1)
-    b.ld_bc_nn(num_docs - 1)
-    b.ld_hl_n(0)
-    b.ldir()
-    b.ret()
+    # One byte per article, tiered into 256-article pages so the per-query
+    # passes visit only the pages scoring touched.
+    _emit_clear_acc(b, num_docs, acc_base, num_pages)
 
     # --- query ---------------------------------------------------------------
     b.label("SCORE_QUERY")
@@ -355,9 +354,9 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     b.ret()
 
     _emit_score_term(b, acc_base)
-    _emit_report(b, num_docs, acc_base)
+    _emit_report(b, num_docs, acc_base, num_pages)
     _emit_console(b)
-    _emit_data(b, num_docs, acc_base, index_name, text_name)
+    _emit_data(b, num_docs, acc_base, num_pages, index_name, text_name)
 
     top = b.org + len(b.code)
     assert top <= acc_base, (
@@ -366,6 +365,74 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     b.accumulator = acc_base
     b.num_docs = num_docs
     return b
+
+
+def _emit_clear_acc(b: EZ80Builder, num_docs: int, acc_base: int,
+                    num_pages: int) -> None:
+    """Zero the pages the previous query touched, and their flags.
+
+    A whole-corpus memset is ~284,000 stores; scoring touches a handful of
+    256-article pages for a typical lookup. Walking the page table and
+    clearing only flagged pages is the same resulting state - every article
+    byte is zero and so is every flag - for a fraction of the stores. A
+    flagged page's flag is reset as it is cleared, so the table needs no
+    pass of its own.
+    """
+    acc_end = acc_base + num_docs
+    b.label("CLEAR_ACC")
+    b.ld_iy_label("PAGE_TAB")
+    b.ld_hl_nn(num_pages)
+    b.ld_mem_label_hl("PGLEFT")
+    b.ld_hl_nn(acc_base)
+    b.ld_mem_label_hl("PACC")
+
+    b.label("CA_PAGE")
+    b.ld_a_iyd(0)
+    b.or_a()
+    b.jr_z("CA_NEXT")
+
+    # A flagged page: reset its flag, then clear min(256, remaining) bytes -
+    # the final page may be short, and writing past the accumulator would
+    # reach the stack margin.
+    b.xor_a()
+    b.ld_iyd_a(0)
+    b.ld_hl_nn(acc_end)
+    b.ld_de_mem_label("PACC")
+    b.or_a()
+    b.sbc_hl_de()                    # HL = articles from this page to the end
+    b.ld_de_nn(256)
+    b.ld_bc_nn(256)
+    b.push_hl()
+    b.or_a()
+    b.sbc_hl_de()
+    b.pop_hl()
+    b.jr_nc("CA_HAVE")               # a full page survives
+    b.push_hl()
+    b.pop_bc()                       # the last page: only its remainder
+    b.label("CA_HAVE")
+    b.ld_hl_mem_label("PACC")
+    b.ld_de_mem_label("PACC")
+    b.inc_de()
+    b.ld_hl_n(0)                     # the first byte, propagated by the LDIR
+    b.dec_bc()
+    b.ld_a_b()
+    b.or_c()
+    b.jr_z("CA_NEXT")                # a one-article page needs no copy
+    b.ldir()
+
+    b.label("CA_NEXT")
+    b.ld_hl_mem_label("PACC")
+    b.ld_bc_nn(256)
+    b.add_hl_bc()
+    b.ld_mem_label_hl("PACC")
+    b.inc_iy()
+    b.ld_hl_mem_label("PGLEFT")
+    b.ld_de_nn(1)
+    b.or_a()
+    b.sbc_hl_de()
+    b.ld_mem_label_hl("PGLEFT")
+    b.jp_nz("CA_PAGE")
+    b.ret()
 
 
 def _emit_score_term(b: EZ80Builder, acc_base: int) -> None:
@@ -557,7 +624,9 @@ def _emit_score_term(b: EZ80Builder, acc_base: int) -> None:
     b.sbc_hl_de()
     b.ld_mem_label_hl("NPOST")
 
-    # Add each (doc, weight) into the accumulator, saturating at 255.
+    # Add each (doc, weight) into the accumulator, saturating at 255, and flag
+    # the article's 256-doc page so the clear and report passes visit only
+    # pages this query touched.
     b.ld_ix_label("IOBUF")
     b.ld_hl_mem_label("NTHIS")
     b.ld_mem_label_hl("NLEFT")
@@ -573,6 +642,16 @@ def _emit_score_term(b: EZ80Builder, acc_base: int) -> None:
     b.or_a()
     b.sbc_hl_de()
     b.ld_mem_label_hl("NLEFT")
+
+    # The page index is the top two bytes of the 24-bit document id.
+    b.ld_de_nn(0)
+    b.ld_a_ixd(1)
+    b.ld_e_a()
+    b.ld_a_ixd(2)
+    b.ld_d_a()
+    b.ld_hl_label("PAGE_TAB")
+    b.add_hl_de()
+    b.ld_hl_n(1)
 
     b.ld_hl_ixd(0)                   # document id
     b.ld_bc_nn(acc_base)
@@ -597,8 +676,15 @@ def _emit_score_term(b: EZ80Builder, acc_base: int) -> None:
     b.jp("STS_ONE")
 
 
-def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int) -> None:
-    """Find the best three scores and print their articles."""
+def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
+                 num_pages: int) -> None:
+    """Find the best three scores and print their articles.
+
+    Pages the query never touched hold only zeros, so the scan walks the page
+    table and skips unflagged pages wholesale instead of reading 277KB to find
+    a handful of nonzero bytes. Order is unchanged - pages in order, articles
+    in order within a page - so first-wins ties still match libsearch.
+    """
     b.label("REPORT")
     for k in range(TOP_K):
         b.ld_hl_nn(0)
@@ -606,11 +692,39 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int) -> None:
         b.xor_a()
         b.ld_mem_label_a("BESTSC", k)
 
-    # One pass over the accumulator, keeping three. First-wins on ties, which
-    # matches libsearch and therefore the reference implementation.
-    b.ld_ix_nn(acc_base)
+    b.ld_iy_label("PAGE_TAB")
+    b.ld_hl_nn(num_pages)
+    b.ld_mem_label_hl("PGLEFT")
+    b.ld_hl_nn(acc_base)
+    b.ld_mem_label_hl("PACC")
     b.ld_hl_nn(0)
     b.ld_mem_label_hl("SCANID")
+
+    b.label("RP_PAGE")
+    b.ld_a_iyd(0)
+    b.or_a()
+    b.jr_nz("RP_DOCPG")
+
+    # An unflagged page is all zeros: skip its 256 articles. The final page
+    # may be short, so the skip stops at num_docs, not at a page boundary.
+    b.ld_hl_mem_label("SCANID")
+    b.ld_de_nn(256)
+    b.add_hl_de()
+    b.ld_mem_label_hl("SCANID")
+    b.ld_de_nn(num_docs)
+    b.or_a()
+    b.sbc_hl_de()
+    b.jp_nc("RP_SHOW")               # skipped past the final article
+    b.jr("RP_PNXT")
+
+    # A flagged page: scan it byte by byte. B counts a full page's 256
+    # articles (DJNZ counts 256 from zero); the SCANID check inside ends the
+    # final, partial page exactly.
+    b.label("RP_DOCPG")
+    b.ld_hl_mem_label("PACC")
+    b.push_hl()
+    b.pop_ix()
+    b.ld_b_n(0)
 
     b.label("RP_SCAN")
     b.ld_a_ixd(0)
@@ -627,13 +741,22 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int) -> None:
     b.or_a()
     b.sbc_hl_de()
     b.jp_z("RP_SHOW")                # RP_OFFER sits between, well past JR range
-    b.push_ix()
-    b.pop_hl()
+    b.inc_ix()
+    b.djnz("RP_SCAN")
+
+    b.label("RP_PNXT")
+    b.ld_hl_mem_label("PACC")
+    b.ld_bc_nn(256)
+    b.add_hl_bc()
+    b.ld_mem_label_hl("PACC")
+    b.inc_iy()
+    b.ld_hl_mem_label("PGLEFT")
     b.ld_de_nn(1)
-    b.add_hl_de()
-    b.push_hl()
-    b.pop_ix()
-    b.jp("RP_SCAN")
+    b.or_a()
+    b.sbc_hl_de()
+    b.ld_mem_label_hl("PGLEFT")
+    b.jp_nz("RP_PAGE")
+    b.jp("RP_SHOW")                  # unreached: the SCANID checks fire first
 
     # RP_OFFER: A is a score, (SCANID) its document. Insert if it beats one.
     b.label("RP_OFFER")
@@ -813,7 +936,7 @@ def _emit_console(b: EZ80Builder) -> None:
     b.ret()
 
 
-def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int,
+def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, num_pages: int,
                index_name: str, text_name: str) -> None:
     b.label("BANNER")
     b.ascii(f"Simple English Wikipedia - {num_docs:,} articles")
@@ -860,7 +983,7 @@ def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int,
     b.ds(TOP_K)
 
     for name in ("SEEKOFF", "HTMP", "HTMP2", "NPOST", "NTHIS", "NLEFT",
-                 "SCANID"):
+                 "SCANID", "PGLEFT", "PACC"):
         b.label(name)
         b.d24(0)
         b.db(0)                      # SEEKOFF's high byte; harmless elsewhere
@@ -875,6 +998,11 @@ def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int,
     b.ds(CHUNK + 16)
     b.label("TEXTBUF")
     b.ds(CHUNK + 16)
+
+    # One flag per 256-article page: small enough to live in the image
+    # (1,110 bytes for the full corpus), where a `ds` costs real zeros.
+    b.label("PAGE_TAB")
+    b.ds(num_pages)
 
 
 #: Where the bucket table starts: straight after the header libsearch writes.

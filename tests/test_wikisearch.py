@@ -62,9 +62,13 @@ def reference(card):
 
 def run_query(card, query: str) -> str:
     """Run the generated binary against the card and return what it printed."""
+    return run_session(card, [query])
+
+
+def run_session(card, queries: list[str]) -> str:
     idx, dat, index = card
     builder = buildwikibin.build(index.num_docs)
-    host = AgonHost(stdin=[query, "!"], files={
+    host = AgonHost(stdin=[*queries, "!"], files={
         "WIKI.IDX": idx.read_bytes(),
         "WIKI.DAT": dat.read_bytes(),
     })
@@ -177,6 +181,68 @@ def test_the_reference_refuses_a_foreign_index(tmp_path):
     bad.write_bytes(b"NOTZWIK" + bytes(64))
     with pytest.raises(ValueError, match="not a ZWIKI1 index"):
         libsearch.CardSearch(bad, bad)
+
+
+# --- the page-tiered accumulator ------------------------------------------------
+#
+# Six articles fit in one 256-article page, so the corpus above never exercises
+# the page table: skipping unflagged pages, the short final page, or clearing
+# between queries. Three pages here, the last one partial.
+
+BIG_DOCS = 600
+
+
+@pytest.fixture(scope="module")
+def big_card(tmp_path_factory):
+    out = tmp_path_factory.mktemp("bigcard")
+    titles = [f"Article {i}" for i in range(BIG_DOCS)]
+    leads = [f"filler text {i}" for i in range(BIG_DOCS)]
+    leads[0] = "zxqfirst appears only here"
+    leads[300] = "zxqmid appears only here"
+    leads[599] = "zxqlast appears only here"
+    index = libsearch.build(titles, leads, {})
+    idx = out / "WIKI.IDX"
+    dat = out / "WIKI.DAT"
+    libsearch.write_index(index, idx)
+    libsearch.write_text(index, dat)
+    return idx, dat, index
+
+
+@pytest.mark.parametrize("query,title", [
+    ("zxqfirst", "Article 0"),     # first page flagged, later pages skipped
+    ("zxqmid", "Article 300"),     # a middle page
+    ("zxqlast", "Article 599"),    # the short final page
+])
+def test_a_flagged_page_is_found_wherever_it_sits(big_card, query, title):
+    assert title in run_session(big_card, [query])
+
+
+def test_scores_do_not_leak_between_queries(big_card):
+    """Clearing only flagged pages must still leave every byte zero, or the
+    next query would inherit scores it never earned."""
+    printed = run_session(big_card, ["zxqmid", "aardvark"])
+    assert "Article 300" in printed
+    assert "Nothing on the card matches" in printed
+
+
+def test_a_later_query_still_scores_after_a_clear(big_card):
+    printed = run_session(big_card, ["zxqfirst", "zxqlast"])
+    assert "Article 0" in printed
+    assert "Article 599" in printed
+
+
+def test_a_term_spanning_every_page_still_agrees_with_the_reference(big_card):
+    """The page tier's worst case: a term in every article flags every page,
+    so nothing is skipped - and the answer must be the reference's answer."""
+    idx, dat, _ = big_card
+    reference = libsearch.CardSearch(idx, dat)
+    try:
+        best = reference.search("filler")
+        assert best
+        expected = reference.article(best[0][0])[0]
+    finally:
+        reference.close()
+    assert expected in run_session(big_card, ["filler"])
 
 
 # --- memory -------------------------------------------------------------------

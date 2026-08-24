@@ -131,6 +131,18 @@ MAX_EXAMPLES = 1200
 #: "What country is X in" is only a place question because X is a place, and
 #: with X removed `in_country` collapsed to 0%.
 #:
+#: The band row above is the short version of a longer look, which reached the
+#: same place by a different route. The hypothesis was that seeding each
+#: trigram's hash with where it appeared (ENCODING.md) would keep the hops in
+#: order, but the class set has no reversed paths - no `located_in born_in`
+#: class exists - so word order carries no signal these classes need, while
+#: the banding tax on the buckets still applies. Measured under this protocol,
+#: two seeds: flat 20.6% / 24.7% macro, 8 bands 11.9% / 17.5%, and bands lose
+#: on the random split too (95.2% -> 89.3%). (Stand-in entity names, not the
+#: corpus's - the mechanism under test is the encoder, and the deltas are
+#: paired, but re-run against the real database before quoting.) The second
+#: hop is dropped because it is *quiet*, not because it is out of order.
+#:
 #: So chain questions work about as well as one coin flip. That is enough to be
 #: interesting on a machine like this and not enough to trust.
 #:

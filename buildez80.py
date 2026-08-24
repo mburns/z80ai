@@ -365,7 +365,8 @@ def _emit_shift(b: EZ80Builder) -> None:
         b.rr_hl_ind()
 
 
-def _emit_layers_column(b: EZ80Builder, model: BuildInputs) -> None:
+def _emit_layers_column(b: EZ80Builder, model: BuildInputs,
+                        phrasebook: bool = False) -> None:
     """Emit every layer column-major, visiting only nonzero activations.
 
     Row-major cannot skip a zero activation, because which activations are zero
@@ -384,6 +385,10 @@ def _emit_layers_column(b: EZ80Builder, model: BuildInputs) -> None:
     walks it.  Deliberately not SP: keeping the real stack intact means CALL
     and RET stay usable, which is what lets the per-neuron epilogue be shared
     instead of inlined 587 times.
+
+    A phrasebook build (``phrasebook=True``) has one pass over one input, so
+    layer 1 starts from its plain biases and there is no PREQ: hoisting the
+    query half amortizes across a response's steps, and there is one step.
     """
     num_layers = model.num_layers
     for i in range(num_layers):
@@ -394,7 +399,7 @@ def _emit_layers_column(b: EZ80Builder, model: BuildInputs) -> None:
         last = i == num_layers - 1
 
         b.label(f'LAYER{i+1}')
-        if i == 0:
+        if i == 0 and not phrasebook:
             # QBASE already holds bias1 plus the query half's contribution,
             # which PREQ computed once for the whole response.
             for j in range(num_out):
@@ -451,7 +456,8 @@ def _emit_layers_column(b: EZ80Builder, model: BuildInputs) -> None:
             b.ld_iyd_hl(0)                       # terminate the next layer's list
             b.jp(f'LAYER{i+2}')
 
-    _emit_query_pass(b, model)
+    if not phrasebook:
+        _emit_query_pass(b, model)
 
 
 def _emit_query_pass(b: EZ80Builder, model: BuildInputs) -> None:
@@ -593,20 +599,16 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     if output_size < 2:
         raise ValueError("charset must have at least two entries")
 
-    if phrasebook:
-        # Hoisting layer 1's query half pays off across the steps of one
-        # response. A phrasebook has one step, so there is nothing to hoist
-        # and the column kernel's whole reason for existing is absent - along
-        # with the query/context split of the input vector that it assumes.
-        if kernel == 'column':
-            raise ValueError(
-                "the column kernel splits the input into a query half and a "
-                "context half; a phrasebook has neither. Use row or compact.")
-        if model.input_size != NUM_BUCKETS:
-            raise ValueError(
-                f"a phrasebook takes {NUM_BUCKETS} query buckets, not "
-                f"{model.input_size}: there is no context to encode when the "
-                f"whole answer is chosen in one pass")
+    # Hoisting layer 1's query half pays off across the steps of one
+    # response, so a one-step phrasebook skips PREQ - but skipping zero
+    # activations pays per pass, which is all the column kernel needs.
+    # The input scan then covers the whole input vector (SCAN_IN), because
+    # there is no context half to split off.
+    if phrasebook and model.input_size != NUM_BUCKETS:
+        raise ValueError(
+            f"a phrasebook takes {NUM_BUCKETS} query buckets, not "
+            f"{model.input_size}: there is no context to encode when the "
+            f"whole answer is chosen in one pass")
 
     # The decode table is sized by the charset or the phrase list and ARGMAX by
     # the weight shapes, and nothing ever compared them. Disagreeing, PRINTCH
@@ -661,7 +663,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
 
     libnn.emit_generate(b, eos_idx, max_output_len,
                         lambda bb: bb.call('INFER'),
-                        hoist_query=(kernel == 'column'),
+                        hoist_query=(kernel == 'column' and not phrasebook),
                         emit_eos_test=eos_test)
 
     # === PRINTCH =============================================================
@@ -732,10 +734,11 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
             b.call('LAYER')
         b.ret()
     elif kernel == 'column':
-        # The column list has to be rebuilt each step: the context half of the
-        # input changes with every character emitted. The query half does not,
-        # so PREQ dealt with it once, before the loop.
-        b.call('SCAN_CTX')
+        # The column list is rebuilt from the input each pass. A character
+        # decoder scans only the context half here - the query half cannot
+        # change mid-response, so PREQ dealt with it once before the loop. A
+        # phrasebook has one pass over one input, so SCAN_IN covers it whole.
+        b.call('SCAN_IN' if phrasebook else 'SCAN_CTX')
         b.jp('LAYER1')
     else:
         # The unrolled layers are emitted last, after every JR-using routine,
@@ -956,10 +959,15 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
         _emit_layers_unrolled(b, model)
     elif kernel == 'column':
         _emit_column_epilogue(b)
-        _emit_input_scan(b, 'SCAN_QUERY', range(NUM_BUCKETS), 'QEPI')
-        _emit_input_scan(b, 'SCAN_CTX',
-                         range(NUM_BUCKETS, layer_sizes[0]), 'LEPI1')
-        _emit_layers_column(b, model)
+        if phrasebook:
+            # One input, one pass: scan the whole vector, terminate on layer
+            # 1's epilogue. No query half to hoist, so no SCAN_QUERY or PREQ.
+            _emit_input_scan(b, 'SCAN_IN', range(NUM_BUCKETS), 'LEPI1')
+        else:
+            _emit_input_scan(b, 'SCAN_QUERY', range(NUM_BUCKETS), 'QEPI')
+            _emit_input_scan(b, 'SCAN_CTX',
+                             range(NUM_BUCKETS, layer_sizes[0]), 'LEPI1')
+        _emit_layers_column(b, model, phrasebook=phrasebook)
 
     # === DATA ================================================================
     libnn.emit_charset_table(b, charset)
@@ -1023,9 +1031,10 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
         b.ds24(widest_out)
         b.label('COLLIST')
         b.ds24(widest_in + 1)
-        # Layer 1's bias with the query half folded in, rewritten once per query.
-        b.label('QBASE')
-        b.ds24(layer_sizes[1])
+        if not phrasebook:
+            # Layer 1's bias with the query half folded in, once per query.
+            b.label('QBASE')
+            b.ds24(layer_sizes[1])
 
     if phrasebook:
         b.label('PHRNAME')
@@ -1092,16 +1101,7 @@ def _build_fastest_that_fits(model_path: str, max_output_len: int, org: int,
     be built with the compact one.  Preserving that fallback is the whole point
     of keeping it around.
     """
-    # Read only the metadata: which kernels are even candidates has to be
-    # decided before building any of them, and load_for_build would print a
-    # second banner for a model each candidate is about to load anyway.
-    from loadmodel import load_model_params
-
-    _, arch, _ = load_model_params(model_path)
-    # A phrasebook runs one forward pass, so the column kernel's query hoisting
-    # has nothing to amortize and its query/context split does not exist.
-    candidates = [k for k in KERNELS
-                  if not (k == 'column' and arch.get('phrases') is not None)]
+    candidates = list(KERNELS)
 
     last = len(candidates) - 1
     for i, kernel in enumerate(candidates):
