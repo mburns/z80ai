@@ -65,10 +65,15 @@ def db(ingest, tmp_path):
         ("Jane Austin", "Jane Austen"),      # the misspelling a reader types
         ("Austen", "Jane Austen"),
     ])
-    conn.executemany("INSERT INTO fact VALUES ('simplewiki', ?, ?, ?)", [
-        ("Jane Austen", "birth_place", "Steventon"),
-        ("Paris", "country", "France"),
-    ])
+    # Columns named rather than positional: `fact` carries an ordinal, a kind
+    # and a number now, and a positional insert is the other half of the
+    # drift this fixture's docstring is already worried about.
+    conn.executemany(
+        "INSERT INTO fact (source, subject, property, ordinal, value, kind, num)"
+        " VALUES ('simplewiki', ?, ?, 0, ?, 'text', NULL)", [
+            ("Jane Austen", "birth_place", "Steventon"),
+            ("Paris", "country", "France"),
+        ])
     libgraph.build(conn, "simplewiki")
     conn.commit()
     return conn
