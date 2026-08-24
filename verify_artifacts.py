@@ -212,6 +212,33 @@ def run_artifact(path: str, platform: str, query: str,
     raise VerificationError(f"unknown platform {platform}")
 
 
+def release_files() -> list[str]:
+    """Every file a release should publish, in the order ARTIFACTS lists them.
+
+    The release step in ci.yml reads this rather than restating it. It used to
+    restate it, and had drifted: the column-major .COMs and both phrasebooks
+    were built, verified and pinned, but never published - while the README
+    told people to download one of them.
+    """
+    files: list[str] = []
+    for name in ARTIFACTS:
+        files.append(name)
+        if name in COMPANIONS:
+            files.append(COMPANIONS[name])
+    return files
+
+
+def missing_from(dist: str) -> list[str]:
+    """Release files that are not in ``dist``.
+
+    ``verify`` skips what is absent, which is convenient when checking a single
+    target by hand and useless as a release gate - a dist directory holding one
+    artifact would pass. CI calls this instead.
+    """
+    return [name for name in release_files()
+            if not os.path.exists(os.path.join(dist, name))]
+
+
 def verify(dist: str, query: str) -> list[tuple[str, str, str, bool]]:
     """Check every artifact present in ``dist``. Returns per-artifact results."""
     results = []
@@ -256,7 +283,24 @@ def main() -> int:
     parser.add_argument("--query", "-q", default="HELLO", help="Query to send")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY"),
                         help="Append a markdown table here (defaults to the CI summary)")
+    parser.add_argument("--require-all", action="store_true",
+                        help="Fail if any known artifact is missing (what CI uses, "
+                             "so a release cannot ship a partial dist)")
+    parser.add_argument("--list", action="store_true",
+                        help="Print the files a release should publish, one per "
+                             "line, and exit")
     args = parser.parse_args()
+
+    if args.list:
+        print("\n".join(release_files()))
+        return 0
+
+    if args.require_all:
+        absent = missing_from(args.dist)
+        if absent:
+            print(f"FAIL: {len(absent)} release file(s) missing from "
+                  f"{args.dist}/: {', '.join(absent)}", file=sys.stderr)
+            return 1
 
     try:
         results = verify(args.dist, args.query)

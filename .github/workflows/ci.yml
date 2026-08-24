@@ -119,9 +119,11 @@ jobs:
           rm -rf dist-repeat
 
       # The point of the whole exercise: a binary that assembles but computes
-      # the wrong answer must not reach a release.
+      # the wrong answer must not reach a release. --require-all additionally
+      # refuses a dist that is merely incomplete, which is what makes the
+      # release step below safe to publish everything it finds.
       - name: Verify artifacts against the reference model
-        run: python verify_artifacts.py --dist dist --query HELLO
+        run: python verify_artifacts.py --dist dist --query HELLO --require-all
 
       - name: Report artifact sizes
         if: always()
@@ -163,21 +165,14 @@ jobs:
           name: z80-binaries
           path: dist/
 
+      # Everything the build job produced, which the verify step has already
+      # checked is the whole manifest and nothing but - see --require-all.
+      # This used to be a hand-written list, and had drifted: the column-major
+      # .COMs and both phrasebooks were built, verified and pinned but never
+      # published, while the README told people to download one of them.
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/GUESS.COM
-            dist/GUESS-FAST.COM
-            dist/GUESS.TAP
-            dist/GUESS.bin
-            dist/CHAT.COM
-            dist/CHAT-FAST.COM
-            dist/CHAT.TAP
-            dist/CHAT.bin
-            dist/TALK.COM
-            dist/TALK-FAST.COM
-            dist/TALK.TAP
-            dist/TALK.bin
+          files: dist/*
           fail_on_unmatched_files: true
           generate_release_notes: true
