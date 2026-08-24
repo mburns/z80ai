@@ -90,6 +90,54 @@ jobs:
       - name: Run test suite
         run: pytest -q --durations=5
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # Reported, not gated. What this is for is spotting a module that quietly
+      # stopped being exercised - not for defending a number. The slow tests are
+      # skipped because they re-run paths the fast ones already cover, at about
+      # four times the cost under coverage.
+      - name: Measure coverage
+        run: |
+          pytest -q -m 'not slow' --cov --cov-report=term-missing \
+                 --cov-report=json:coverage.json > coverage.txt || true
+          {
+            echo '### Coverage (not gated)'
+            echo
+            python - <<'PY'
+          import json
+          with open("coverage.json") as fh:
+              data = json.load(fh)
+          total = data["totals"]["percent_covered"]
+          print(f"**{total:.0f}%** overall.\n")
+          print("| module | statements | missed | covered |")
+          print("|---|---:|---:|---:|")
+          rows = sorted(data["files"].items(),
+                        key=lambda kv: kv[1]["summary"]["percent_covered"])
+          for name, entry in rows[:15]:
+              s = entry["summary"]
+              print(f"| `{name}` | {s['num_statements']} | "
+                    f"{s['missing_lines']} | {s['percent_covered']:.0f}% |")
+          PY
+            echo
+            echo 'Lowest 15. The training code sits near 20% because CI has no'
+            echo 'PyTorch, which is deliberate - see requirements-dev.txt.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build and verify artifacts
     needs: [lint, test]

@@ -1,0 +1,28 @@
+# Coverage measurement. Reported in CI, not gated - the same treatment the
+# wider ruff rule set gets, and for the same reason: a number worth looking at
+# is not automatically a number worth failing a build over.
+#
+# What the report is for is spotting a module that quietly stopped being
+# exercised. The shipped inference path sits at 99-100% and should stay there;
+# the training code sits near 20% because CI has no PyTorch, which is a
+# deliberate choice recorded in requirements-dev.txt rather than a gap.
+
+[run]
+branch = True
+source = .
+omit =
+    tests/*
+    .venv/*
+    examples/*
+    data/clinc150/*
+
+[report]
+skip_covered = True
+show_missing = True
+exclude_lines =
+    pragma: no cover
+    # A CLI entry point is exercised by running the tool, not by importing it.
+    if __name__ == .__main__.:
+    # Defensive branches for states the type checker already rules out.
+    raise NotImplementedError
+    if TYPE_CHECKING:
