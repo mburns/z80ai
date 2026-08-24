@@ -82,6 +82,29 @@ turned out to be the same problem with the evidence thrown away.
 See [data/README.md](data/README.md) for what makes a dataset suit a 2-bit
 model, and `data/lint.py` for checking one before you train it.
 
+### [Simple English Wikipedia on a card](data/wikipedia/)
+
+Not a model at all. **283,997 articles searched in plain English on an Agon**,
+from an SD card, in a 6KB program:
+
+```
+? mount everest
+
+Mount Everest
+Mount Everest is the highest mountain on Earth. Mount Everest is in the
+Himalayas, a tall mountain range in Asia.
+```
+
+An ordinary inverted index, because the trigram encoder the models use scores
+2 of 13 on the same queries and returns *Bures Hamlet* for "who wrote hamlet" —
+it throws away which words matched, which is the one thing retrieval needs.
+BM25 gets 11 of 13. All the arithmetic happens at build time, so the machine
+does nothing but add bytes; that is what keeps the score accumulator at one
+byte per article — 277KB, resident, for the whole encyclopedia.
+
+It is a search box, not an oracle: "who wrote hamlet" returns *Hamlet*, and
+reading the answer out of the article is comprehension, which is out of reach.
+
 ## Which budget is the claim about?
 
 Worth being clear, because the answer differs and only one of them was ever on
