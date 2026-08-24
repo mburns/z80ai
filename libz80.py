@@ -194,6 +194,10 @@ class Z80Builder:
         self.emit(0xFA)
         self.fixup_word(label)
 
+    def jp_nc(self, label: str) -> None:
+        self.emit(0xD2)
+        self.fixup_word(label)
+
     def jp_hl(self) -> None: self.emit(0xE9)  # JP (HL) - jump to the address in HL
 
     def jr(self, label: str) -> None:
@@ -287,13 +291,13 @@ class Z80Builder:
         self.emit(0xED, 0x7B)
         self.fixup_word(label)
 
-    def ld_a_mem_label(self, label: str) -> None:
+    def ld_a_mem_label(self, label: str, addend: int = 0) -> None:
         self.emit(0x3A)
-        self.fixup_word(label)
+        self.fixup_word(label, addend)
 
-    def ld_mem_label_a(self, label: str) -> None:
+    def ld_mem_label_a(self, label: str, addend: int = 0) -> None:
         self.emit(0x32)
-        self.fixup_word(label)
+        self.fixup_word(label, addend)
 
     def ld_a_bc(self) -> None: self.emit(0x0A)
     def ld_a_hl(self) -> None: self.emit(0x7E)
@@ -410,6 +414,11 @@ class Z80Builder:
     def cp_hl(self) -> None: self.emit(0xBE)  # CP (HL)
     def cp_a(self) -> None: self.emit(0xBF)
     def cp_b(self) -> None: self.emit(0xB8)  # CP B
+    def cp_c(self) -> None: self.emit(0xB9)  # CP C
+    def add_a_c(self) -> None: self.emit(0x81)
+    def sub_c(self) -> None: self.emit(0x91)
+    def and_hl(self) -> None: self.emit(0xA6)  # AND (HL)
+    def scf(self) -> None: self.emit(0x37)  # set carry, for a boolean return
     def inc_a(self) -> None: self.emit(0x3C)
     def dec_a(self) -> None: self.emit(0x3D)
     def inc_de(self) -> None: self.emit(0x13)
