@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -209,7 +210,9 @@ def main() -> None:
     print(f"{len(train):,} training pairs, {len(val):,} held out, "
           f"{len({r for _, r in pairs})} distinct replies\n")
 
-    rows: list[tuple[str, list[Pair], object, int | None]] = [
+    # The third field is what scores a query. It was `object`, which left the
+    # score_predictions call below unchecked - that takes a Callable.
+    rows: list[tuple[str, list[Pair], Callable[[str], str], int | None]] = [
         (f"always answering {fallback!r}", val, lambda q: fallback, 0),
         ("keyword table, training", train, lambda q: classify(q, table, fallback),
          len(table) * TABLE_ENTRY_BYTES),

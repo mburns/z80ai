@@ -51,8 +51,12 @@ jobs:
       - name: Check types
         run: mypy
 
-      # Not gated: the wider default rule set flags pre-existing style debt.
-      # Surfacing it keeps it visible without blocking a merge on it.
+      # Not gated: debt worth seeing but not worth blocking a merge on. These
+      # rules are deliberately *outside* the gated set - this step used to
+      # select a subset of the gate, so it printed an empty block every run.
+      # Complexity is here rather than gated because the worst offenders are
+      # instruction decoders whose branch count is the Z80 ISA's; see the
+      # module docstring in tools/disasm.py.
       - name: Style report
         if: always()
         run: |
@@ -60,7 +64,8 @@ jobs:
             echo '### Lint debt (not gated)'
             echo
             echo '```'
-            ruff check --select E,W,F,B,SIM,UP,I,RUF,PERF --statistics . || true
+            ruff check --select C901,PLR0911,PLR0912,PLR0915,ERA,SLF,FBT,PT \
+                       --statistics . || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
