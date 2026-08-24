@@ -188,3 +188,79 @@ def test_sources_do_not_leak_into_each_other(db):
     assert libgraph.follow(db, "w", "Alan Turing", ["born_in"]).value == "London"
     assert libgraph.follow(db, "metaqa", "Alan Turing", ["born_in"]).value == \
         "Somewhere Else"
+
+
+# --- asking for a type rather than a hop count --------------------------------
+#
+# The corpus records birthplaces at whatever granularity the author felt like,
+# so the distance from a person to their country is 0 hops for 26.2% of people,
+# 1 for 35.7% and 2 for 1.6%. Every one of these is a case a fixed-length path
+# gets wrong in a different direction.
+
+
+def countries(db, *names, times=libgraph.TYPE_FLOOR):
+    """Make the corpus call something a country, TYPE_FLOOR authors deep."""
+    db.executemany("INSERT INTO fact VALUES ('w', ?, 'country', ?)",
+                   [(f"Article {i}", name)
+                    for name in names for i in range(times)])
+    db.executemany("INSERT INTO article VALUES ('w', ?, '')",
+                   [(f"Article {i}",) for i in range(times)])
+
+
+def test_a_type_is_what_enough_infoboxes_say_it_is(db):
+    load(db, ["France", "Paris"], [("Paris", "country", "France")])
+    assert not libgraph.is_a(db, "w", "France", "country")   # one author only
+
+    countries(db, "France")
+    libgraph.build(db, "w")
+    assert libgraph.is_a(db, "w", "France", "country")
+
+
+def test_a_climb_stops_the_moment_it_is_already_there(db):
+    """26.2% of birthplaces. A fixed hop would step past the answer."""
+    countries(db, "France")
+    load(db, ["Rene", "France"], [("Rene", "birth_place", "France")])
+    answer = libgraph.follow(db, "w", "Rene", ["born_in", "in_country"])
+    assert answer.value == "France"
+    assert answer.path == ["Rene", "France"]        # no wasted step
+
+
+def test_a_climb_keeps_going_until_the_type_matches(db):
+    """1.6% of birthplaces need two. A fixed hop would stop short."""
+    countries(db, "England")
+    load(db, ["Jane", "Steventon", "Hampshire", "England"],
+         [("Jane", "birth_place", "Steventon"),
+          ("Steventon", "county", "Hampshire"),
+          ("Hampshire", "country", "England")])
+    answer = libgraph.follow(db, "w", "Jane", ["born_in", "in_country"])
+    assert answer.value == "England"
+    assert answer.path == ["Jane", "Steventon", "Hampshire", "England"]
+
+
+def test_a_climb_that_never_reaches_the_type_declines(db):
+    """Better than Einstein's old answer, which was that Ulm is in a country
+    called Baden-Wurttemberg."""
+    load(db, ["Albert", "Ulm", "Baden-Wurttemberg"],
+         [("Albert", "birth_place", "Ulm"),
+          ("Ulm", "subdivision_name", "Baden-Wurttemberg")])
+    answer = libgraph.follow(db, "w", "Albert", ["born_in", "in_country"])
+    assert not answer.complete
+    assert answer.missing == "in_country"
+    # It still reports how far it got, so the oracle can say so.
+    assert answer.path == ["Albert", "Ulm", "Baden-Wurttemberg"]
+
+
+def test_a_cycle_in_the_data_terminates(db):
+    """Two places each inside the other is a thing real infoboxes do."""
+    load(db, ["A", "B"],
+         [("A", "country", "B"), ("B", "country", "A")])
+    assert not libgraph.follow(db, "w", "A", ["in_country"]).complete
+
+
+def test_rebuilding_replaces_types_rather_than_accumulating(db):
+    countries(db, "France")
+    load(db, ["France"], [])
+    libgraph.build(db, "w")
+    before = db.execute("SELECT COUNT(*) FROM entity_type").fetchone()[0]
+    libgraph.build(db, "w")
+    assert db.execute("SELECT COUNT(*) FROM entity_type").fetchone()[0] == before

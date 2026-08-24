@@ -43,7 +43,7 @@ import libgraph
 DB_PATH = Path(__file__).resolve().parent.parent / "simple_english_wikipedia.db"
 #: Bumped whenever the table definitions change. The database is derived data,
 #: so a mismatch is resolved by re-ingesting rather than by migrating.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 #: Characters of lead text kept per article. A 40x24 Agon screen holds about
 #: 960, so this is a third of one - enough to say what a thing is.
