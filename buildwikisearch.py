@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
-import sys
 from pathlib import Path
 
 import libsearch
@@ -142,4 +141,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

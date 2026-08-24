@@ -48,6 +48,13 @@ class EZ80Builder(Z80Builder):
         #: The name that blob must have on the SD card. The image carries the
         #: string it asks MOS for, so this is part of what was built.
         self.phrases_file: str | None = None
+        #: Where a search build's score accumulator lives, and how many
+        #: articles it covers. Set by buildwikibin.build, and declared here for
+        #: the same reason as the fields above: the build asserts the image
+        #: stops short of the accumulator, and a check that reads an attribute
+        #: which might not exist is not a check.
+        self.accumulator: int | None = None
+        self.num_docs: int | None = None
 
     # --- 24-bit data ---------------------------------------------------------
 
