@@ -102,6 +102,8 @@ listing rather than an exception.
 | `test_baseline.py` | Every row of the accuracy claim, including the retrievers that beat the model once storage is free |
 | `test_datasets.py` | The CLINC150 recipes, and that lint's thresholds judge a balanced 151-way set correctly |
 | `test_phrasebook.py` | One forward pass, one reply: the reference path a phrasebook model is checked against |
+| `test_wikisearch.py` | The search card format, and that the eZ80 program and `libsearch` agree on what it says |
+| `test_wikipedia_ingest.py` | Turning a MediaWiki dump into the database, and the markup cases that reached the screen before they were fixed |
 
 ## In CI
 
