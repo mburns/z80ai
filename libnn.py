@@ -71,6 +71,9 @@ class Platform(ABC):
     name: str = "unknown"
     #: Label of the activation buffer holding both halves of the input vector.
     buffer: str = "INBUF"
+    #: Bytes per activation. Two on a Z80; the eZ80 overrides it to three, and
+    #: that single number is what decides which emitters here it can reuse.
+    activation_size: int = ACTIVATION_SIZE
 
     @abstractmethod
     def print_char(self, b: Z80Builder) -> None:
@@ -213,18 +216,30 @@ def emit_layered_inference(plans: list[LayerPlan]) -> Callable[[Z80Builder], Non
     return emit
 
 
+def emit_eos_test_8bit(b: Z80Builder, eos_idx: int) -> None:
+    """Set Z if RESULT is the EOS index. The Z80 form: RESULT is one byte."""
+    b.ld_a_mem_label("RESULT")
+    b.cp_n(eos_idx)
+
+
 def emit_generate(
     b: Z80Builder,
     eos_idx: int,
     max_output_len: int,
     emit_inference: Callable[[Z80Builder], None],
     hoist_query: bool = False,
+    emit_eos_test: Callable[[Z80Builder, int], None] = emit_eos_test_8bit,
 ) -> None:
     """Emit GENERATE: infer, argmax, print, feed back, repeat until EOS.
 
     ``emit_inference`` emits whatever runs one forward pass, leaving the scores
     in OUTBUF. Backends differ there: the packed builds call a stub per layer,
     the index-list build calls a single table-driven INFER.
+
+    ``emit_eos_test`` sets Z when RESULT holds the EOS index. It is a hook for
+    the same reason ``emit_inference`` is: everything else in this loop is
+    machine-independent, and RESULT is a byte on a Z80 but 24 bits on an eZ80,
+    where a CP will not reach it.
 
     ``hoist_query`` runs PREQ once here rather than once per character, which is
     the whole point of it: the query half of the input does not change for the
@@ -242,8 +257,7 @@ def emit_generate(
 
     b.call("ARGMAX")
 
-    b.ld_a_mem_label("RESULT")
-    b.cp_n(eos_idx)
+    emit_eos_test(b, eos_idx)
     b.ret_z()
 
     b.call("PRINTCH")
@@ -301,11 +315,12 @@ def emit_update_ctx(b: Z80Builder) -> None:
     b.ret()
 
 
-def emit_encode_ctx(b: Z80Builder, plat: Platform) -> None:
-    """Emit ENCODE_CTX: hash 1-, 2- and 3-grams of CTXCHARS into the buckets."""
-    b.label("ENCODE_CTX")
+def emit_clear_context_half(b: Z80Builder, plat: Platform) -> None:
+    """Zero the context buckets, which sit at an offset inside one buffer.
 
-    # Clear the context half of the activation buffer.
+    The Z80 layout. The eZ80 gives the context its own CTXBUF label and clears
+    that instead, which is the whole of why ENCODE_CTX needs a hook.
+    """
     b.ld_hl_label(plat.buffer)
     b.ld_de_nn(CONTEXT_OFFSET)
     b.add_hl_de()
@@ -317,8 +332,21 @@ def emit_encode_ctx(b: Z80Builder, plat: Platform) -> None:
     b.ld_bc_nn(CONTEXT_OFFSET - 1)
     b.ldir()
 
-    b.ld_a_n(0)
-    b.ld_mem_label_a("CTXPOS")
+
+def emit_encode_ctx(b: Z80Builder, plat: Platform,
+                    emit_clear: Callable[[Z80Builder], None] | None = None) -> None:
+    """Emit ENCODE_CTX: hash 1-, 2- and 3-grams of CTXCHARS into the buckets.
+
+    Everything from CTX_NLOOP down is machine-independent - it walks CTXCHARS
+    and calls CTX_HASH, and never touches an activation. Only clearing the
+    buckets knows how wide one is, so that is the hook.
+    """
+    b.label("ENCODE_CTX")
+    if emit_clear is None:
+        emit_clear_context_half(b, plat)
+    else:
+        emit_clear(b)
+
     b.ld_a_n(1)
     b.ld_mem_label_a("CTXN")
 
