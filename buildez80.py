@@ -58,6 +58,8 @@ import os
 
 import numpy as np
 
+import libagon
+from libagon import KEY_LABELS, MAX_INPUT_LEN, MOS_OUTCHAR
 from libez80 import AGON_LOAD_ADDR, AGON_MAX_IMAGE, EZ80Builder, agon_header
 from libinfer import (
     CONTEXT_LEN,
@@ -67,22 +69,6 @@ from libinfer import (
     BuildInputs,
     load_for_build,
 )
-
-MAX_INPUT_LEN = 120
-
-#: Routines whose address a standalone build prints, for cross-referencing a
-#: disassembly. Which of these exist depends on the kernel.
-KEY_LABELS = ('START', 'GENERATE', 'LAYER', 'LAYER1', 'ARGMAX', 'TOKENIZE',
-              'NEUREND', 'BIASES', 'WTS1')
-
-# MOS entry points.
-MOS_API = 0x08  # RST 08h, function number in A
-MOS_OUTCHAR = 0x10  # RST 10h, character in A
-MOS_GETKEY = 0x00
-# HL=filename, DE=load address, BC=max size -> A=status. The only SD call this
-# makes: one call, no handle to leak, and it exists in every MOS version, which
-# matters because MOS itself cannot be exercised in CI. See tools/mostest.py.
-MOS_LOAD = 0x01
 
 # Weight stream encoding. Values outside {-2,-1,0,1} act as terminators.
 W_END_NEURON = 0x02
@@ -645,128 +631,19 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     agon_header(b, 'START')
 
     # === Entry ===============================================================
-    b.label('START')
-    if phrasebook:
-        b.jp('LOAD_PHRASES')
-    else:
-        b.jp('CHAT_LOOP')
+    # The program around the layers - entry, prompt loop, line editor - is the
+    # machine's, not this backend's, and lives in libagon.
+    def answer(bb: EZ80Builder) -> None:
+        if phrasebook:
+            bb.call('CLASSIFY')
+        else:
+            bb.call('CLEAR_CTX')
+            bb.call('GENERATE')
 
-    if phrasebook:
-        # === LOAD_PHRASES ====================================================
-        # The replies live on the SD card, which is the entire point: the model
-        # picks an index, so the text costs it nothing and is free to be
-        # sentences. mos_load is the only firmware call here beyond printing
-        # and reading keys - one call, no handle to leak, present in every MOS
-        # version. BC is the buffer size, so MOS refuses an oversized file
-        # rather than writing past the end of it.
-        b.label('LOAD_PHRASES')
-        b.ld_hl_label('PHRNAME')
-        b.ld_de_label('PHRBUF')
-        b.ld_bc_nn(len(phrase_blob))
-        b.ld_a_n(MOS_LOAD)
-        b.rst(MOS_API)
-        b.or_a()
-        b.jp_z('CHAT_LOOP')
-
-        # Nonzero status: say so and stop, rather than jumping into whatever
-        # the buffer happens to contain and printing it as an answer.
-        b.ld_hl_label('PHRERR')
-        b.label('PE_LOOP')
-        b.ld_a_hl()
-        b.or_a()
-        b.ret_z()
-        b.rst(MOS_OUTCHAR)
-        b.inc_hl()
-        b.jr('PE_LOOP')
-
-    b.label('CHAT_LOOP')
-    b.call('PRNL')
-    b.ld_a_n(ord('>'))
-    b.rst(MOS_OUTCHAR)
-    b.ld_a_n(ord(' '))
-    b.rst(MOS_OUTCHAR)
-
-    b.call('READ_INPUT')
-
-    b.ld_a_mem_label('INPLEN')
-    b.or_a()
-    b.jr_z('CHAT_LOOP')
-
-    b.ld_a_mem_label('INPBUF')
-    b.cp_n(ord('!'))
-    b.jp_z('CHAT_EXIT')
-
-    b.call('TOKENIZE')
-    if phrasebook:
-        b.call('CLASSIFY')
-    else:
-        b.call('CLEAR_CTX')
-        b.call('GENERATE')
-    b.jp('CHAT_LOOP')
-
-    b.label('CHAT_EXIT')
-    b.call('PRNL')
-    b.ret()  # back to MOS
-
-    # === PRNL: newline =======================================================
-    b.label('PRNL')
-    b.ld_a_n(13)
-    b.rst(MOS_OUTCHAR)
-    b.ld_a_n(10)
-    b.rst(MOS_OUTCHAR)
-    b.ret()
-
-    # === READ_INPUT: line editor over mos_getkey ==============================
-    b.label('READ_INPUT')
-    b.xor_a()
-    b.ld_mem_label_a('INPLEN')
-
-    b.label('RI_LOOP')
-    b.ld_a_n(MOS_GETKEY)
-    b.rst(MOS_API)
-    b.or_a()
-    b.jr_z('RI_LOOP')  # no key ready
-    b.cp_n(13)
-    b.jr_z('RI_DONE')
-    b.cp_n(8)
-    b.jr_z('RI_DELETE')
-    b.cp_n(127)
-    b.jr_z('RI_DELETE')
-    b.cp_n(32)
-    b.jr_c('RI_LOOP')  # ignore other control codes
-
-    # Buffer full? Keep the character in C so the compare's flags survive.
-    b.ld_c_a()
-    b.ld_a_mem_label('INPLEN')
-    b.cp_n(MAX_INPUT_LEN)
-    b.jr_nc('RI_LOOP')
-
-    # INPBUF[INPLEN++] = C, then echo it. A still holds INPLEN.
-    b.ld_hl_label('INPBUF')
-    b.ld_de_nn(0)
-    b.ld_e_a()
-    b.add_hl_de()
-    b.ld_hl_c()
-    b.inc_a()
-    b.ld_mem_label_a('INPLEN')
-    b.ld_a_c()
-    b.rst(MOS_OUTCHAR)
-    b.jr('RI_LOOP')
-
-    b.label('RI_DELETE')
-    b.ld_a_mem_label('INPLEN')
-    b.or_a()
-    b.jr_z('RI_LOOP')
-    b.dec_a()
-    b.ld_mem_label_a('INPLEN')
-    for code in (8, 32, 8):
-        b.ld_a_n(code)
-        b.rst(MOS_OUTCHAR)
-    b.jr('RI_LOOP')
-
-    b.label('RI_DONE')
-    b.call('PRNL')
-    b.ret()
+    libagon.emit_entry(b, answer,
+                       phrase_bytes=len(phrase_blob) if phrasebook else None)
+    libagon.emit_newline(b)
+    libagon.emit_read_input(b)
 
     # === GENERATE ============================================================
     b.label('GENERATE')
