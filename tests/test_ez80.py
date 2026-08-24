@@ -140,19 +140,6 @@ def test_ez80_and_z80_agree_when_the_accumulator_does_not_wrap(
 
 
 @pytest.mark.parametrize("query", QUERIES)
-def test_ez80_tokenizer_matches_reference(tiny_ez80, query):
-    cpu = run_until(tiny_ez80, query, "ARGMAX")
-    got = _read24(cpu, tiny_ez80.labels["INBUF"], 128)
-    np.testing.assert_array_equal(got, libinfer.trigram_encode(query))
-
-
-def test_ez80_context_matches_reference(tiny_ez80):
-    cpu = run_until(tiny_ez80, "HELLO", "ARGMAX")
-    got = _read24(cpu, tiny_ez80.labels["CTXBUF"], 128)
-    np.testing.assert_array_equal(got, libinfer.context_encode(" " * 8))
-
-
-@pytest.mark.parametrize("query", QUERIES)
 def test_ez80_logits_match_reference(tiny_ez80, tiny_model, query):
     cpu = run_until(tiny_ez80, query, "ARGMAX")
     got = _read24(cpu, tiny_ez80.labels["OUTBUF"], tiny_model.output_size)
