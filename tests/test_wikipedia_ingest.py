@@ -303,10 +303,46 @@ def test_the_schema_version_is_recorded_and_checked(ingest, tmp_path):
     db.commit()
     db.close()
 
-    with pytest.raises(SystemExit, match="schema version 99"):
+    with pytest.raises(SystemExit, match="it is version 99"):
         ingest.connect(db_path)
     # ...but ingest may rebuild, since it replaces every row regardless.
     ingest.connect(db_path, migrate=True)
+
+
+def test_an_index_the_schema_no_longer_defines_is_removed(ingest, tmp_path):
+    """A version number only catches a change somebody declared.
+
+    Removing an index and bumping the version is not enough on its own: a
+    database that an earlier buggy migration already stamped with the *new*
+    version passes the version check and keeps the index forever. That is how
+    an 86MB index survived its own removal twice. Comparing the schema to the
+    database is what notices.
+    """
+    _, db_path, _ = build_db(ingest, tmp_path)
+
+    db = sqlite3.connect(db_path)
+    db.execute("CREATE INDEX fact_leftover ON fact (property)")
+    db.commit()                                  # version left at current
+    db.close()
+
+    with pytest.raises(SystemExit, match="fact_leftover"):
+        ingest.connect(db_path)
+
+    db = ingest.connect(db_path, migrate=True)
+    names = {n for (n,) in db.execute("SELECT name FROM sqlite_master")}
+    assert "fact_leftover" not in names
+    assert "fact_value" in names
+
+
+def test_a_database_matching_the_schema_opens_untouched(ingest, tmp_path):
+    """The drift check must not fire on a database that is simply correct."""
+    _, db_path, _ = build_db(ingest, tmp_path)
+    before = {n for (n,) in sqlite3.connect(db_path).execute(
+        "SELECT name FROM sqlite_master")}
+    db = ingest.connect(db_path)                 # no migrate, must not raise
+    after = {n for (n,) in db.execute("SELECT name FROM sqlite_master")}
+    assert before == after
+    assert db.execute("SELECT COUNT(*) FROM article").fetchone()[0] == 1
 
 
 def test_a_version_bump_removes_tables_the_new_schema_does_not_define(
