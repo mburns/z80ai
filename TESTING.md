@@ -92,6 +92,7 @@ listing rather than an exception.
 | `test_libnext.py` | The Next target: that it asks for 28MHz, that it is still the Spectrum image plus the prologue, and that a 48K machine ignores the clock write rather than crashing |
 | `test_build_inputs.py` | The shared build preamble: numeric layer ordering, geometry, and that codegen and the reference share one encoding |
 | `test_model_io.py` | That a `.pt` and the `.npz` exported from it build the same image (skipped without PyTorch) |
+| `test_classify.py` | The phrasebook trainer: that it is seeded, that the phrase index is stable, and that what it produces builds and answers (skipped without PyTorch) |
 | `test_bench.py` | The benchmark target table, and that the faster layouts really do retire fewer instructions |
 | `test_disasm.py` | The disassembler, chiefly by requiring it and the emulator to agree about every instruction boundary in a real build |
 | `test_release_manifest.py` | That the build script, the manifest, the pins and the release list all name the same artifacts |

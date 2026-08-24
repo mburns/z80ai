@@ -13,3 +13,9 @@ packages/
 dist/
 .venv/
 .pytest_cache/
+
+# Coverage output; the report is a CI step summary, not a committed file.
+.coverage
+coverage.json
+coverage.txt
+htmlcov/
