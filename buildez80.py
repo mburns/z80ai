@@ -808,11 +808,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
 
     # === LOWER: fold A-Z to lower case, everything else untouched ============
     b.label('LOWER')
-    b.cp_n(ord('A'))
-    b.ret_c()
-    b.cp_n(ord('Z') + 1)
-    b.ret_nc()
-    b.add_a_n(0x20)
+    libnn.emit_lower_fold(b)
     b.ret()
 
     # === BUCKET_ADD: (HL + 3*A) += 32 ========================================
