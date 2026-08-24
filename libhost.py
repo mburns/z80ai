@@ -20,6 +20,10 @@ from typing import ClassVar
 # Entry points and memory maps come from the target modules rather than being
 # restated: the emulator's idea of where BDOS sits and the code generator's have
 # to agree, and the surest way to guarantee that is to have only one of them.
+from libagon import MOS_API as AGON_MOS_API
+from libagon import MOS_GETKEY as AGON_MOS_GETKEY
+from libagon import MOS_LOAD as AGON_MOS_LOAD
+from libagon import MOS_OUTCHAR as AGON_MOS_OUTCHAR
 from libcpc import CPC_HIMEM
 from libcpc import KM_WAIT_CHAR as CPC_KM_WAIT_CHAR
 from libcpc import ORG_ADDR as CPC_ORG_ADDR
@@ -372,11 +376,15 @@ def run_cpc(
 # script that reaches for one fails on a wrong argument rather than on "not
 # implemented" - but nothing calls them today.
 
-MOS_RST_OUTCHAR = 0x10
-MOS_RST_API = 0x08
+# The two restarts and the two functions shipped code uses come from libagon,
+# for the same reason the CP/M and Spectrum entry points come from their target
+# modules: the address the emulator hooks and the address the code generator
+# emits a RST to have to be the same one.
+MOS_RST_OUTCHAR = AGON_MOS_OUTCHAR
+MOS_RST_API = AGON_MOS_API
+MOS_GETKEY = AGON_MOS_GETKEY
+MOS_LOAD = AGON_MOS_LOAD
 
-MOS_GETKEY = 0x00       # -> A = keycode
-MOS_LOAD = 0x01         # HL=filename, DE=address, BC=max size -> A=status, F=C
 MOS_FOPEN = 0x0A        # HL=filename, C=mode -> A=handle (0 = failed)
 MOS_FCLOSE = 0x0B       # C=handle
 MOS_FREAD = 0x1A        # C=handle, HL=buffer, DE=count -> DE=bytes read

@@ -200,7 +200,7 @@ def test_emit_weights_rejects_mismatched_weight_and_bias_lists():
 
 @pytest.mark.parametrize(
     "module_name",
-    ["libnn", "libz80", "libinfer", "libez80", "libcpm", "libzx", "libcpc",
+    ["libnn", "libz80", "libinfer", "libez80", "libcpm", "libzx", "libcpc", "libagon",
      "libnext", "loadmodel"],
 )
 def test_public_functions_are_annotated(module_name):
