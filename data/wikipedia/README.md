@@ -130,14 +130,21 @@ encyclopedia — resident, no sharding, no routing.
 
 | | |
 |---|---|
-| accumulator | 277 KB in SRAM |
+| accumulator | 277 KB in SRAM, plus a 1,110-byte page table in the image |
 | card read per query | ~23 KB → 0.09 s at 250 KB/s |
-| instructions per query | 5.4 M → ~0.74 s at 18.432 MHz |
-| program | 6,132 bytes |
+| instructions per query | 5.4 M before the page tier → ~0.74 s at 18.432 MHz |
+| program | 7,450 bytes |
 
-Most of that time is the two passes over the accumulator — clearing 277 KB and
-then scanning it for the best three. The retrieval itself is a few thousand
-postings.
+The two passes over the accumulator — clearing it and scanning it for the best
+three — used to dominate every query at 284,000 bytes apiece, whatever the
+query. The accumulator is now tiered: one flag per 256-article page, set when
+a posting lands, and both passes visit only flagged pages. A lookup that names
+its subject touches a handful of pages and retires a fraction of the
+instructions (7x on a two-term entity query, measured on a synthetic 100k-article
+corpus); a term common enough to flag every page pays the whole-corpus scan as
+before, plus the table's overhead. The 5.4 M figure is the pre-tier measurement
+on this corpus; the tiered number waits on a rebuilt card to be measured
+honestly.
 
 ## Facts, for the oracle this is not
 

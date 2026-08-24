@@ -21,7 +21,7 @@ import buildez80
 import libinfer
 from libhost import AgonHost, run_agon
 
-KERNELS = ["compact", "row"]
+KERNELS = ["compact", "row", "column"]
 
 PHRASES = [
     "I FROZE YOUR ACCOUNT",
@@ -90,18 +90,18 @@ def test_result_holds_the_index_the_reference_argmaxes_to(kernel, phrasebook_pat
         assert got == libinfer.classify_index(reference, query, accum_bits=24)
 
 
-def test_both_kernels_agree_without_a_reference_model(phrasebook_path):
+def test_all_kernels_agree_without_a_reference_model(phrasebook_path):
     builders = {k: build(phrasebook_path, k) for k in KERNELS}
     outs = {}
     for kernel, builder in builders.items():
         outs[kernel], _ = run_agon(builder.build(), stdin=[*QUERIES, "!"],
                                    files={"PHRASES.DAT": builder.phrase_blob})
-    assert outs["compact"] == outs["row"]
+    assert outs["compact"] == outs["row"] == outs["column"]
 
 
 def test_every_kernel_encodes_the_same_phrase_file(phrasebook_path):
     blobs = {k: build(phrasebook_path, k).phrase_blob for k in KERNELS}
-    assert blobs["compact"] == blobs["row"]
+    assert blobs["compact"] == blobs["row"] == blobs["column"]
 
 
 # --- the phrase file ----------------------------------------------------------
@@ -150,16 +150,29 @@ def test_the_phrase_file_name_is_configurable(phrasebook_path):
 # --- the guards ---------------------------------------------------------------
 
 
-def test_the_column_kernel_is_refused_for_a_phrasebook(phrasebook_path):
-    """Its query hoisting amortizes over the steps of a response, and a
-    phrasebook has one step; its input has no context half to split off."""
-    with pytest.raises(ValueError, match="query half"):
-        buildez80.build_autoreg(phrasebook_path, kernel="column")
+def test_the_column_kernel_runs_a_phrasebook(phrasebook_path, reference):
+    """One pass over one input: no PREQ to amortize, but skipping zero
+    activations pays per pass. SCAN_IN lists the whole input vector, and the
+    result must match the reference index for index."""
+    builder = build(phrasebook_path, "column")
+    assert "PREQ" not in builder.labels
+    assert "QBASE" not in builder.labels
+    for query in QUERIES:
+        host = AgonHost(stdin=[query, "!"],
+                        files={"PHRASES.DAT": builder.phrase_blob})
+        cpu = host.cpu
+        cpu.load(host.LOAD_ADDR, builder.build())
+        cpu.pc = host.LOAD_ADDR
+        cpu.run(max_cycles=400_000_000, stop_pc=builder.labels["PRINT_PHRASE"])
+        assert cpu.pc == builder.labels["PRINT_PHRASE"]
+        got = cpu.peek_word(builder.labels["RESULT"], 3)
+        assert got == libinfer.classify_index(reference, query, accum_bits=24)
 
 
-def test_auto_skips_the_column_kernel_rather_than_failing(phrasebook_path):
+def test_auto_considers_the_column_kernel_for_a_phrasebook(phrasebook_path):
+    """This fixture is small enough that the fastest kernel also fits."""
     builder = buildez80.build_autoreg(phrasebook_path, kernel="auto")
-    assert builder.kernel in KERNELS
+    assert builder.kernel == "column"
 
 
 def test_a_phrasebook_must_take_the_query_buckets_alone(tmp_path):

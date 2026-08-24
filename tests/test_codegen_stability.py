@@ -104,25 +104,35 @@ GOLDEN = {
 #: without the other would print the wrong reply rather than fail.
 #:
 #: One forward pass over 128 query buckets, one argmax, and the text printed
-#: from the card rather than spelled: no GENLOOP, no context window, and no
-#: column kernel, whose query hoisting amortizes over the steps of a response
-#: and there is one. `auto` lands on `row`.
+#: from the card rather than spelled: no GENLOOP, no context window. The
+#: column kernel is allowed now that its input scan covers the whole vector
+#: (no query half to hoist when there is one pass); `auto` takes it whenever
+#: the unrolled blocks fit in Agon SRAM.
 #:
 #: The file name is part of the image - the binary carries the string it asks
 #: MOS for - so these hashes move if it is renamed.
 #:
 #: artifact -> (example, model file, companion name, image sha256, companion sha256)
 GOLDEN_PHRASEBOOK = {
-    # 151 replies. `column` would need 552KB and not fit in Agon SRAM.
+    # 151 replies. `column` would need 537KB, so `auto` lands on `row`.
     "CLINC.bin": (
         "clinc150", "model.npz", "CLINC.DAT",
         "1e575d2e38b0f5fdd01f2ee5019648c95a912805d44367e3fd257e4a31c5d10a",
         "daaee683934dbad65c27986de6d9f83608ec49345a641ee53bdd07ee2f3930b4"),
     # smalltalk's 19 intents answered in sentences rather than spelled: 87.2%
     # macro against the character decoder's 80.7%, on the same labels.
+    # Changed when the column kernel learned single-pass phrasebooks: 460KB,
+    # and it fits, so `auto` takes it - 112,800 -> 86,910 instructions per
+    # question on this model (1.3x; sparser models gain more).
+    #
+    # The value moved again when this was rebased onto the shared eZ80
+    # TOKENIZE, which is 19 bytes longer than the copy buildez80 used to
+    # carry. Same kernel, same arithmetic, different address for everything
+    # after the tokenizer - so the image was rebuilt and re-verified against
+    # the reference rather than either side's pin being taken.
     "TALK-PHR.bin": (
         "smalltalk", "phrasebook.npz", "TALK-PHR.DAT",
-        "9cbb6821ee642f7ccad8709ec718b8b4efb63b0bd73c70b267b815c02488952e",
+        "95642711df081188912bfa1f53813637b14e7b5d0709d8645a1ec72e220737ac",
         "1c2035adfad893479834c767a80e3ab1094b8d3bc35bb477cb69a38c23b04431"),
 }
 
