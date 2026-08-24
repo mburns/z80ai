@@ -59,7 +59,7 @@ import libcpm
 import libinfer
 import libnn
 from libcpm import CPMPlatform
-from libinfer import MAX_OUTPUT_LEN, validate_z80_layers
+from libinfer import MAX_OUTPUT_LEN, NUM_BUCKETS, validate_z80_layers
 from libz80 import Z80Builder
 
 
@@ -271,7 +271,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     bias1 = model.bias(0)
     query_weights = pack_weights_and_biases(w1q, bias1)
     weights_biases = [
-        pack_weights_and_biases(w1c, np.zeros_like(bias1), libnn.NUM_BUCKETS)
+        pack_weights_and_biases(w1c, np.zeros_like(bias1), NUM_BUCKETS)
     ] + [
         pack_weights_and_biases(model.weight(i), model.bias(i))
         for i in range(1, num_layers)
@@ -294,7 +294,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     # Only the context half: layer 1 no longer reads the query half at all, and
     # BUF_A's lower half is scratch for a later layer by the time it matters.
     b.ld_hl_label('INBUF', libnn.CONTEXT_OFFSET)
-    b.ld_de_label('BUF_A', libnn.NUM_BUCKETS)
+    b.ld_de_label('BUF_A', NUM_BUCKETS)
     b.call('SPLIT')
 
     # Run inference through all layers

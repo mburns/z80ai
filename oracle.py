@@ -94,7 +94,7 @@ class _DatabaseSearch:
         self.db = db
         self.source = source
 
-    def search(self, question: str, top: int = 3):
+    def search(self, question: str, top: int = 3) -> list[tuple[int, int]]:
         words = [w for w in question.replace("?", " ").split() if len(w) > 2]
         # Longest phrases first: "jane austen" should beat "jane".
         for size in range(min(6, len(words)), 0, -1):

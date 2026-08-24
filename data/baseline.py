@@ -33,13 +33,20 @@ import sys
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, TypeAlias
 
 import numpy as np
+import numpy.typing as npt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import libinfer
 from libdata import Pair, read_files, score_predictions, split_pairs
+
+#: What a baseline returns: how it answers, and what it would cost on the
+#: device. The size is the point of the comparison - a baseline that beats the
+#: model but needs the whole corpus on an SD card is a different claim.
+Baseline: TypeAlias = tuple[Callable[[str], str], int]
 
 MIN_PURITY = 0.9   # a word must predict one reply this consistently to count
 MIN_COUNT = 3      # ...and appear at least this often
@@ -53,7 +60,7 @@ BUCKET_BYTES = 2
 
 def build_table(train: list[Pair]) -> dict[str, str]:
     """word -> the reply it predicts, for words that predict one reliably."""
-    votes: dict[str, Counter] = defaultdict(Counter)
+    votes: dict[str, Counter[str]] = defaultdict(Counter)
     for query, reply in train:
         for word in set(query.split()):
             votes[word][reply] += 1
@@ -73,24 +80,25 @@ def classify(query: str, table: dict[str, str], fallback: str) -> str:
     return fallback
 
 
-def _unit_vectors(queries: list[str]) -> np.ndarray:
+def _unit_vectors(queries: list[str]) -> npt.NDArray[Any]:
     """L2-normalised trigram bucket vectors, one row per query.
 
     The same encoder the model sees, so a retriever win here cannot be waved
     away as the retriever having better features.
     """
     vecs = np.array([libinfer.trigram_encode(q) for q in queries], dtype=np.float32)
-    return vecs / (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-9)
+    unit: npt.NDArray[Any] = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-9)
+    return unit
 
 
-def nearest_centroid(train: list[Pair]):
+def nearest_centroid(train: list[Pair]) -> Baseline:
     """Mean trigram vector per reply; answer with the nearest one by cosine.
 
     The sharpest control in the set: it uses the model's own features, holds one
     vector per *reply* rather than per example, and is smaller than the model.
     """
     replies = sorted({r for _, r in train})
-    grouped: dict[str, list] = {r: [] for r in replies}
+    grouped: dict[str, list[npt.NDArray[Any]]] = {r: [] for r in replies}
     for query, reply in train:
         grouped[reply].append(libinfer.trigram_encode(query))
 
@@ -106,7 +114,7 @@ def nearest_centroid(train: list[Pair]):
     return predict, len(replies) * libinfer.NUM_BUCKETS * BUCKET_BYTES
 
 
-def nearest_neighbour(train: list[Pair]):
+def nearest_neighbour(train: list[Pair]) -> Baseline:
     """Answer with the reply of the most similar training query, by cosine.
 
     This is the floor a machine with an SD card actually has to clear: the whole
@@ -134,7 +142,7 @@ def nearest_neighbour(train: list[Pair]):
     return predict, nonzero * 2 + len(train) * 3
 
 
-def nearest_neighbour_words(train: list[Pair]):
+def nearest_neighbour_words(train: list[Pair]) -> Baseline:
     """1-NN again, but over word sets by Jaccard rather than trigram buckets.
 
     A different feature space on purpose: a win here cannot be dismissed as an
@@ -150,7 +158,7 @@ def nearest_neighbour_words(train: list[Pair]):
 
     def predict(query: str) -> str:
         words = set(query.split())
-        shared: Counter = Counter()
+        shared: Counter[int] = Counter()
         for word in words:
             shared.update(postings.get(word, ()))
         best, best_score = 0, -1.0
@@ -174,11 +182,6 @@ def _size(nbytes: int | None) -> str:
     if nbytes < 1024 * 1024:
         return f"{nbytes / 1024:.1f} KB"
     return f"{nbytes / (1024 * 1024):.1f} MB"
-
-
-def _model_split_seed(model) -> int | None:
-    """The split seed the model was trained under, if it recorded one."""
-    return getattr(model, 'split_seed', None)
 
 
 def main() -> None:
@@ -230,7 +233,7 @@ def main() -> None:
     if args.model:
         model = libinfer.Model.load(args.model)
 
-        trained_seed = _model_split_seed(model)
+        trained_seed = model.split_seed
         if trained_seed is not None and trained_seed != args.seed:
             print(f"WARNING: {Path(args.model).name} was trained on the seed-"
                   f"{trained_seed} split, but this is seed {args.seed}.  Held-out\n"
@@ -242,9 +245,10 @@ def main() -> None:
                   f"cannot check that\n      --seed {args.seed} matches the split it "
                   f"was trained on.\n", file=sys.stderr)
 
-        accum_bits = args.accum_bits or getattr(model, 'accum_bits', None) or 16
+        accum_bits = args.accum_bits or model.accum_bits
         longest = max(len(r) for _, r in pairs) + 1
-        nbytes = sum(w.size for w in model.weights) // 4 + sum(b.size * 2 for b in model.biases)
+        model_bytes = (sum(w.size for w in model.weights) // 4
+                       + sum(b.size * 2 for b in model.biases))
 
         # A phrasebook takes the 128 query buckets and answers in one pass; a
         # character decoder takes 256 and loops. Calling the wrong one is a
@@ -257,13 +261,13 @@ def main() -> None:
                 return libinfer.generate(model, q, longest, accum_bits=accum_bits)
 
         rows.append((
-            f"model {Path(args.model).name}, held-out", val, predict, nbytes,
+            f"model {Path(args.model).name}, held-out", val, predict, model_bytes,
         ))
 
     print(f"{'':34}{'on device':>11}{'overall':>9}{'macro':>9}")
-    for name, subset, predict, nbytes in rows:
-        overall, macro = score_predictions(subset, predict)
-        print(f"  {name:32}{_size(nbytes):>11}{overall:>9.1%}{macro:>9.1%}")
+    for name, subset, scorer, row_bytes in rows:
+        overall, macro = score_predictions(subset, scorer)
+        print(f"  {name:32}{_size(row_bytes):>11}{overall:>9.1%}{macro:>9.1%}")
 
     print("\nOverall weights every pair equally, so a dominant answer inflates it;\n"
           "macro averages over distinct answers.  Compare macro with macro - and\n"

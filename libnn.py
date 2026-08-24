@@ -38,7 +38,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 # NUM_BUCKETS (hash buckets per half of the input vector), CONTEXT_LEN
 # (characters of output fed back) and BUCKET_WEIGHT (the fixed-point scale for
@@ -46,6 +46,8 @@ from typing import Literal
 # restated. They are not independent choices: code generated against a
 # different NUM_BUCKETS than libinfer encodes with computes the wrong thing,
 # and does so quietly.
+import numpy.typing as npt
+
 from libinfer import BUCKET_WEIGHT, CONTEXT_LEN, NUM_BUCKETS, BuildInputs
 from libz80 import Z80Builder
 
@@ -850,7 +852,7 @@ class PackedBuild:
     qplan: LayerPlan
     packed_weights: list[bytes]
     packed_query: bytes
-    biases: list
+    biases: list[npt.NDArray[Any]]
 
     @property
     def layer_sizes(self) -> list[int]:
@@ -877,7 +879,7 @@ def prepare_packed(model_path: str, plat: Platform) -> PackedBuild:
     layer_sizes = model.layer_sizes
     validate_z80_layers(layer_sizes)
 
-    def pack(w) -> bytes:
+    def pack(w: npt.NDArray[Any]) -> bytes:
         return pack_2bit(w, layout="rotated")
 
     w1q, w1c = split_query_half(model.weight(0))
@@ -1128,7 +1130,7 @@ def emit_buffers(
 
 
 def emit_weights(
-    b: Z80Builder, packed_weights: list[bytes], biases: list
+    b: Z80Builder, packed_weights: list[bytes], biases: list[npt.NDArray[Any]]
 ) -> None:
     """Emit the packed weight stream and 16-bit biases for every layer."""
     for i, (weights, bias) in enumerate(zip(packed_weights, biases, strict=True), start=1):

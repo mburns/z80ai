@@ -45,6 +45,7 @@ from __future__ import annotations
 import math
 import re
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -126,7 +127,7 @@ class Index:
 
 def build(titles: list[str], leads: list[str],
           aliases: dict[int, list[str]] | None = None,
-          report=lambda _msg: None) -> Index:
+          report: Callable[[str], None] = lambda _msg: None) -> Index:
     """Index a corpus, returning postings weighted by BM25 and quantized.
 
     ``aliases`` are alternate names for a document - Wikipedia's redirects -
@@ -186,7 +187,7 @@ def _u24(value: int) -> bytes:
     return value.to_bytes(3, "little")
 
 
-def write_index(index: Index, path: Path) -> dict:
+def write_index(index: Index, path: Path) -> dict[str, int]:
     """Write WIKI.IDX: a bucket table, then a chain of terms per bucket.
 
     Each bucket's chain is contiguous, so a query term is one seek and one
@@ -233,7 +234,7 @@ def write_index(index: Index, path: Path) -> dict:
     }
 
 
-def write_text(index: Index, path: Path) -> dict:
+def write_text(index: Index, path: Path) -> dict[str, int]:
     """Write WIKI.DAT: an offset table, then title and lead per document."""
     body = bytearray()
     offsets = []
@@ -286,7 +287,7 @@ class CardSearch:
 
     def _bucket_offset(self, bucket: int) -> int:
         self.index.seek(self._table_at + 4 * bucket)
-        return struct.unpack("<I", self.index.read(4))[0]
+        return int(struct.unpack("<I", self.index.read(4))[0])
 
     def _postings(self, term: str) -> list[Posting]:
         offset = self._bucket_offset(term_hash(term))

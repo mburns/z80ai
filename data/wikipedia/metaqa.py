@@ -48,8 +48,10 @@ directory. It expects the layout the README describes:
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -90,7 +92,7 @@ def read_questions(root: Path, hops: int) -> list[tuple[str, list[str]]]:
     return out
 
 
-def ingest(db, root: Path) -> dict:
+def ingest(db: sqlite3.Connection, root: Path) -> dict[str, Any]:
     triples = read_kb(root)
     if not triples:
         raise SystemExit(f"{root / KB_NAME} held no triples")

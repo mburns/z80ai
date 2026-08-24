@@ -30,6 +30,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from libz80 import Z80Builder
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # The eight decode tables the Z80's encoding is built from.
@@ -385,7 +387,7 @@ def format_listing(instructions: list[Instruction], labels: dict[int, str],
     return "\n".join(lines)
 
 
-def label_map(builder) -> dict[int, str]:
+def label_map(builder: Z80Builder) -> dict[int, str]:
     """Invert a builder's label table into address -> name.
 
     Several labels can share an address - CHAT and CHAT_LOOP do - so they are

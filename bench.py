@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from libhost import AgonHost, CPCHost, CPMHost, NextHost, ZXHost
 
@@ -76,7 +76,7 @@ def _host(target: str, query: str, org: int) -> AgonHost | CPCHost | CPMHost | Z
     return CPMHost(cmdline=query)
 
 
-def measure(target: str, model_path: str, query: str = "HELLO") -> dict:
+def measure(target: str, model_path: str, query: str = "HELLO") -> dict[str, Any]:
     """Cycle and instruction counts for one forward pass of ``target``."""
     spec = TARGETS[target]
     module = importlib.import_module(spec.module)

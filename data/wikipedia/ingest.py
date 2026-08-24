@@ -34,6 +34,7 @@ import re
 import sqlite3
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -371,8 +372,11 @@ def infobox_fields(body: str) -> list[tuple[str, str]]:
     return out
 
 
-def pages(path: Path):
-    """Yield (title, redirect_target_or_None, lead) for every ns0 page."""
+def pages(path: Path) -> Iterator[tuple[str, str | None, str, list[tuple[str, str]]]]:
+    """Yield (title, redirect_target_or_None, lead, infobox_fields) per ns0 page.
+
+    A redirect carries no lead and no fields, so both are empty for one.
+    """
     opener = bz2.open if path.suffix == ".bz2" else open
     title = ns = redirect = None
     in_text = False
