@@ -45,7 +45,7 @@ from dataclasses import dataclass
 # restated. They are not independent choices: code generated against a
 # different NUM_BUCKETS than libinfer encodes with computes the wrong thing,
 # and does so quietly.
-from libinfer import BUCKET_WEIGHT, CONTEXT_LEN, NUM_BUCKETS
+from libinfer import BUCKET_WEIGHT, CONTEXT_LEN, NUM_BUCKETS, BuildInputs
 from libz80 import Z80Builder
 
 #: Bytes per activation.
@@ -794,6 +794,102 @@ def emit_times_seven(b: Z80Builder, scratch: str = "de") -> None:
     b.add_hl_hl()
     b.add_hl_hl()  # * 8
     _pop_sub(b, scratch)
+
+
+@dataclass(frozen=True)
+class PackedBuild:
+    """A model loaded, validated and packed two bits to a weight.
+
+    What every ``.COM``/``.TAP``/CPC backend needs before it emits anything.
+    They each derived it with the same eighteen lines, differing only in which
+    Platform they constructed.
+    """
+
+    model: BuildInputs
+    plans: list[LayerPlan]
+    qplan: LayerPlan
+    packed_weights: list[bytes]
+    packed_query: bytes
+    biases: list
+
+    @property
+    def layer_sizes(self) -> list[int]:
+        return self.model.layer_sizes
+
+
+def prepare_packed(model_path: str, plat: Platform) -> PackedBuild:
+    """Load a model and pack it for the shared packed-weight engine.
+
+    The nibble order is the rotated one for every backend that uses this, which
+    is what lets them share MULADD; see :func:`libinfer.pack_2bit`.
+
+    Layer 1's query-half columns are split off into their own stream: the query
+    does not change while a response is being generated, so PREQ walks them
+    once per query and hands layer 1 the result as its bias. Exact, not
+    approximate - see :func:`libinfer.forward_hoisted`.
+
+    Raises:
+        ValueError: If a layer is wider than a Z80 neuron loop can count.
+    """
+    from libinfer import load_for_build, pack_2bit, split_query_half, validate_z80_layers
+
+    model = load_for_build(model_path)
+    layer_sizes = model.layer_sizes
+    validate_z80_layers(layer_sizes)
+
+    def pack(w) -> bytes:
+        return pack_2bit(w, layout="rotated")
+
+    w1q, w1c = split_query_half(model.weight(0))
+    return PackedBuild(
+        model=model,
+        plans=plan_layers(layer_sizes, plat.buffer, hoist_query=True),
+        qplan=query_plan(layer_sizes, plat.buffer),
+        packed_weights=[pack(w1c)] + [pack(model.weight(i))
+                                      for i in range(1, model.num_layers)],
+        packed_query=pack(w1q),
+        biases=model.biases(),
+    )
+
+
+def emit_packed_engine(b: Z80Builder, plat: Platform, packed: PackedBuild,
+                       max_output_len: int) -> None:
+    """Emit the whole engine a packed-weight build needs, in order.
+
+    Every ``.COM``/``.TAP``/CPC backend emitted exactly these fifteen calls,
+    byte for byte, in four separate files. Adding a routine meant editing four
+    of them, and forgetting one produced an unresolved label at best.
+
+    What is deliberately *not* here is the data section. The backends interleave
+    their own platform data with the shared data at different points - CP/M puts
+    CRLF between the charset table and the variables, the CPC does not - and
+    that ordering decides the image bytes. It is a per-machine layout decision,
+    not duplication.
+    """
+    model, plans = packed.model, packed.plans
+    emit_generate(b, model.eos_idx, max_output_len,
+                  emit_layered_inference(plans), hoist_query=True)
+    emit_printch(b, plat)
+    emit_update_ctx(b)
+    emit_encode_ctx(b, plat)
+    emit_ctx_hash(b, plat)
+    emit_clear_ctx(b)
+    emit_layer_dispatch(b, plans)
+    emit_layer(b)
+    emit_query_dispatch(b, packed.qplan)
+    emit_layer(b, name="QLAYER", prefix="Q", scale=False)
+    emit_muladd(b)
+    emit_relu(b, plans)
+    emit_argmax(b, model.output_size)
+    emit_tokenizer(b, plat, model.position_bands)
+    emit_tok_hash(b, plat, model.position_bands)
+
+
+def emit_packed_tail(b: Z80Builder, plat: Platform, packed: PackedBuild) -> None:
+    """Emit the activation buffers and the weight blobs, which always come last."""
+    emit_buffers(b, plat, packed.layer_sizes, hoist_query=True)
+    emit_weights(b, packed.packed_weights, packed.biases)
+    emit_query_weights(b, packed.packed_query)
 
 
 def emit_lower_fold(b: Z80Builder, skip: str | None = None) -> None:
