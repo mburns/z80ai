@@ -28,8 +28,28 @@ import ingest
     ("  Birth Place ", "birth_place"),
     ("BIRTH_PLACE", "birth_place"),
     ("subdivision_name1", "subdivision_name1"),   # the index is split later
+    # A hyphen separates words exactly as a space does, and templates use it
+    # constantly. Refusing it cost 3,014 fields in 60,000 pages.
+    ("honorific-prefix", "honorific_prefix"),
+    ("iso-code-region", "iso_code_region"),
+    ("b-side", "b_side"),
 ])
 def test_a_key_is_cleaned_into_a_property(raw, expected):
+    assert ingest.normalize_property(raw) == expected
+
+
+@pytest.mark.parametrize("raw, expected", [
+    # German templates appear in Simple English Wikipedia, and these mean
+    # elevation and municipality key. Not ASCII, not corrupt.
+    ("höhe", "höhe"),
+    ("gemeindeschlüssel", "gemeindeschlüssel"),
+    # A real field that happens to start with a digit.
+    ("1-min_winds", "1_min_winds"),
+    ("2010pop", "2010pop"),
+])
+def test_a_key_is_kept_for_having_letters_rather_than_ascii(raw, expected):
+    """The first rule here demanded `^[a-z]`, which is a statement about
+    English rather than about whether something is a property."""
     assert ingest.normalize_property(raw) == expected
 
 

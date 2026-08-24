@@ -382,19 +382,35 @@ MAX_VALUE_LEN = 120
 #: `<!--_scroll_down_to_edit_this_page_-->_<!--_philosopher_category_-->_region`.
 COMMENT = re.compile(r"<!--.*?-->", re.S)
 
+#: Word separators inside a key. A template author writes `honorific-prefix`
+#: or `iso-code-region` as readily as `birth_place`, and a hyphen is doing the
+#: same job as the underscore - so it is normalized, not grounds for refusal.
+#:
+#: Treating whitespace as a separator but a hyphen as corruption threw away
+#: 3,014 fields in 60,000 pages, among them `postal-codes`, `honorific-suffix`
+#: and `b-side`. All real, all lost to an inconsistency in this line.
+SEPARATORS = re.compile("[\\s\\-\u2010-\u2015]+")
+
 #: A property name worth keeping. Keys were never run through `clean()` - only
 #: values were - so anything the markup left behind survived into the schema.
-#: Rather than clean a key and hope, this says what a key may look like and
-#: drops the rest: 3,740 of the 13,387 properties were used exactly once, and
-#: they are parse artifacts rather than a vocabulary.
-PROPERTY_OK = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+#: Rather than clean a key and hope, this says what a key may look like.
+#:
+#: Deliberately permissive about *what* the letters are and strict about there
+#: being letters at all: `höhe` and `gemeindeschlüssel` come from German
+#: templates and mean elevation and municipality key, while `123` is a
+#: positional argument and `1-min_winds` is a real field that happens to start
+#: with a digit. So the rule is "at least one letter, word characters only,
+#: not absurdly long" rather than an ASCII shape that fails honest data.
+PROPERTY_OK = re.compile(r"^(?=.*[^\W\d_])\w{1,64}$", re.UNICODE)
 
 #: A trailing index on a repeated field. Templates spell a list as
 #: `subdivision_name1`, `subdivision_name2` and so on, which makes seven
 #: properties out of one and hides the fact that they are the same field. This
 #: is 4,064 of the properties and **27.6% of all facts**, so collapsing them is
 #: the single biggest thing that can be done to the shape of this data.
-INDEXED = re.compile(r"^(.*[a-z_])(\d{1,2})$")
+#: `[^\W\d]` rather than `[a-z_]`: the base has to end in a letter, and now
+#: that German template keys survive, some of those letters are not ASCII.
+INDEXED = re.compile(r"^(.*[^\W\d])(\d{1,2})$", re.UNICODE)
 
 #: Values that are a number, with or without thousands separators. 20.5% of
 #: values are one, and stored as text they sort lexically - "9" after "10".
@@ -447,7 +463,7 @@ def normalize_property(key: str) -> str | None:
     What a property **means** is libgraph's job, because meaning is a
     judgement about this corpus and form is not.
     """
-    key = re.sub(r"\s+", "_", clean(key).strip().lower()).strip("_")
+    key = SEPARATORS.sub("_", clean(key).strip().lower()).strip("_")
     if not PROPERTY_OK.match(key) or FURNITURE.search(key):
         return None
     return key
