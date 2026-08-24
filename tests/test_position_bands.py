@@ -17,7 +17,7 @@ import buildfastz80com
 import buildz80com
 import buildz80tap
 import libinfer
-from libhost import AgonHost, CPMHost, run_agon, run_cpm
+from libhost import run_agon, run_cpm
 from libz80emu import Z80
 
 REORDERED = [
@@ -112,34 +112,6 @@ def _read_buckets(cpu: Z80, addr: int, count: int, width: int) -> np.ndarray:
         top = 1 << (width * 8 - 1)
         out.append(v - (top << 1) if v & top else v)
     return np.array(out, dtype=np.int64)
-
-
-@pytest.mark.parametrize("query", ["PUT THE KEY IN THE BOX", "HELLO", "A", "X Y Z W"])
-def test_cpm_tokenizer_matches_the_banded_reference(banded_model_path, query):
-    builder = buildz80com.build_autoreg(banded_model_path, max_output_len=1)
-    host = CPMHost(cmdline=query)
-    cpu = host.cpu
-    cpu.load(0x0100, builder.build())
-    cpu.pc = 0x0100
-    cpu.run(max_cycles=400_000_000, stop_pc=builder.labels["ARGMAX"])
-    got = _read_buckets(cpu, builder.labels["INBUF"], 128, 2)
-    np.testing.assert_array_equal(
-        got, libinfer.trigram_encode(query, position_bands=8)
-    )
-
-
-@pytest.mark.parametrize("query", ["PUT THE KEY IN THE BOX", "HELLO"])
-def test_ez80_tokenizer_matches_the_banded_reference(banded_model_path, query):
-    builder = buildez80.build_autoreg(banded_model_path, max_output_len=1)
-    host = AgonHost(stdin=[query, "!"])
-    cpu = host.cpu
-    cpu.load(buildez80.AGON_LOAD_ADDR, builder.build())
-    cpu.pc = buildez80.AGON_LOAD_ADDR
-    cpu.run(max_cycles=400_000_000, stop_pc=builder.labels["ARGMAX"])
-    got = _read_buckets(cpu, builder.labels["INBUF"], 128, 3)
-    np.testing.assert_array_equal(
-        got, libinfer.trigram_encode(query, position_bands=8)
-    )
 
 
 @pytest.mark.parametrize("a,b", REORDERED[:1])

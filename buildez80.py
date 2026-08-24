@@ -59,6 +59,7 @@ import os
 import numpy as np
 
 import libagon
+import libnn
 from libagon import KEY_LABELS, MAX_INPUT_LEN, MOS_OUTCHAR
 from libez80 import AGON_LOAD_ADDR, AGON_MAX_IMAGE, EZ80Builder, agon_header
 from libinfer import (
@@ -910,24 +911,12 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.push_de()
     b.ld_hl_nn(0)
     if position_bands > 1:
-        # Seed with the trigram's position band: TOKPOS >> 3, clamped, times 7.
-        b.ld_a_mem_label('TOKPOS')
-        b.rrca()
-        b.rrca()
-        b.rrca()
-        b.and_n(0x1F)  # RRCA rotates, so drop the bits that wrapped round
-        b.cp_n(position_bands)
-        b.jr_c('TOK_BAND_OK')
-        b.ld_a_n(position_bands - 1)
-        b.label('TOK_BAND_OK')
+        # Seed with the trigram's position band. Both halves come from libnn:
+        # they are libinfer.position_band and BAND_SEED rendered as code, and
+        # the Z80 backends emit the same two.
+        libnn.emit_band_index(b, position_bands)
         b.ld_l_a()
-        b.push_hl()
-        b.add_hl_hl()
-        b.add_hl_hl()
-        b.add_hl_hl()
-        b.pop_bc()
-        b.or_a()
-        b.sbc_hl_bc()  # * 7
+        libnn.emit_times_seven(b, 'bc')
         b.call('HASH_STEP2')
         b.ld_a_mem_label('TOKC1')
         b.call('HASH_ADD')
@@ -955,12 +944,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     # Both scratch through BC, never DE: CTX_HASH keeps its character pointer
     # in DE across the whole loop.
     b.label('HASH_STEP2')
-    b.push_hl()
-    for _ in range(5):
-        b.add_hl_hl()
-    b.pop_bc()
-    b.or_a()
-    b.sbc_hl_bc()
+    libnn.emit_hash_step(b, 'bc')
     b.ret()
 
     b.label('HASH_ADD')
@@ -1037,13 +1021,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ld_hl_nn(0)
     b.ld_a_mem_label('CTXPOS')
     b.ld_l_a()
-    b.push_hl()
-    b.add_hl_hl()
-    b.add_hl_hl()
-    b.add_hl_hl()  # pos * 8
-    b.pop_de()
-    b.or_a()
-    b.sbc_hl_de()  # pos * 7
+    libnn.emit_times_seven(b, 'de')  # pos * 7
 
     b.push_hl()
     b.ld_hl_label('CTXCHARS')

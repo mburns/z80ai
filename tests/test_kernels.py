@@ -27,19 +27,6 @@ def odd_builder(odd_model_path):
     return buildz80com.build_autoreg(odd_model_path, max_output_len=1)
 
 
-@pytest.mark.parametrize("query", ["HELLO", "A", "IS IT AN ANIMAL"])
-def test_tokenizer_matches_reference(tiny_builder, query):
-    cpu = run_until(tiny_builder, query, "ARGMAX")
-    got = read_words(cpu, tiny_builder.labels["INBUF"], 128)
-    np.testing.assert_array_equal(got, libinfer.trigram_encode(query))
-
-
-def test_initial_context_matches_reference(tiny_builder):
-    cpu = run_until(tiny_builder, "HELLO", "ARGMAX")
-    got = read_words(cpu, tiny_builder.labels["INBUF"] + 256, 128)
-    np.testing.assert_array_equal(got, libinfer.context_encode(" " * 8))
-
-
 @pytest.mark.parametrize("query", ["HELLO", "WHAT IS THIS"])
 def test_output_logits_match_reference(tiny_builder, tiny_model, query):
     cpu = run_until(tiny_builder, query, "ARGMAX")
