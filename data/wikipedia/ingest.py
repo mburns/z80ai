@@ -380,7 +380,7 @@ MAX_VALUE_LEN = 120
 #: way to know that, so its text runs on into the next key. That is how the
 #: property list came to contain `<!--_company_slogan` and
 #: `<!--_scroll_down_to_edit_this_page_-->_<!--_philosopher_category_-->_region`.
-COMMENT = re.compile(r"<!--.*?-->", re.S)
+COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 #: Word separators inside a key. A template author writes `honorific-prefix`
 #: or `iso-code-region` as readily as `birth_place`, and a hyphen is doing the
