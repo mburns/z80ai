@@ -105,6 +105,7 @@ listing rather than an exception.
 | `test_phrasebook.py` | One forward pass, one reply: the reference path a phrasebook model is checked against |
 | `test_wikisearch.py` | The search card format, and that the eZ80 program and `libsearch` agree on what it says |
 | `test_wikipedia_ingest.py` | Turning a MediaWiki dump into the database, and the markup cases that reached the screen before they were fixed |
+| `test_wikipedia_normalize.py` | Cleaning a fact on the way in: what a property name may look like, when a trailing digit is an index and when it is a unit, what type a value is, and what the CHECK constraints refuse |
 
 ## In CI
 

@@ -9,26 +9,32 @@ anyone will hear from it.
 from __future__ import annotations
 
 import sqlite3
+import sys
+from pathlib import Path
 
 import pytest
 
 import libgraph
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "data" / "wikipedia"))
+import ingest
+
 import liboracle
 
 
 @pytest.fixture
 def db():
     conn = sqlite3.connect(":memory:")
-    conn.executescript("""
-        CREATE TABLE article (source TEXT, title TEXT, lead TEXT);
-        CREATE TABLE redirect (source TEXT, title TEXT, target TEXT);
-        CREATE TABLE fact (source TEXT, subject TEXT, property TEXT, value TEXT);
-    """)
-    conn.executescript(libgraph.schema(strict=False))
-    conn.executemany("INSERT INTO article VALUES ('simplewiki', ?, '')", [
+    # The real schema, so these cannot pass against a `fact` table the ingest
+    # has since changed - which is exactly what a hand-written copy allowed.
+    conn.executescript(ingest._schema())
+    conn.executemany("INSERT INTO article (source, title, lead) "
+                     "VALUES ('simplewiki', ?, '')", [
         ("Jane Austen",), ("Steventon",), ("Hampshire",), ("England",),
         ("Pride and Prejudice",)])
-    conn.executemany("INSERT INTO fact VALUES ('simplewiki', ?, ?, ?)", [
+    conn.executemany(
+        "INSERT INTO fact (source, subject, property, ordinal, value, kind, num)"
+        " VALUES ('simplewiki', ?, ?, 0, ?, 'text', NULL)", [
         ("Jane Austen", "birth_place", "Steventon"),
         ("Steventon", "subdivision_name", "Hampshire"),
         ("Hampshire", "country", "England"),

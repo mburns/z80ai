@@ -15,7 +15,7 @@ rather than merging into them - which is what makes re-running it a sync, and
 what makes deletions propagate. The swap happens in one transaction, so an
 interrupted run leaves the previous corpus intact.
 
-Two tables carry the corpus:
+Four tables carry the corpus:
 
   article   what the machine can answer with. Title plus the opening sentences,
             because a 300-character lead is about a third of a 40x24 screen and
@@ -23,6 +23,30 @@ Two tables carry the corpus:
   redirect  alternate names, pointing at a title. Wikipedia's editors have
             written ~115,000 of these, and they are the reason `jane austin`
             finds Jane Austen - the index does no fuzzy matching of its own.
+  fact      what an infobox said, as (subject, property, ordinal) -> value,
+            with the value's type worked out on the way in.
+  property  the vocabulary those facts are written in, counted, and marked
+            with the relation libgraph reads it as - where there is one.
+
+## Normalizing, and where it stops
+
+An infobox is hand-typed by thousands of people, so what arrives is a
+folksonomy: 13,387 distinct property names, 3,740 of them used exactly once and
+most of those parse artifacts rather than vocabulary. Cleaning it is worth
+doing and worth bounding, so this normalizes **form** and leaves **meaning** to
+libgraph:
+
+  form      the shape of a key, the index split off a repeated field, the type
+            of a value, the punctuation at its edges. All mechanical, all
+            decidable from the data alone, all tested.
+  meaning   that `subdivision_name` and `country` are the same question. That
+            is a judgement about this corpus and it belongs where the judgement
+            is made, not smuggled into the parser.
+
+What cannot be normalized is recorded instead. `property` makes the folksonomy
+a table you can query rather than something to be rediscovered by reading a
+dump - and *"what is used often and mapped to nothing"* is the query that found
+`subdivision_name` and took chaining from 1.7% to 40.7%.
 """
 
 from __future__ import annotations
@@ -34,7 +58,7 @@ import re
 import sqlite3
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -44,7 +68,7 @@ import libgraph
 DB_PATH = Path(__file__).resolve().parent.parent / "simple_english_wikipedia.db"
 #: Bumped whenever the table definitions change. The database is derived data,
 #: so a mismatch is resolved by re-ingesting rather than by migrating.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 #: Characters of lead text kept per article. A 40x24 Agon screen holds about
 #: 960, so this is a third of one - enough to say what a thing is.
@@ -103,7 +127,18 @@ def _schema() -> str:
       point at each one, which is how a limited card picks the notable ones. It
       covers both outright, so neither touches the table.
     - ``fact``'s primary key *is* the lookup an oracle performs -
-      ``(subject, property) -> value`` - so that costs no separate index.
+      ``(subject, property, ordinal) -> value`` - so that costs no separate
+      index. ``ordinal`` is there because a template spells a list as
+      ``subdivision_name1``, ``subdivision_name2``: 4,064 property names and
+      27.6% of all facts were positional variants of some other property,
+      which made one field look like seven unrelated ones.
+
+    - ``property`` is the vocabulary, counted. 13,387 distinct properties is a
+      folksonomy nobody wrote down, and the query worth running against it -
+      *what is used often and mapped to nothing* - is the one that found
+      ``subdivision_name`` and took chaining from 1.7% to 40.7%. A partial
+      index keeps that query cheap. Recording it means the next such find is a
+      SELECT rather than an archaeology expedition.
     - ``fact_value`` is the same lookup backwards: "who was born in Edinburgh"
       from the rows that say where people were born. Inverse relations are
       about a third of what a real question set asks - SimpleQuestions labels
@@ -122,6 +157,12 @@ def _schema() -> str:
     and the first sign of that would be ``.replace()`` failing somewhere in
     the index builder. Cheap, and it makes the declared type the type that
     comes back.
+
+    **CHECK** is what actually enforces the cleaning. Normalizing on the way in
+    is a promise the writer makes; a constraint is one the database keeps. An
+    empty value, a negative ordinal, a ``kind`` invented by a typo in one
+    branch of the classifier, or a number with no numeric value are all now
+    write errors rather than rows that read strangely six months later.
     """
     return f"""
 CREATE TABLE IF NOT EXISTS meta (
@@ -150,11 +191,31 @@ CREATE TABLE IF NOT EXISTS fact (
     source   TEXT NOT NULL,
     subject  TEXT NOT NULL,
     property TEXT NOT NULL,
+    ordinal  INTEGER NOT NULL DEFAULT 0,
     value    TEXT NOT NULL,
-    PRIMARY KEY (source, subject, property)
+    kind     TEXT NOT NULL DEFAULT 'text',
+    num      REAL,
+    PRIMARY KEY (source, subject, property, ordinal),
+    CHECK (value <> ''),
+    CHECK (ordinal >= 0),
+    CHECK (kind IN ('text', 'number', 'date', 'url')),
+    CHECK ((num IS NULL) = (kind NOT IN ('number', 'date')))
 ) {STRICT}WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS fact_value ON fact (source, value);
+
+CREATE TABLE IF NOT EXISTS property (
+    source   TEXT NOT NULL,
+    name     TEXT NOT NULL,
+    uses     INTEGER NOT NULL,
+    subjects INTEGER NOT NULL,
+    relation TEXT,
+    PRIMARY KEY (source, name),
+    CHECK (uses > 0)
+) {STRICT}WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS property_unmapped
+    ON property (source, uses DESC) WHERE relation IS NULL;
 """ + libgraph.schema(strict=bool(STRICT))
 
 # --- dump parsing -------------------------------------------------------------
@@ -250,9 +311,18 @@ def clean(markup: str) -> str:
     # Entities first. A dump escapes some markup, so `&lt;ref&gt;` survives the
     # tag pass and *becomes* a tag afterwards - which is how "<ref></ref>"
     # ended up printed on screen.
+    #
+    # To a fixed point, because some of the dump is escaped twice: `&amp;amp;`
+    # decodes to `&amp;` and one pass would leave that on screen. Bounded
+    # rather than `while`, since a value can be adversarial and three rounds is
+    # already one more than anything in this corpus needs.
     text = markup
-    for entity, char in ENTITY.items():
-        text = text.replace(entity, char)
+    for _ in range(3):
+        before = text
+        for entity, char in ENTITY.items():
+            text = text.replace(entity, char)
+        if text == before:
+            break
     text = REF.sub(" ", text)
     text = TABLE.sub(" ", text)
     text = _strip_braced(text)
@@ -304,6 +374,135 @@ JUNK_VALUE = re.compile(r"^[\s|=*#:;{}\[\]<>/-]*$|^\d+\s*px$|^(yes|no|y|n|on|off
 #: A value longer than this is a paragraph that wandered into a field.
 MAX_VALUE_LEN = 120
 
+#: HTML comments, stripped before fields are split rather than after.
+#:
+#: A comment sitting between two pipes is not a field, but the splitter has no
+#: way to know that, so its text runs on into the next key. That is how the
+#: property list came to contain `<!--_company_slogan` and
+#: `<!--_scroll_down_to_edit_this_page_-->_<!--_philosopher_category_-->_region`.
+COMMENT = re.compile(r"<!--.*?-->", re.S)
+
+#: A property name worth keeping. Keys were never run through `clean()` - only
+#: values were - so anything the markup left behind survived into the schema.
+#: Rather than clean a key and hope, this says what a key may look like and
+#: drops the rest: 3,740 of the 13,387 properties were used exactly once, and
+#: they are parse artifacts rather than a vocabulary.
+PROPERTY_OK = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+#: A trailing index on a repeated field. Templates spell a list as
+#: `subdivision_name1`, `subdivision_name2` and so on, which makes seven
+#: properties out of one and hides the fact that they are the same field. This
+#: is 4,064 of the properties and **27.6% of all facts**, so collapsing them is
+#: the single biggest thing that can be done to the shape of this data.
+INDEXED = re.compile(r"^(.*[a-z_])(\d{1,2})$")
+
+#: Values that are a number, with or without thousands separators. 20.5% of
+#: values are one, and stored as text they sort lexically - "9" after "10".
+NUMBER = re.compile(r"^[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$|^[-+]?\d+(?:\.\d+)?$")
+URL = re.compile(r"^(?:https?://|www\.)\S+$")
+#: Enough date shapes to cover the 3.8% that are dates, and no more. A parser
+#: that guesses at "9th century" would be inventing precision.
+DATES = (re.compile(r"^(\d{1,2}) (\w+) (\d{3,4})$"),
+         re.compile(r"^(\w+) (\d{1,2}),? (\d{3,4})$"),
+         re.compile(r"^(\d{3,4})-(\d{2})-(\d{2})$"))
+MONTHS = {m: i for i, m in enumerate((
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+), start=1)}
+
+#: What a value turned out to be. A CHECK constraint pins these, so a new kind
+#: cannot be introduced by a typo in one branch of the classifier.
+KINDS = ("text", "number", "date", "url")
+
+
+def value_kind(value: str) -> tuple[str, float | None]:
+    """Classify a value, and pull out the number in it where there is one.
+
+    ``num`` carries the numeric value for a number and the year for a date,
+    which is what makes "before 1900" and "over 50,000" expressible in SQL at
+    all. The text is left as written either way: these are facts an oracle
+    reads out, and "1,000,000" is better said than 1000000.0.
+    """
+    if URL.match(value):
+        return "url", None
+    if NUMBER.match(value):
+        return "number", float(value.replace(",", ""))
+    for pattern in DATES:
+        m = pattern.match(value)
+        if not m:
+            continue
+        parts = m.groups()
+        if pattern is DATES[2]:
+            return "date", float(parts[0])
+        month = parts[1] if pattern is DATES[0] else parts[0]
+        if month.lower() in MONTHS:
+            return "date", float(parts[2])
+    return "text", None
+
+
+def normalize_property(key: str) -> str | None:
+    """A raw infobox key, cleaned, or None if it is not a property at all.
+
+    Only the *form* is settled here - the shape, the case, the whitespace.
+    What a property **means** is libgraph's job, because meaning is a
+    judgement about this corpus and form is not.
+    """
+    key = re.sub(r"\s+", "_", clean(key).strip().lower()).strip("_")
+    if not PROPERTY_OK.match(key) or FURNITURE.search(key):
+        return None
+    return key
+
+
+def index_families(names: Iterable[str]) -> dict[str, tuple[str, int]]:
+    """raw name -> (property, ordinal), for the names that are a series.
+
+    A trailing digit is not enough to go on. `subdivision_name2` is the second
+    subdivision; `area_km2` is square kilometres, and splitting it invents a
+    field called `area_km` that no one wrote. The name cannot tell them apart -
+    only the rest of the vocabulary can, by whether it agrees there is a
+    series. So a base is only indexed when more than one index appears under
+    it, or when the bare name is also in use.
+
+    Over Simple English Wikipedia that separates 743 real series (496,000
+    facts, re-indexed) from 137 lone names (42,541 facts, left exactly as
+    written) - and every one of those 137 turns out to end in `km2`.
+    """
+    names = list(names)
+    present = set(names)
+    seen: dict[str, set[int]] = {}
+    for name in names:
+        m = INDEXED.match(name)
+        if m:
+            seen.setdefault(m.group(1), set()).add(int(m.group(2)))
+
+    out: dict[str, tuple[str, int]] = {}
+    for name in names:
+        m = INDEXED.match(name)
+        if not m:
+            continue
+        base, index = m.group(1), int(m.group(2))
+        if len(seen[base]) > 1 or base in present:
+            out[name] = (base, index)
+    return out
+
+
+#: Leftovers that survive `clean()` at the edges of a value: a list marker, a
+#: dangling separator, an unterminated tag the ref pass could not pair up.
+EDGES = re.compile("^[\\s*#,;:.|\\-\u2013\u2014]+|[\\s,;:|]+$")
+UNTERMINATED = re.compile(r"<[a-zA-Z/][^>]*$")
+
+
+def normalize_value(value: str) -> str:
+    """Trim the edges `clean()` leaves behind.
+
+    0.7% of values began with a bullet or a dash and another 0.7% ended in
+    stray punctuation - small shares that are entirely concentrated in the
+    fields anyone would actually query, because a list is how an infobox says
+    "more than one".
+    """
+    value = UNTERMINATED.sub("", value)
+    return EDGES.sub("", value).strip()
+
 
 def infobox_body(markup: str) -> str | None:
     """The text between the first Infobox's braces, nesting respected."""
@@ -326,12 +525,16 @@ def infobox_body(markup: str) -> str | None:
 
 
 def infobox_fields(body: str) -> list[tuple[str, str]]:
-    """Top-level ``| key = value`` pairs.
+    """Top-level ``| key = value`` pairs, cleaned but not yet re-indexed.
+
+    Splitting an index off a repeated field needs the whole vocabulary - see
+    ``index_families`` - so it happens once the dump has been read, not here.
 
     Split by hand rather than by regex: a value may itself contain ``|`` inside
     a nested template or a piped link, and splitting on those turns one field
     into several fragments, none of which is a fact.
     """
+    body = COMMENT.sub("", body)
     fields: list[str] = []
     brace = brack = 0
     current: list[str] = []
@@ -358,13 +561,14 @@ def infobox_fields(body: str) -> list[tuple[str, str]]:
         key, sep, value = field.partition("=")
         if not sep:
             continue
-        key = re.sub(r"\s+", "_", key.strip().lower())
-        if not key or key in seen or FURNITURE.search(key):
+        named = normalize_property(key)
+        if named is None or named in seen:
             continue
+        key = named
         # The same cleaner the lead uses, so entities are resolved before tags
         # are stripped rather than after - the bug that put "<ref></ref>" on
         # screen would otherwise put "&lt;br&gt;" in every multi-part value.
-        value = clean(value)
+        value = normalize_value(clean(value))
         if not value or JUNK_VALUE.match(value) or len(value) > MAX_VALUE_LEN:
             continue
         seen.add(key)
@@ -509,8 +713,9 @@ def ingest(db: sqlite3.Connection, dump: Path,
     db.execute("CREATE TEMP TABLE new_article (title TEXT PRIMARY KEY, lead TEXT)")
     db.execute("CREATE TEMP TABLE new_redirect (title TEXT PRIMARY KEY, target TEXT)")
     db.execute("CREATE TEMP TABLE new_fact "
-               "(subject TEXT, property TEXT, value TEXT, "
-               " PRIMARY KEY (subject, property))")
+               "(subject TEXT, property TEXT, ordinal INTEGER, value TEXT, "
+               " kind TEXT, num REAL, "
+               " PRIMARY KEY (subject, property, ordinal))")
 
     articles = redirects = facts = 0
     started = time.time()
@@ -525,13 +730,31 @@ def ingest(db: sqlite3.Connection, dump: Path,
             articles += 1
             if fields:
                 db.executemany(
-                    "INSERT OR REPLACE INTO new_fact VALUES (?, ?, ?)",
-                    [(title, key, value) for key, value in fields])
+                    "INSERT OR REPLACE INTO new_fact VALUES (?, ?, 0, ?, ?, ?)",
+                    [(title, key, value, *value_kind(value))
+                     for key, value in fields])
                 facts += len(fields)
         total = articles + redirects
         if total % 50_000 == 0:
             rate = total / (time.time() - started)
             print(f"  {total:,} pages, {facts:,} facts ({rate:,.0f}/s)", flush=True)
+
+    # Now that the whole vocabulary is known, split the indices off the
+    # repeated fields. UPDATE OR REPLACE rather than UPDATE: `tubeexits3` and
+    # `tubeexits03` both land on ordinal 3, and one page carrying each would
+    # otherwise abort the run on a primary key it cannot satisfy.
+    renames = index_families(
+        n for (n,) in db.execute("SELECT DISTINCT property FROM new_fact"))
+    for raw, (base, ordinal) in renames.items():
+        db.execute("UPDATE OR REPLACE new_fact SET property = ?, ordinal = ? "
+                   "WHERE property = ?", (base, ordinal, raw))
+    if renames:
+        print(f"  {len(renames):,} indexed properties folded into "
+              f"{len({b for b, _ in renames.values()}):,} fields", flush=True)
+    # Re-counted rather than carried down from the loop: the fold can replace a
+    # row, so the number written into `meta` has to be the number of rows the
+    # table ends up holding, not the number of fields the parser saw.
+    facts, = db.execute("SELECT COUNT(*) FROM new_fact").fetchone()
 
     # One transaction: an interrupted run leaves the old corpus untouched.
     with db:
@@ -542,8 +765,25 @@ def ingest(db: sqlite3.Connection, dump: Path,
                    "SELECT ?, title, lead FROM new_article", (source,))
         db.execute("INSERT INTO redirect (source, title, target) "
                    "SELECT ?, title, target FROM new_redirect", (source,))
-        db.execute("INSERT INTO fact (source, subject, property, value) "
-                   "SELECT ?, subject, property, value FROM new_fact", (source,))
+        db.execute("DELETE FROM property WHERE source = ?", (source,))
+        db.execute(
+            "INSERT INTO fact (source, subject, property, ordinal, value, "
+            "                  kind, num) "
+            "SELECT ?, subject, property, ordinal, value, kind, num "
+            "FROM new_fact", (source,))
+        # The vocabulary, recorded rather than inferred. 13,387 properties is a
+        # folksonomy nobody wrote down, and the query that matters -
+        # "what is used a lot and mapped to nothing" - is the one that found
+        # `subdivision_name` and took chaining from 1.7% to 40.7%. Leaving it
+        # to be rediscovered by whoever next reads a dump is how it stays lost.
+        db.execute(
+            "INSERT INTO property (source, name, uses, subjects, relation) "
+            "SELECT ?, property, COUNT(*), COUNT(DISTINCT subject), NULL "
+            "FROM new_fact GROUP BY property", (source,))
+        db.executemany(
+            "UPDATE property SET relation = ? WHERE source = ? AND name = ?",
+            [(relation, source, name)
+             for name, (relation, _rank) in libgraph.FIELD_RELATION.items()])
         # Provenance, so the database says which snapshot it holds and where
         # that snapshot can be fetched again. A filename alone does not: it
         # says what the file was called on one machine.
@@ -598,11 +838,35 @@ def stats(db: sqlite3.Connection) -> None:
             print(f"  {' ' * len(source)}  {f:,} facts over {subjects:,} "
                   f"subjects ({subjects / a:.0%} of articles), "
                   f"{properties:,} properties")
+            pad = " " * len(source)
+            # From `property` rather than a GROUP BY over two million rows:
+            # counting the vocabulary once at ingest is what that table is for.
             top = db.execute(
-                "SELECT property, COUNT(*) n FROM fact WHERE source = ? "
-                "GROUP BY property ORDER BY n DESC LIMIT 8", (source,)).fetchall()
-            print(f"  {' ' * len(source)}  most common: "
+                "SELECT name, uses FROM property WHERE source = ? "
+                "ORDER BY uses DESC LIMIT 8", (source,)).fetchall()
+            print(f"  {pad}  most common: "
                   + ", ".join(f"{p} ({n:,})" for p, n in top))
+
+            kinds = db.execute(
+                "SELECT kind, COUNT(*) n FROM fact WHERE source = ? "
+                "GROUP BY kind ORDER BY n DESC", (source,)).fetchall()
+            print(f"  {pad}  values: "
+                  + ", ".join(f"{k} {n / f:.0%}" for k, n in kinds))
+
+            # The question this database exists to keep answerable: what is
+            # used a lot and understood by nothing? Every entry is a candidate
+            # for libgraph.CANONICAL, and the last one worth adding took
+            # chaining from 1.7% to 40.7%.
+            unmapped = db.execute(
+                "SELECT name, uses FROM property WHERE source = ? "
+                "AND relation IS NULL ORDER BY uses DESC LIMIT 8",
+                (source,)).fetchall()
+            mapped, = db.execute(
+                "SELECT COUNT(*) FROM property WHERE source = ? "
+                "AND relation IS NOT NULL", (source,)).fetchone()
+            print(f"  {pad}  {mapped} properties map to a relation; "
+                  f"biggest unmapped: "
+                  + ", ".join(f"{p} ({n:,})" for p, n in unmapped))
 
 
 def main() -> None:
