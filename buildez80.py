@@ -70,6 +70,7 @@ from libinfer import (
     BuildInputs,
     load_for_build,
 )
+from libz80 import Z80Builder
 
 # Weight stream encoding. Values outside {-2,-1,0,1} act as terminators.
 W_END_NEURON = 0x02
@@ -630,6 +631,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     else:
         weight_blobs, bias_blob = [], b''
 
+    plat = libagon.AgonPlatform()
     b = EZ80Builder(org=org)
     agon_header(b, 'START')
 
@@ -649,30 +651,18 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     libagon.emit_read_input(b)
 
     # === GENERATE ============================================================
-    b.label('GENERATE')
-    if kernel == 'column':
-        b.call('PREQ')  # once per response: the query cannot change during one
-    b.ld_a_n(max_output_len)
-    b.ld_mem_label_a('GENCNT')
+    # The loop itself is the Z80's. Only the EOS test differs: RESULT is 24
+    # bits here, so a CP cannot reach it.
+    def eos_test(bb: Z80Builder, idx: int) -> None:
+        bb.ld_hl_mem_label('RESULT')
+        bb.ld_bc_nn(idx)
+        bb.or_a()
+        bb.sbc_hl_bc()
 
-    b.label('GENLOOP')
-    b.call('INFER')
-    b.call('ARGMAX')
-
-    b.ld_hl_mem_label('RESULT')
-    b.ld_bc_nn(eos_idx)
-    b.or_a()
-    b.sbc_hl_bc()
-    b.ret_z()
-
-    b.call('PRINTCH')
-    b.call('UPDATE_CTX')
-
-    b.ld_a_mem_label('GENCNT')
-    b.dec_a()
-    b.ld_mem_label_a('GENCNT')
-    b.jr_nz('GENLOOP')
-    b.ret()
+    libnn.emit_generate(b, eos_idx, max_output_len,
+                        lambda bb: bb.call('INFER'),
+                        hoist_query=(kernel == 'column'),
+                        emit_eos_test=eos_test)
 
     # === PRINTCH =============================================================
     b.label('PRINTCH')
@@ -970,42 +960,18 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ld_hl_a()
     b.jp('ENCODE_CTX')
 
-    b.label('ENCODE_CTX')
-    b.ld_hl_label('CTXBUF')
-    b.ld_de_label('CTXBUF')
-    b.inc_de()
-    b.ld_bc_nn(NUM_BUCKETS * 3 - 1)
-    b.ld_hl_n(0)
-    b.ldir()
+    # The loop nest is the Z80's: it walks CTXCHARS and calls CTX_HASH, and
+    # never touches an activation. Only clearing the buckets knows how wide one
+    # is, and the eZ80 gives them their own buffer rather than an offset.
+    def clear_ctx_buckets(bb: Z80Builder) -> None:
+        bb.ld_hl_label('CTXBUF')
+        bb.ld_de_label('CTXBUF')
+        bb.inc_de()
+        bb.ld_bc_nn(NUM_BUCKETS * 3 - 1)
+        bb.ld_hl_n(0)
+        bb.ldir()
 
-    b.ld_a_n(1)
-    b.ld_mem_label_a('CTXN')
-
-    b.label('CTX_NLOOP')
-    b.xor_a()
-    b.ld_mem_label_a('CTXPOS')
-
-    b.label('CTX_PLOOP')
-    b.ld_a_n(CONTEXT_LEN + 1)
-    b.ld_hl_label('CTXN')
-    b.sub_hl_ind()  # A = (context_len + 1) - n, the exclusive position bound
-    b.ld_b_a()
-    b.ld_a_mem_label('CTXPOS')
-    b.cp_b()
-    b.jr_nc('CTX_NEXT_N')
-    b.call('CTX_HASH')
-    b.ld_a_mem_label('CTXPOS')
-    b.inc_a()
-    b.ld_mem_label_a('CTXPOS')
-    b.jr('CTX_PLOOP')
-
-    b.label('CTX_NEXT_N')
-    b.ld_a_mem_label('CTXN')
-    b.inc_a()
-    b.ld_mem_label_a('CTXN')
-    b.cp_n(4)
-    b.jr_c('CTX_NLOOP')
-    b.ret()
+    libnn.emit_encode_ctx(b, plat, emit_clear=clear_ctx_buckets)
 
     # === CTX_HASH: hash CTXN characters from CTXPOS, seeded with CTXPOS*7 ====
     b.label('CTX_HASH')
