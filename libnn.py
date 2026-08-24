@@ -11,6 +11,16 @@ What stays in a backend is genuinely platform-specific: where the query text
 comes from, how a character reaches the screen, and how the weights are laid
 out for the inner loop.
 
+``buildez80`` is the exception, and knowingly so. Its activations are 24 bits
+wide and its loops have no DJNZ byte counters, so every routine here that
+touches a buffer has to exist twice. What it *does* share is the encoder
+arithmetic - :func:`emit_hash_step`, :func:`emit_times_seven` and
+:func:`emit_band_index` - which is 16-bit on both machines and is the part
+where a divergence would be silent, since two hash functions that disagree
+still both produce plausible-looking buckets. The rest is held together by
+``tests/test_encoder_conformance.py``, which runs one corpus against every
+backend and against the reference.
+
 Register and memory conventions shared by every routine below:
 
 ===========  ============================================================
@@ -378,12 +388,7 @@ def emit_ctx_hash(b: Z80Builder, plat: Platform) -> None:
     b.label("CTX_HLOOP")
     b.push_bc()
     # hash = hash * 31 + char, as hash * 32 - hash + char.
-    b.push_hl()
-    for _ in range(5):
-        b.add_hl_hl()
-    b.pop_bc()
-    b.or_a()
-    b.sbc_hl_bc()
+    emit_hash_step(b, "bc")
     b.ld_a_de()
     b.ld_c_a()
     b.ld_b_n(0)
@@ -753,12 +758,63 @@ def emit_tokenizer(b: Z80Builder, plat: Platform, position_bands: int = 1) -> No
     b.jr("TOK_DONE")
 
 
-def _emit_band_seed(b: Z80Builder, bands: int) -> None:
-    """Leave ``position_band(TOKPOS) * BAND_SEED`` in HL.
+# --- encoder arithmetic, shared with the eZ80 backend ------------------------
+#
+# buildez80 cannot use the emitters in this module: its activations are 24 bits
+# wide and its loops have no DJNZ byte counters, so anything that touches a
+# buffer has to be written twice. The arithmetic *inside* the encoders does not
+# touch a buffer. It is 16-bit on both machines - hash16 is a 16-bit hash, on
+# purpose - and it is the part where a divergence would be silent, because two
+# hash functions that disagree still both produce plausible buckets.
+#
+# So these three are shared, and buildez80 imports them. Each takes the scratch
+# register pair to work through, which is the only thing that actually differs
+# between the call sites: CTX_HASH holds its character pointer in DE for the
+# length of its loop and cannot lend it out, and neither can the eZ80's.
 
-    The band is ``TOKPOS >> 3`` clamped to ``bands - 1``: three RRCAs and a
-    mask, because a proportional band would need a divide. The seed is then
-    multiplied by 7 the same way the context encoder does it, as ``x * 8 - x``.
+
+def _pop_sub(b: Z80Builder, scratch: str) -> None:
+    """``POP ss / OR A / SBC HL,ss`` - the subtract half of a shift-and-subtract."""
+    if scratch == "de":
+        b.pop_de()
+    elif scratch == "bc":
+        b.pop_bc()
+    else:
+        raise ValueError(f"scratch must be 'de' or 'bc', not {scratch!r}")
+    b.or_a()  # clear carry; SBC would otherwise borrow whatever was left
+    b.sbc_hl_de() if scratch == "de" else b.sbc_hl_bc()
+
+
+def emit_hash_step(b: Z80Builder, scratch: str = "de") -> None:
+    """Emit ``HL *= 31``, as ``HL * 32 - HL``.
+
+    One round of :func:`libinfer.hash16`. There is no multiply on a Z80, and
+    31 is one shy of a power of two, which is why the constant is 31.
+    """
+    b.push_hl()
+    for _ in range(5):
+        b.add_hl_hl()  # * 32
+    _pop_sub(b, scratch)
+
+
+def emit_times_seven(b: Z80Builder, scratch: str = "de") -> None:
+    """Emit ``HL *= 7``, as ``HL * 8 - HL``.
+
+    :data:`libinfer.BAND_SEED`, and the same trick as :func:`emit_hash_step`.
+    """
+    b.push_hl()
+    b.add_hl_hl()
+    b.add_hl_hl()
+    b.add_hl_hl()  # * 8
+    _pop_sub(b, scratch)
+
+
+def emit_band_index(b: Z80Builder, bands: int) -> None:
+    """Leave :func:`libinfer.position_band` of TOKPOS in A.
+
+    ``TOKPOS >> 3`` clamped to ``bands - 1``: three RRCAs and a mask, because a
+    proportional band would need a divide. :data:`libinfer.BAND_WIDTH` is a
+    power of two so that this works.
     """
     b.ld_a_mem_label("TOKPOS")
     b.rrca()
@@ -768,17 +824,15 @@ def _emit_band_seed(b: Z80Builder, bands: int) -> None:
     b.cp_n(bands)
     b.jr_c("TOK_BAND_OK")
     b.ld_a_n(bands - 1)  # clamp: everything past the last band shares it
-
     b.label("TOK_BAND_OK")
+
+
+def _emit_band_seed(b: Z80Builder, bands: int) -> None:
+    """Leave ``position_band(TOKPOS) * BAND_SEED`` in HL."""
+    emit_band_index(b, bands)
     b.ld_l_a()
     b.ld_h_n(0)
-    b.push_hl()
-    b.add_hl_hl()
-    b.add_hl_hl()
-    b.add_hl_hl()  # * 8
-    b.pop_de()
-    b.or_a()
-    b.sbc_hl_de()  # * 7
+    emit_times_seven(b, "de")
 
 
 def emit_tok_hash(b: Z80Builder, plat: Platform, position_bands: int = 1) -> None:
@@ -794,12 +848,7 @@ def emit_tok_hash(b: Z80Builder, plat: Platform, position_bands: int = 1) -> Non
     if position_bands > 1:
         _emit_band_seed(b, position_bands)
         # h = seed * 31, so that adding c1 below completes h * 31 + c1.
-        b.push_hl()
-        for _ in range(5):
-            b.add_hl_hl()
-        b.pop_de()
-        b.or_a()
-        b.sbc_hl_de()
+        emit_hash_step(b, "de")
         b.ld_a_mem_label("TOKC1")
         b.ld_c_a()
         b.ld_b_n(0)
@@ -808,23 +857,13 @@ def emit_tok_hash(b: Z80Builder, plat: Platform, position_bands: int = 1) -> Non
         b.ld_a_mem_label("TOKC1")
         b.ld_l_a()
         b.ld_h_n(0)
-    b.push_hl()
-    for _ in range(5):
-        b.add_hl_hl()
-    b.pop_de()
-    b.or_a()
-    b.sbc_hl_de()  # * 31
+    emit_hash_step(b, "de")  # * 31
     b.ld_a_mem_label("TOKC2")
     b.ld_c_a()
     b.ld_b_n(0)
     b.add_hl_bc()
 
-    b.push_hl()
-    for _ in range(5):
-        b.add_hl_hl()
-    b.pop_de()
-    b.or_a()
-    b.sbc_hl_de()  # * 31
+    emit_hash_step(b, "de")  # * 31
     b.ld_a_mem_label("TOKC3")
     b.ld_c_a()
     b.ld_b_n(0)

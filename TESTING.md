@@ -73,6 +73,7 @@ listing rather than an exception.
 | `test_libz80.py` | Assembler: label resolution, relative-jump range, `align`, instruction encodings |
 | `test_packing.py` | Both 2-bit weight layouts round-trip; every neuron starts on a byte boundary |
 | `test_encoders.py` | Trigram/context hashing against an independent restatement of the spec |
+| `test_encoder_conformance.py` | One corpus of queries against **every** backend and the reference, flat and banded — the encoders are the one thing written twice, so this is what stops the two copies drifting |
 | `test_kernels.py` | Emulator memory vs. reference, value by value: tokenizer buckets, context buckets, output logits |
 | `test_end_to_end.py` | Generated text from every Z80 target vs. the reference, and the three CP/M layouts against each other |
 | `test_column_kernel.py` | The column-major CP/M kernel: record layout, per-layer activations, and which columns it skips |
