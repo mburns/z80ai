@@ -30,7 +30,6 @@ from typing import Any, NamedTuple
 
 import numpy as np
 import pytest
-from helpers import MAX_CYCLES, read24, read_words
 
 import buildcolz80com
 import buildcpc
@@ -43,6 +42,7 @@ import libcpc
 import libhost
 import libinfer
 import libzx
+from helpers import MAX_CYCLES, read24, read_words
 
 # --- the corpus --------------------------------------------------------------
 

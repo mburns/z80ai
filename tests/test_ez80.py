@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import read24 as _read24
-from helpers import run_ez80_until as run_until
 
 import buildez80
 import buildz80com
 import libinfer
+from helpers import read24 as _read24
+from helpers import run_ez80_until as run_until
 from libez80 import AGON_LOAD_ADDR, EZ80Builder
 from libhost import run_agon, run_cpm
 from libz80emu import Z80

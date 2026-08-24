@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import read24, run_ez80_until
 
 import buildez80
 import libinfer
+from helpers import read24, run_ez80_until
 
 # A charset wider than a byte counter can index.  The last entry is EOS.
 WIDE_CHARSET = "".join(chr(0x21 + (i % 90)) for i in range(299)) + "\x00"

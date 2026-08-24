@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import read_words
-from helpers import run_cpm_until as run_until
 
 import buildz80com
 import libinfer
+from helpers import read_words
+from helpers import run_cpm_until as run_until
 
 
 @pytest.fixture(scope="module")

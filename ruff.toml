@@ -4,6 +4,9 @@
 line-length = 100
 target-version = "py310"
 exclude = [".venv", "venv", "build", "dist"]
+# Roots isort treats as first-party. Replaces a hand-written
+# known-first-party list that had already drifted twice.
+src = [".", "tools", "tests", "data", "data/clinc150", "data/wikipedia"]
 
 [lint]
 select = [
@@ -24,15 +27,7 @@ select = [
 # line, is what makes it readable as a table rather than as code.
 "libz80.py" = ["E701", "E702"]
 # The example data generators shell out to LLM APIs and are deliberately
-# forgiving about which of them are reachable.
-"examples/**" = ["E722", "PERF203", "S110"]
+# forgiving about which of them are reachable. (No S110 here: the S family is
+# not selected, so ignoring one of its rules was dead config.)
+"examples/**" = ["E722", "PERF203"]
 
-[lint.isort]
-known-first-party = [
-    "baseline", "bench", "build", "buildcolz80com", "buildcpc", "buildez80",
-    "buildfastz80com", "buildnext", "buildz80com", "buildz80tap", "classify",
-    "exportmodel", "feedme", "libcpc", "libcpm", "libdata", "libez80",
-    "libhost", "libinfer", "libnext", "libnn", "libqat", "libz80", "libz80emu",
-    "libzx", "lint", "loadmodel",
-    "verify_artifacts",
-]
