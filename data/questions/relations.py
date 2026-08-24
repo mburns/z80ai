@@ -3,7 +3,11 @@
 Build a question -> relation training set from SimpleQuestions.
 
     python data/questions/relations.py > relations.txt
-    python classify.py --file relations.txt -o relations.npz
+    python classify.py --file relations.txt -o relations.npz --balance
+
+`--balance` is not optional in spirit. The multi-hop classes are five times
+rarer than the one-hop ones, and without it the model answers them from the
+prior - see the note on CHAINS below, which is the whole story of this file.
 
 The oracle has to decide *which relation a question is asking about* before it
 can walk the graph. That is a classification problem the phrasebook head
@@ -100,29 +104,40 @@ MAX_EXAMPLES = 1200
 #: generated command phrasings, 44.7% held out by verb.
 #:
 #: Measured here, training on six phrasings per path and scoring on the other
-#: two: **92.5% macro on a random split, 43.8% on unseen phrasings.** The same
-#: collapse, to within a point of the same number. Per path:
+#: two, the model at first dropped the *second hop*: `created_by born_in`
+#: became `created_by`, `died_in in_country` became `died_in`. It recognised
+#: the relation and lost the instruction to keep going.
 #:
-#:     located_in located_in   86.2%
-#:     born_in located_in      41.2%
-#:     died_in located_in      28.7%
-#:     created_by born_in      18.8%
+#: The cause was not the templates. Sweeping the number of training phrasings
+#: from one to six moved the score 20.3% -> 39.4%, so writing more of them
+#: would have bought a few points at best. The cause was the class prior: four
+#: chain classes bringing 240 examples each against 1,200 for every one-hop
+#: class, so dropping the second hop was simply the better bet. Weighting the
+#: loss by inverse class frequency - `classify.py --balance` - fixes it:
 #:
-#: The failure mode is specific and worth knowing: it drops the *second hop*.
-#: `created_by born_in` becomes `created_by`, `died_in located_in` becomes
-#: `died_in`. The model recognises the relation and loses the instruction to
-#: keep going, because the words carrying "and then keep going" are the short,
-#: templated part of the phrase - exactly the part a new phrasing changes.
-#: `located_in located_in` survives because its eight phrasings are all near
-#: neighbours of "what country is X in".
+#:     unweighted              40.3%      one-hop macro 92.4%
+#:     class-weighted          64.7%      one-hop macro 90.3%
 #:
-#: So chain questions work, and they work about as well as one coin flip. That
-#: is enough to be interesting on a machine like this and not enough to trust.
+#: Three other repairs were tried and are not used, each rejected by
+#: measurement rather than by taste:
+#:
+#:     duplicating chain rows x4          50.6%   loses to weighting the loss
+#:     order-sensitive encoding (5 bands) 46.6%   costs 7.6pts of one-hop macro
+#:     anchor head x continuation head    52.5%   two models, still loses
+#:
+#: Masking the entity was tried too, on the theory that a name says nothing
+#: about which relation is being asked. It scored 36.6% and cost 8.8 points of
+#: one-hop macro, because the theory is wrong: the entity says a great deal.
+#: "What country is X in" is only a place question because X is a place, and
+#: with X removed `in_country` collapsed to 0%.
+#:
+#: So chain questions work about as well as one coin flip. That is enough to be
+#: interesting on a machine like this and not enough to trust.
 #:
 #: Entity names are drawn from the corpus rather than invented, so the parts of
 #: the question that carry the rare words are real even where the frame is not.
 CHAINS: dict[str, tuple[str, ...]] = {
-    "born_in located_in": (
+    "born_in in_country": (
         "what country was {s} born in",
         "which country was {s} born in",
         "what nation was {s} born in",
@@ -132,7 +147,7 @@ CHAINS: dict[str, tuple[str, ...]] = {
         "which country did {s} come from",
         "what country was {s} a native of",
     ),
-    "died_in located_in": (
+    "died_in in_country": (
         "what country did {s} die in",
         "which country did {s} die in",
         "what nation did {s} die in",
@@ -142,7 +157,7 @@ CHAINS: dict[str, tuple[str, ...]] = {
         "which country did {s} pass away in",
         "what country did {s} spend their last days in",
     ),
-    "located_in located_in": (
+    "in_country": (
         "what country is {s} in",
         "which country is {s} part of",
         "what nation contains {s}",
@@ -233,7 +248,10 @@ def chains(db_path: Path, source: str, per_template: int,
     train: list[tuple[str, str]] = []
     unseen: list[tuple[str, str]] = []
     for path, templates in CHAINS.items():
+        # A climb names the type it wants, not the edge it walks, so the
+        # entities worth asking about are the ones with the underlying edge.
         first = path.split()[0]
+        first = libgraph.CLIMB[first][0] if first in libgraph.CLIMB else first
         names = subjects(db_path, source, first, per_template * len(templates))
         if not names:
             continue
@@ -296,7 +314,7 @@ def main() -> None:
             print(f"{clean}|{relation}")
 
     walkable = set(libgraph.CANONICAL) | {
-        f"{r}_of" for r in libgraph.CANONICAL} | set(CHAINS)
+        f"{r}_of" for r in libgraph.CANONICAL} | set(CHAINS) | set(libgraph.CLIMB)
     unknown = set(counts) - walkable
     assert not unknown, f"relations libgraph cannot walk: {unknown}"
 

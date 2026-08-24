@@ -47,7 +47,14 @@ def test_every_chain_names_relations_libgraph_can_walk():
     """A path the graph cannot follow would train the model to answer nothing."""
     for path in relations.CHAINS:
         for relation in path.split():
-            assert relation in libgraph.CANONICAL, f"{path}: {relation}"
+            assert (relation in libgraph.CANONICAL
+                    or relation in libgraph.CLIMB), f"{path}: {relation}"
+
+
+def test_every_climb_steps_a_relation_that_exists():
+    """`in_country` repeating a relation nothing emits would never move."""
+    for climb, (step, _kind) in libgraph.CLIMB.items():
+        assert step in libgraph.CANONICAL, f"{climb} steps {step}"
 
 
 def test_held_out_phrasings_never_appear_in_training(db):
@@ -86,9 +93,17 @@ def test_holding_out_nothing_leaves_nothing_to_score(db):
 def test_entity_names_come_from_the_corpus(db):
     """A question about an entity the graph never heard of teaches nothing."""
     train, _ = relations.chains(db, "simplewiki", 5, hold_out=2)
-    born = [q for q, path in train if path == "born_in located_in"]
+    born = [q for q, path in train if path == "born_in in_country"]
     assert born
     assert all("person" in q for q in born)
+
+
+def test_a_climb_draws_entities_from_the_relation_it_steps(db):
+    """`in_country` names a type, not an edge. Asking the graph for subjects of
+    a relation called `in_country` would quietly yield nothing, and the class
+    would vanish from the training set with no error."""
+    train, _ = relations.chains(db, "simplewiki", 5, hold_out=2)
+    assert [q for q, path in train if path == "in_country"]
 
 
 def test_a_missing_corpus_yields_no_chains_rather_than_inventing_them(tmp_path):

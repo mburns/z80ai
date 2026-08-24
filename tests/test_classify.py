@@ -45,6 +45,27 @@ def trained():
     return model, overall, macro
 
 
+def test_a_balanced_loss_weights_rare_classes_up():
+    """N / (K * n_c): the weight is exactly the class's under-representation."""
+    pairs = [("A", "COMMON")] * 90 + [("B", "RARE")] * 10
+    weights = classify.class_weights(pairs, ["COMMON", "RARE"])
+    assert weights.tolist() == pytest.approx([100 / 180, 100 / 20])
+    # Equal classes must leave the loss alone, so turning --balance on for a
+    # balanced set is a no-op rather than a silent perturbation.
+    even = classify.class_weights([("A", "X"), ("B", "Y")], ["X", "Y"])
+    assert even.tolist() == pytest.approx([1.0, 1.0])
+
+
+def test_balancing_changes_what_is_learned():
+    """Guards the wiring: a flag that reached nothing would pass every other
+    test in this file."""
+    lopsided = PAIRS + [("HELLO THERE FRIEND", "HI THERE")] * 40
+    plain, _, _ = classify.train(lopsided, quiet=True, **TRAIN)
+    balanced, _, _ = classify.train(lopsided, quiet=True, balance=True, **TRAIN)
+    assert not all((a == b).all()
+                   for a, b in zip(plain.weights, balanced.weights, strict=True))
+
+
 def test_the_trainer_produces_a_phrasebook_model(trained):
     model, _overall, _macro = trained
     assert model.phrases is not None
