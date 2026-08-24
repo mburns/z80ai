@@ -85,7 +85,7 @@ def pack_weights_and_biases(weights: np.ndarray, biases: np.ndarray,
     reason: its inputs sit in the upper half of the buffer INFER indexes.
     """
     wt_bias = []
-    for n in range(0, weights.shape[0]):
+    for n in range(weights.shape[0]):
         flat = np.clip(weights[n], -2, 1).astype(np.int8)
         for w in (-2, -1, 1):
             indices = [i + first_column for i, v in enumerate(flat) if v == w]

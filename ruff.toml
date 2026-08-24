@@ -20,6 +20,27 @@ select = [
     "I",     # import ordering
     "PERF",  # obvious performance mistakes
     "RUF",   # ruff's own checks
+    # Below: families that reported zero (or one auto-fixable) violation when
+    # they were adopted, so gating them costs nothing today and stops the
+    # regression tomorrow. FURB is why this repo does not also run `refurb`,
+    # and PERF above is why it does not run `perflint` - ruff has both.
+    "FURB",  # modernisations refurb would find
+    "NPY",   # numpy legacy APIs, which matter where CI gates on byte-identity
+    "A",     # shadowing a builtin
+    "PIE",   # small unnecessary constructs
+    "PGH",   # blanket noqa / type: ignore, which warn_unused_ignores relies on
+    "TID",   # tidy imports: no relative imports, which the flat layout needs
+    "EXE",   # a shebang and the executable bit must agree
+    "FLY",   # static str.join that should be an f-string
+    "ICN",   # conventional import aliases
+    "INT",   # gettext mistakes
+    "SLOT",  # __slots__ on subclasses of str/tuple/namedtuple
+    "T10",   # a stray breakpoint()
+    "LOG",   # logging mistakes
+    "G",     # logging format strings
+    "DTZ",   # naive datetimes
+    "YTT",   # sys.version misuse
+    "ASYNC", # blocking calls in async code
 ]
 
 [lint.per-file-ignores]
