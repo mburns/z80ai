@@ -62,7 +62,6 @@ class ZXPlatform(libnn.Platform):
 
     name = "ZX Spectrum"
     buffer = "TOKBUF"
-    weight_layout = "rotated"
 
     def print_char(self, b: Z80Builder) -> None:
         b.rst(ZX_PRINT_A)

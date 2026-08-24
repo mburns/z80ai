@@ -139,13 +139,13 @@ def build_engine(plat: libnn.Platform, layer_sizes: list[int]) -> Z80Builder:
     """Emit the full shared engine so labels and fixups can be inspected."""
     plans = libnn.plan_layers(layer_sizes, plat.buffer)
     b = Z80Builder()
-    libnn.emit_generate(b, plat, layer_sizes[-1] - 1, 8,
+    libnn.emit_generate(b, layer_sizes[-1] - 1, 8,
                         libnn.emit_layered_inference(plans))
     libnn.emit_printch(b, plat)
-    libnn.emit_update_ctx(b, plat)
+    libnn.emit_update_ctx(b)
     libnn.emit_encode_ctx(b, plat)
     libnn.emit_ctx_hash(b, plat)
-    libnn.emit_clear_ctx(b, plat)
+    libnn.emit_clear_ctx(b)
     libnn.emit_layer_dispatch(b, plans)
     libnn.emit_layer(b)
     libnn.emit_muladd(b)
@@ -177,9 +177,9 @@ def test_every_layer_and_relu_stub_is_emitted():
 
 def test_clear_ctx_can_be_emitted_unrolled_or_as_a_loop():
     unrolled = Z80Builder()
-    libnn.emit_clear_ctx(unrolled, FakePlatform(), unrolled=True)
+    libnn.emit_clear_ctx(unrolled, unrolled=True)
     looped = Z80Builder()
-    libnn.emit_clear_ctx(looped, FakePlatform(), unrolled=False)
+    libnn.emit_clear_ctx(looped, unrolled=False)
     assert len(looped.code) < len(unrolled.code)
     assert "CLR_LP" in looped.labels
     assert "CLR_LP" not in unrolled.labels

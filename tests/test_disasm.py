@@ -18,9 +18,8 @@ import pytest
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
 
-import disasm
-
 import buildz80com
+import disasm
 from libz80 import Z80Builder
 
 #: Mnemonics that move PC somewhere other than the next instruction, so the

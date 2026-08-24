@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import read_words, reference_input
-from helpers import run_cpm_until as run_until
 
 import buildcolz80com
 import libinfer
 import libnn
+from helpers import read_words, reference_input
+from helpers import run_cpm_until as run_until
 from libz80 import Z80Builder
 
 

@@ -12,13 +12,15 @@ comes from, how a character reaches the screen, and how the weights are laid
 out for the inner loop.
 
 ``buildez80`` is the exception, and knowingly so. Its activations are 24 bits
-wide and its loops have no DJNZ byte counters, so every routine here that
-touches a buffer has to exist twice. What it *does* share is the encoder
-arithmetic - :func:`emit_hash_step`, :func:`emit_times_seven` and
-:func:`emit_band_index` - which is 16-bit on both machines and is the part
-where a divergence would be silent, since two hash functions that disagree
-still both produce plausible-looking buckets. The rest is held together by
-``tests/test_encoder_conformance.py``, which runs one corpus against every
+wide, so every routine here that touches a buffer has to exist twice. What it
+*does* share is everything that does not: the encoder arithmetic
+(:func:`emit_hash_step`, :func:`emit_times_seven`, :func:`emit_band_index`),
+:func:`emit_lower_fold`, :func:`emit_clear_ctx` and
+:func:`emit_charset_table`. Those are the parts where a divergence would be
+silent - two hash functions that disagree still both produce plausible-looking
+buckets, and a lower-case fold that disagrees with :func:`libinfer._lower`
+makes the model answer confidently rather than fail. The rest is held together
+by ``tests/test_encoder_conformance.py``, which runs one corpus against every
 backend and against the reference.
 
 Register and memory conventions shared by every routine below:
@@ -36,6 +38,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any, Literal
 
 # NUM_BUCKETS (hash buckets per half of the input vector), CONTEXT_LEN
 # (characters of output fed back) and BUCKET_WEIGHT (the fixed-point scale for
@@ -43,8 +46,15 @@ from dataclasses import dataclass
 # restated. They are not independent choices: code generated against a
 # different NUM_BUCKETS than libinfer encodes with computes the wrong thing,
 # and does so quietly.
-from libinfer import BUCKET_WEIGHT, CONTEXT_LEN, NUM_BUCKETS
+import numpy.typing as npt
+
+from libinfer import BUCKET_WEIGHT, CONTEXT_LEN, NUM_BUCKETS, BuildInputs
 from libz80 import Z80Builder
+
+#: The register pair an emitter may borrow to shift-and-subtract through.
+#: Closed set: CTX_HASH holds a character pointer in DE for the length of its
+#: loop and cannot lend it out, and neither can the eZ80's.
+Scratch = Literal["de", "bc"]
 
 #: Bytes per activation.
 ACTIVATION_SIZE = 2
@@ -63,8 +73,9 @@ class Platform(ABC):
     name: str = "unknown"
     #: Label of the activation buffer holding both halves of the input vector.
     buffer: str = "INBUF"
-    #: Which :func:`libinfer.pack_2bit` layout the inner loop expects.
-    weight_layout: str = "rotated"
+    #: Bytes per activation. Two on a Z80; the eZ80 overrides it to three, and
+    #: that single number is what decides which emitters here it can reuse.
+    activation_size: int = ACTIVATION_SIZE
 
     @abstractmethod
     def print_char(self, b: Z80Builder) -> None:
@@ -207,19 +218,30 @@ def emit_layered_inference(plans: list[LayerPlan]) -> Callable[[Z80Builder], Non
     return emit
 
 
+def emit_eos_test_8bit(b: Z80Builder, eos_idx: int) -> None:
+    """Set Z if RESULT is the EOS index. The Z80 form: RESULT is one byte."""
+    b.ld_a_mem_label("RESULT")
+    b.cp_n(eos_idx)
+
+
 def emit_generate(
     b: Z80Builder,
-    plat: Platform,
     eos_idx: int,
     max_output_len: int,
     emit_inference: Callable[[Z80Builder], None],
     hoist_query: bool = False,
+    emit_eos_test: Callable[[Z80Builder, int], None] = emit_eos_test_8bit,
 ) -> None:
     """Emit GENERATE: infer, argmax, print, feed back, repeat until EOS.
 
     ``emit_inference`` emits whatever runs one forward pass, leaving the scores
     in OUTBUF. Backends differ there: the packed builds call a stub per layer,
     the index-list build calls a single table-driven INFER.
+
+    ``emit_eos_test`` sets Z when RESULT holds the EOS index. It is a hook for
+    the same reason ``emit_inference`` is: everything else in this loop is
+    machine-independent, and RESULT is a byte on a Z80 but 24 bits on an eZ80,
+    where a CP will not reach it.
 
     ``hoist_query`` runs PREQ once here rather than once per character, which is
     the whole point of it: the query half of the input does not change for the
@@ -237,8 +259,7 @@ def emit_generate(
 
     b.call("ARGMAX")
 
-    b.ld_a_mem_label("RESULT")
-    b.cp_n(eos_idx)
+    emit_eos_test(b, eos_idx)
     b.ret_z()
 
     b.call("PRINTCH")
@@ -267,7 +288,7 @@ def emit_printch(b: Z80Builder, plat: Platform) -> None:
 # --- context encoding --------------------------------------------------------
 
 
-def emit_update_ctx(b: Z80Builder, plat: Platform) -> None:
+def emit_update_ctx(b: Z80Builder) -> None:
     """Emit UPDATE_CTX: shift the context window and append the new character."""
     b.label("UPDATE_CTX")
     b.ld_hl_label("CTXCHARS")
@@ -284,11 +305,7 @@ def emit_update_ctx(b: Z80Builder, plat: Platform) -> None:
     b.ld_a_hl()
 
     # Lower-case A-Z only, matching the hashing done at training time.
-    b.cp_n(ord("A"))
-    b.jr_c("UPD_STORE")
-    b.cp_n(ord("Z") + 1)
-    b.jr_nc("UPD_STORE")
-    b.add_a_n(0x20)
+    emit_lower_fold(b, "UPD_STORE")
 
     b.label("UPD_STORE")
     b.ld_hl_label("CTXCHARS")
@@ -300,11 +317,12 @@ def emit_update_ctx(b: Z80Builder, plat: Platform) -> None:
     b.ret()
 
 
-def emit_encode_ctx(b: Z80Builder, plat: Platform) -> None:
-    """Emit ENCODE_CTX: hash 1-, 2- and 3-grams of CTXCHARS into the buckets."""
-    b.label("ENCODE_CTX")
+def emit_clear_context_half(b: Z80Builder, plat: Platform) -> None:
+    """Zero the context buckets, which sit at an offset inside one buffer.
 
-    # Clear the context half of the activation buffer.
+    The Z80 layout. The eZ80 gives the context its own CTXBUF label and clears
+    that instead, which is the whole of why ENCODE_CTX needs a hook.
+    """
     b.ld_hl_label(plat.buffer)
     b.ld_de_nn(CONTEXT_OFFSET)
     b.add_hl_de()
@@ -316,8 +334,21 @@ def emit_encode_ctx(b: Z80Builder, plat: Platform) -> None:
     b.ld_bc_nn(CONTEXT_OFFSET - 1)
     b.ldir()
 
-    b.ld_a_n(0)
-    b.ld_mem_label_a("CTXPOS")
+
+def emit_encode_ctx(b: Z80Builder, plat: Platform,
+                    emit_clear: Callable[[Z80Builder], None] | None = None) -> None:
+    """Emit ENCODE_CTX: hash 1-, 2- and 3-grams of CTXCHARS into the buckets.
+
+    Everything from CTX_NLOOP down is machine-independent - it walks CTXCHARS
+    and calls CTX_HASH, and never touches an activation. Only clearing the
+    buckets knows how wide one is, so that is the hook.
+    """
+    b.label("ENCODE_CTX")
+    if emit_clear is None:
+        emit_clear_context_half(b, plat)
+    else:
+        emit_clear(b)
+
     b.ld_a_n(1)
     b.ld_mem_label_a("CTXN")
 
@@ -427,7 +458,7 @@ def emit_ctx_hash(b: Z80Builder, plat: Platform) -> None:
     b.ret()
 
 
-def emit_clear_ctx(b: Z80Builder, plat: Platform, unrolled: bool = True) -> None:
+def emit_clear_ctx(b: Z80Builder, unrolled: bool = True) -> None:
     """Emit CLEAR_CTX: fill the context window with spaces and re-encode.
 
     ``unrolled`` picks between straight-line stores and a DJNZ loop; the two
@@ -683,13 +714,13 @@ def emit_tokenizer(b: Z80Builder, plat: Platform, position_bands: int = 1) -> No
         b.xor_a()
         b.ld_mem_label_a("TOKPOS")
 
-    # Clear the query half of the activation buffer.
+    # Clear the query half of the activation buffer. Its width is the one
+    # thing the eZ80 changes here: 128 buckets of three bytes, not two.
     b.ld_hl_label(plat.buffer)
     b.ld_de_label(plat.buffer)
     b.inc_de()
-    b.ld_bc_nn(CONTEXT_OFFSET - 1)
-    b.ld_a_n(0)
-    b.ld_hl_a()
+    b.ld_bc_nn(NUM_BUCKETS * plat.activation_size - 1)
+    b.ld_hl_n(0)
     b.ldir()
 
     plat.load_query_length(b)
@@ -716,11 +747,7 @@ def emit_tokenizer(b: Z80Builder, plat: Platform, position_bands: int = 1) -> No
     b.ld_a_n(ord(" "))  # the leading pad
     b.ld_mem_label_a("TOKC1")
     b.ld_a_de()
-    b.cp_n(ord("A"))
-    b.jr_c("TOK_FIRST_LOW")
-    b.cp_n(ord("Z") + 1)
-    b.jr_nc("TOK_FIRST_LOW")
-    b.add_a_n(0x20)
+    emit_lower_fold(b, "TOK_FIRST_LOW")
     b.label("TOK_FIRST_LOW")
     b.ld_mem_label_a("TOKC2")
     b.inc_de()
@@ -733,11 +760,7 @@ def emit_tokenizer(b: Z80Builder, plat: Platform, position_bands: int = 1) -> No
     b.or_a()
     b.jr_z("TOK_TRAIL")
     b.ld_a_de()
-    b.cp_n(ord("A"))
-    b.jr_c("TOK_LOW1")
-    b.cp_n(ord("Z") + 1)
-    b.jr_nc("TOK_LOW1")
-    b.add_a_n(0x20)
+    emit_lower_fold(b, "TOK_LOW1")
     b.label("TOK_LOW1")
     b.ld_mem_label_a("TOKC3")
     b.call("TOK_HASH")
@@ -773,19 +796,25 @@ def emit_tokenizer(b: Z80Builder, plat: Platform, position_bands: int = 1) -> No
 # length of its loop and cannot lend it out, and neither can the eZ80's.
 
 
-def _pop_sub(b: Z80Builder, scratch: str) -> None:
-    """``POP ss / OR A / SBC HL,ss`` - the subtract half of a shift-and-subtract."""
+def _pop_sub(b: Z80Builder, scratch: Scratch) -> None:
+    """``POP ss / OR A / SBC HL,ss`` - the subtract half of a shift-and-subtract.
+
+    Two values, so it is a Literal rather than a str with a runtime guard. The
+    guard used to be a ValueError three lines above a bare ``if/else`` that
+    would otherwise have emitted ``SBC HL,BC`` for anything unrecognised - total
+    only because the raise got there first.
+    """
     if scratch == "de":
         b.pop_de()
-    elif scratch == "bc":
-        b.pop_bc()
+        b.or_a()  # clear carry; SBC would otherwise borrow whatever was left
+        b.sbc_hl_de()
     else:
-        raise ValueError(f"scratch must be 'de' or 'bc', not {scratch!r}")
-    b.or_a()  # clear carry; SBC would otherwise borrow whatever was left
-    b.sbc_hl_de() if scratch == "de" else b.sbc_hl_bc()
+        b.pop_bc()
+        b.or_a()
+        b.sbc_hl_bc()
 
 
-def emit_hash_step(b: Z80Builder, scratch: str = "de") -> None:
+def emit_hash_step(b: Z80Builder, scratch: Scratch = "de") -> None:
     """Emit ``HL *= 31``, as ``HL * 32 - HL``.
 
     One round of :func:`libinfer.hash16`. There is no multiply on a Z80, and
@@ -797,7 +826,7 @@ def emit_hash_step(b: Z80Builder, scratch: str = "de") -> None:
     _pop_sub(b, scratch)
 
 
-def emit_times_seven(b: Z80Builder, scratch: str = "de") -> None:
+def emit_times_seven(b: Z80Builder, scratch: Scratch = "de") -> None:
     """Emit ``HL *= 7``, as ``HL * 8 - HL``.
 
     :data:`libinfer.BAND_SEED`, and the same trick as :func:`emit_hash_step`.
@@ -807,6 +836,129 @@ def emit_times_seven(b: Z80Builder, scratch: str = "de") -> None:
     b.add_hl_hl()
     b.add_hl_hl()  # * 8
     _pop_sub(b, scratch)
+
+
+@dataclass(frozen=True)
+class PackedBuild:
+    """A model loaded, validated and packed two bits to a weight.
+
+    What every ``.COM``/``.TAP``/CPC backend needs before it emits anything.
+    They each derived it with the same eighteen lines, differing only in which
+    Platform they constructed.
+    """
+
+    model: BuildInputs
+    plans: list[LayerPlan]
+    qplan: LayerPlan
+    packed_weights: list[bytes]
+    packed_query: bytes
+    biases: list[npt.NDArray[Any]]
+
+    @property
+    def layer_sizes(self) -> list[int]:
+        return self.model.layer_sizes
+
+
+def prepare_packed(model_path: str, plat: Platform) -> PackedBuild:
+    """Load a model and pack it for the shared packed-weight engine.
+
+    The nibble order is the rotated one for every backend that uses this, which
+    is what lets them share MULADD; see :func:`libinfer.pack_2bit`.
+
+    Layer 1's query-half columns are split off into their own stream: the query
+    does not change while a response is being generated, so PREQ walks them
+    once per query and hands layer 1 the result as its bias. Exact, not
+    approximate - see :func:`libinfer.forward_hoisted`.
+
+    Raises:
+        ValueError: If a layer is wider than a Z80 neuron loop can count.
+    """
+    from libinfer import load_for_build, pack_2bit, split_query_half, validate_z80_layers
+
+    model = load_for_build(model_path)
+    layer_sizes = model.layer_sizes
+    validate_z80_layers(layer_sizes)
+
+    def pack(w: npt.NDArray[Any]) -> bytes:
+        return pack_2bit(w, layout="rotated")
+
+    w1q, w1c = split_query_half(model.weight(0))
+    return PackedBuild(
+        model=model,
+        plans=plan_layers(layer_sizes, plat.buffer, hoist_query=True),
+        qplan=query_plan(layer_sizes, plat.buffer),
+        packed_weights=[pack(w1c)] + [pack(model.weight(i))
+                                      for i in range(1, model.num_layers)],
+        packed_query=pack(w1q),
+        biases=model.biases(),
+    )
+
+
+def emit_packed_engine(b: Z80Builder, plat: Platform, packed: PackedBuild,
+                       max_output_len: int) -> None:
+    """Emit the whole engine a packed-weight build needs, in order.
+
+    Every ``.COM``/``.TAP``/CPC backend emitted exactly these fifteen calls,
+    byte for byte, in four separate files. Adding a routine meant editing four
+    of them, and forgetting one produced an unresolved label at best.
+
+    What is deliberately *not* here is the data section. The backends interleave
+    their own platform data with the shared data at different points - CP/M puts
+    CRLF between the charset table and the variables, the CPC does not - and
+    that ordering decides the image bytes. It is a per-machine layout decision,
+    not duplication.
+    """
+    model, plans = packed.model, packed.plans
+    emit_generate(b, model.eos_idx, max_output_len,
+                  emit_layered_inference(plans), hoist_query=True)
+    emit_printch(b, plat)
+    emit_update_ctx(b)
+    emit_encode_ctx(b, plat)
+    emit_ctx_hash(b, plat)
+    emit_clear_ctx(b)
+    emit_layer_dispatch(b, plans)
+    emit_layer(b)
+    emit_query_dispatch(b, packed.qplan)
+    emit_layer(b, name="QLAYER", prefix="Q", scale=False)
+    emit_muladd(b)
+    emit_relu(b, plans)
+    emit_argmax(b, model.output_size)
+    emit_tokenizer(b, plat, model.position_bands)
+    emit_tok_hash(b, plat, model.position_bands)
+
+
+def emit_packed_tail(b: Z80Builder, plat: Platform, packed: PackedBuild) -> None:
+    """Emit the activation buffers and the weight blobs, which always come last."""
+    emit_buffers(b, plat, packed.layer_sizes, hoist_query=True)
+    emit_weights(b, packed.packed_weights, packed.biases)
+    emit_query_weights(b, packed.packed_query)
+
+
+def emit_lower_fold(b: Z80Builder, skip: str | None = None) -> None:
+    """Emit the A-Z lower-case fold on the byte in A, leaving the rest alone.
+
+    :func:`libinfer._lower` is the definition this has to match. If it does not,
+    generated code hashes text differently than training did, and the model
+    answers plausibly rather than failing - which is why four copies of five
+    instructions were worth collapsing into one.
+
+    Args:
+        b: The builder.
+        skip: Label to branch past the fold when A is not a letter. ``None``
+            emits the early RETs a subroutine wants instead, which is the form
+            the eZ80 build uses.
+    """
+    b.cp_n(ord("A"))
+    if skip is None:
+        b.ret_c()
+    else:
+        b.jr_c(skip)
+    b.cp_n(ord("Z") + 1)
+    if skip is None:
+        b.ret_nc()
+    else:
+        b.jr_nc(skip)
+    b.add_a_n(0x20)
 
 
 def emit_band_index(b: Z80Builder, bands: int) -> None:
@@ -978,7 +1130,7 @@ def emit_buffers(
 
 
 def emit_weights(
-    b: Z80Builder, packed_weights: list[bytes], biases: list
+    b: Z80Builder, packed_weights: list[bytes], biases: list[npt.NDArray[Any]]
 ) -> None:
     """Emit the packed weight stream and 16-bit biases for every layer."""
     for i, (weights, bias) in enumerate(zip(packed_weights, biases, strict=True), start=1):

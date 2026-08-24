@@ -225,7 +225,7 @@ class Z80:
         # name here is never the None in _R_NAMES. Asserting that would cost a
         # branch in the emulator's hottest function to tell a checker something
         # three lines of code already say.
-        return getattr(self, self._R_NAMES[i])  # type: ignore[arg-type]
+        return getattr(self, self._R_NAMES[i])  # type: ignore[arg-type,no-any-return]
 
     def _set_r(self, i: int, val: int, idx: str | None = None, disp: int = 0) -> None:
         val &= 0xFF

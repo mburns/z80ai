@@ -118,7 +118,7 @@ def accuracy_ceiling(pairs: Sequence[Pair]) -> float:
     """
     if not pairs:
         return 1.0
-    by_query: dict[str, Counter] = defaultdict(Counter)
+    by_query: dict[str, Counter[str]] = defaultdict(Counter)
     for query, response in pairs:
         by_query[query][response] += 1
     return sum(c.most_common(1)[0][1] for c in by_query.values()) / len(pairs)
@@ -135,8 +135,8 @@ def score_predictions(pairs: Sequence[Pair],
     """
     if not pairs:
         return 1.0, 1.0
-    correct: Counter = Counter()
-    total: Counter = Counter()
+    correct: Counter[str] = Counter()
+    total: Counter[str] = Counter()
     for query, reply in pairs:
         total[reply] += 1
         correct[reply] += predict(query) == reply

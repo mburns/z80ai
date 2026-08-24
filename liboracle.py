@@ -47,8 +47,25 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
+from typing import Protocol
 
 import libgraph
+import libinfer
+
+
+class Search(Protocol):
+    """What the oracle needs from a search backend, and nothing more.
+
+    Two things satisfy this: :class:`libsearch.CardSearch`, over the index an
+    Agon would actually read off its card, and oracle.py's database equivalent
+    for when no card has been built. Naming the interface is what lets the
+    second exist - liboracle cannot import the script that defines it.
+    """
+
+    def search(self, query: str, top: int = 3) -> list[tuple[int, int]]: ...
+
+    def article(self, doc: int) -> tuple[str, str]: ...
+
 
 #: How the answer was reached, worst to best.
 UNKNOWN, SEARCH, PARTIAL, FACT = "unknown", "search", "partial", "fact"
@@ -80,14 +97,15 @@ class Oracle:
     """Question in, fact out - or an account of why not."""
 
     def __init__(self, db: sqlite3.Connection, source: str = "simplewiki",
-                 relations=None, search=None) -> None:
+                 relations: libinfer.Model | None = None,
+                 search: Search | None = None) -> None:
         self.db = db
         self.source = source
         #: A libinfer.Model whose phrases are relation names, or None to skip
         #: straight to search. Trained by classify.py on data/questions.
         self.relations = relations
-        #: A libsearch.CardSearch, or None. Used to find the entity a question
-        #: is about, and as the fallback when no fact answers it.
+        #: Anything satisfying Search, or None. Used to find the entity a
+        #: question is about, and as the fallback when no fact answers it.
         self.search = search
 
     # --- the three steps ------------------------------------------------------
@@ -117,7 +135,6 @@ class Oracle:
         """
         if self.relations is None:
             return None
-        import libinfer
 
         phrase = libinfer.classify(self.relations, question,
                                    accum_bits=self.relations.accum_bits)

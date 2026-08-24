@@ -46,6 +46,7 @@ this answers confidently about some things and not at all about others.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 #: Canonical relation -> the infobox fields that mean it, most specific first.
@@ -171,7 +172,7 @@ class Resolver:
 
 
 def build(db: sqlite3.Connection, source: str,
-          report=lambda _m: None) -> tuple[int, int]:
+          report: Callable[[str], None] = lambda _m: None) -> tuple[int, int]:
     """Populate ``edge`` for one source from its facts. Returns (edges, dropped)."""
     titles = {t for (t,) in db.execute(
         "SELECT title FROM article WHERE source = ?", (source,))}
@@ -338,6 +339,6 @@ def count(db: sqlite3.Connection, source: str, obj: str, relation: str) -> int:
     Aggregation costs nothing once the inverse index exists, which makes it the
     cheapest capability here and the one most likely to be overlooked.
     """
-    return db.execute(
+    return int(db.execute(
         "SELECT COUNT(*) FROM edge WHERE source = ? AND object = ? "
-        "AND relation = ?", (source, obj, relation)).fetchone()[0]
+        "AND relation = ?", (source, obj, relation)).fetchone()[0])

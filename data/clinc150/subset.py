@@ -367,7 +367,11 @@ def build(recipe: dict[str, str], seed: int = 0, cap: int | None = None,
         queries = sorted(by_intent[intent])
         limit = oos_cap if intent == 'oos' and oos_cap is not None else cap
         if len(queries) > limit:
-            queries = rng.sample(queries, limit)
+            # int(): `limit` is float('inf') when the router recipe asks for an
+            # uncapped `oos`, and nothing is longer than inf, so reaching here
+            # means it is finite. Spelling that out keeps rng.sample - which
+            # takes an int and only an int - off a float.
+            queries = rng.sample(queries, int(limit))
         pairs.extend((q.upper(), recipe[intent]) for q in queries)
 
     rng.shuffle(pairs)
@@ -403,6 +407,10 @@ def resolve(name: str | None,
         recipe = {i: DOMAIN_OF[i].upper().replace('_', ' ') for i in DOMAIN_OF}
         recipe['oos'] = 'IDK'
         return recipe, float('inf')
+    if name is None:
+        # Reachable: --domain is optional and so is --recipe's counterpart in
+        # the test API, and RECIPES[None] would be a bare KeyError: None.
+        raise ValueError("resolve() needs a recipe name when no domain is given")
     return RECIPES[name], None
 
 

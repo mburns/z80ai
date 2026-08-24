@@ -21,7 +21,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import libnn
 from libez80 import EZ80Builder
+from libz80 import Z80Builder
 
 # MOS entry points.
 MOS_API = 0x08  # RST 08h, function number in A
@@ -49,6 +51,33 @@ MAX_INPUT_LEN = 120
 #: disassembly. Which of these exist depends on the kernel.
 KEY_LABELS = ('START', 'GENERATE', 'LAYER', 'LAYER1', 'ARGMAX', 'TOKENIZE',
               'NEUREND', 'BIASES', 'WTS1')
+
+
+class AgonPlatform(libnn.Platform):
+    """Agon: characters go through RST 10h, the query from the line editor.
+
+    The eZ80 backend went without one of these for a long time, which is part
+    of why so little of libnn looked reusable from it: every emitter that takes
+    a Platform was unreachable, including the ones whose bodies are entirely
+    machine-independent.
+
+    ``activation_size`` is the real difference. Three bytes rather than two is
+    what stops the buffer-touching emitters being shared; everything that only
+    reads RESULT or CTXCHARS does not care.
+    """
+
+    name = "Agon Light"
+    buffer = "INBUF"
+    activation_size = 3
+
+    def print_char(self, b: Z80Builder) -> None:
+        b.rst(MOS_OUTCHAR)
+
+    def load_query_length(self, b: Z80Builder) -> None:
+        b.ld_a_mem_label('INPLEN')
+
+    def load_query_pointer(self, b: Z80Builder) -> None:
+        b.ld_de_label('INPBUF')
 
 
 def emit_entry(b: EZ80Builder, answer: Callable[[EZ80Builder], None],

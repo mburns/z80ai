@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import read_words
-from helpers import run_cpm_until as run_until
 
 import buildfastz80com
 import buildz80com
 import libinfer
 import libnn
+from helpers import read_words
+from helpers import run_cpm_until as run_until
 
 QUERIES = ["HELLO", "A", "IS IT AN ANIMAL", "", "   ", "x" * 60]
 

@@ -70,6 +70,7 @@ from libinfer import (
     BuildInputs,
     load_for_build,
 )
+from libz80 import Z80Builder
 
 # Weight stream encoding. Values outside {-2,-1,0,1} act as terminators.
 W_END_NEURON = 0x02
@@ -630,6 +631,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     else:
         weight_blobs, bias_blob = [], b''
 
+    plat = libagon.AgonPlatform()
     b = EZ80Builder(org=org)
     agon_header(b, 'START')
 
@@ -649,30 +651,18 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     libagon.emit_read_input(b)
 
     # === GENERATE ============================================================
-    b.label('GENERATE')
-    if kernel == 'column':
-        b.call('PREQ')  # once per response: the query cannot change during one
-    b.ld_a_n(max_output_len)
-    b.ld_mem_label_a('GENCNT')
+    # The loop itself is the Z80's. Only the EOS test differs: RESULT is 24
+    # bits here, so a CP cannot reach it.
+    def eos_test(bb: Z80Builder, idx: int) -> None:
+        bb.ld_hl_mem_label('RESULT')
+        bb.ld_bc_nn(idx)
+        bb.or_a()
+        bb.sbc_hl_bc()
 
-    b.label('GENLOOP')
-    b.call('INFER')
-    b.call('ARGMAX')
-
-    b.ld_hl_mem_label('RESULT')
-    b.ld_bc_nn(eos_idx)
-    b.or_a()
-    b.sbc_hl_bc()
-    b.ret_z()
-
-    b.call('PRINTCH')
-    b.call('UPDATE_CTX')
-
-    b.ld_a_mem_label('GENCNT')
-    b.dec_a()
-    b.ld_mem_label_a('GENCNT')
-    b.jr_nz('GENLOOP')
-    b.ret()
+    libnn.emit_generate(b, eos_idx, max_output_len,
+                        lambda bb: bb.call('INFER'),
+                        hoist_query=(kernel == 'column'),
+                        emit_eos_test=eos_test)
 
     # === PRINTCH =============================================================
     b.label('PRINTCH')
@@ -808,11 +798,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
 
     # === LOWER: fold A-Z to lower case, everything else untouched ============
     b.label('LOWER')
-    b.cp_n(ord('A'))
-    b.ret_c()
-    b.cp_n(ord('Z') + 1)
-    b.ret_nc()
-    b.add_a_n(0x20)
+    libnn.emit_lower_fold(b)
     b.ret()
 
     # === BUCKET_ADD: (HL + 3*A) += 32 ========================================
@@ -839,71 +825,13 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ret()
 
     # === TOKENIZE: query text -> first 128 buckets ===========================
-    b.label('TOKENIZE')
-    if position_bands > 1:
-        b.xor_a()
-        b.ld_mem_label_a('TOKPOS')
-    b.ld_hl_label('INBUF')
-    b.ld_de_label('INBUF')
-    b.inc_de()
-    b.ld_bc_nn(NUM_BUCKETS * 3 - 1)
-    b.ld_hl_n(0)
-    b.ldir()
-
-    b.ld_a_mem_label('INPLEN')
-    b.or_a()
-    b.jp_z('TOK_DONE')
-    b.ld_mem_label_a('TOKLEN')
-    b.ld_de_label('INPBUF')
-
-    b.label('TOK_SKIP')
-    b.ld_a_mem_label('TOKLEN')
-    b.or_a()
-    b.jp_z('TOK_DONE')
-    b.ld_a_de()
-    b.cp_n(ord(' '))
-    b.jr_nz('TOK_START')
-    b.inc_de()
-    b.call('TOK_DECLEN')
-    b.jr('TOK_SKIP')
-
-    b.label('TOK_START')
-    b.ld_a_n(ord(' '))
-    b.ld_mem_label_a('TOKC1')
-    b.ld_a_de()
-    b.call('LOWER')
-    b.ld_mem_label_a('TOKC2')
-    b.inc_de()
-    b.call('TOK_DECLEN')
-
-    b.label('TOK_LOOP')
-    b.ld_a_mem_label('TOKLEN')
-    b.or_a()
-    b.jr_z('TOK_TRAIL')
-    b.ld_a_de()
-    b.call('LOWER')
-    b.ld_mem_label_a('TOKC3')
-    b.call('TOK_HASH')
-    b.ld_a_mem_label('TOKC2')
-    b.ld_mem_label_a('TOKC1')
-    b.ld_a_mem_label('TOKC3')
-    b.ld_mem_label_a('TOKC2')
-    b.inc_de()
-    b.call('TOK_DECLEN')
-    b.jr('TOK_LOOP')
-
-    b.label('TOK_TRAIL')
-    b.ld_a_n(ord(' '))
-    b.ld_mem_label_a('TOKC3')
-    b.call('TOK_HASH')
+    # The state machine is libnn's, and TOK_HASH below is what it calls. The
+    # trigram walk is where a divergence would be silent: two tokenizers that
+    # disagree still both produce plausible buckets, and the model would answer
+    # confidently and wrongly rather than crash.
+    libnn.emit_tokenizer(b, plat, position_bands)
 
     b.label('TOK_DONE')
-    b.ret()
-
-    b.label('TOK_DECLEN')
-    b.ld_a_mem_label('TOKLEN')
-    b.dec_a()
-    b.ld_mem_label_a('TOKLEN')
     b.ret()
 
     # === TOK_HASH: h = ((c1*31 + c2)*31 + c3), bucket = h & 127 ==============
@@ -954,14 +882,9 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ret()
 
     # === CLEAR_CTX / UPDATE_CTX / ENCODE_CTX =================================
-    b.label('CLEAR_CTX')
-    b.ld_hl_label('CTXCHARS')
-    b.ld_b_n(CONTEXT_LEN)
-    b.label('CLR_LP')
-    b.ld_hl_n(ord(' '))
-    b.inc_hl()
-    b.djnz('CLR_LP')
-    b.jp('ENCODE_CTX')
+    # Identical on both machines - the context window is eight bytes wide
+    # whatever an activation costs, and DJNZ counts it on the eZ80 too.
+    libnn.emit_clear_ctx(b, unrolled=False)
 
     b.label('UPDATE_CTX')
     b.ld_hl_label('CTXCHARS')
@@ -979,42 +902,18 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     b.ld_hl_a()
     b.jp('ENCODE_CTX')
 
-    b.label('ENCODE_CTX')
-    b.ld_hl_label('CTXBUF')
-    b.ld_de_label('CTXBUF')
-    b.inc_de()
-    b.ld_bc_nn(NUM_BUCKETS * 3 - 1)
-    b.ld_hl_n(0)
-    b.ldir()
+    # The loop nest is the Z80's: it walks CTXCHARS and calls CTX_HASH, and
+    # never touches an activation. Only clearing the buckets knows how wide one
+    # is, and the eZ80 gives them their own buffer rather than an offset.
+    def clear_ctx_buckets(bb: Z80Builder) -> None:
+        bb.ld_hl_label('CTXBUF')
+        bb.ld_de_label('CTXBUF')
+        bb.inc_de()
+        bb.ld_bc_nn(NUM_BUCKETS * 3 - 1)
+        bb.ld_hl_n(0)
+        bb.ldir()
 
-    b.ld_a_n(1)
-    b.ld_mem_label_a('CTXN')
-
-    b.label('CTX_NLOOP')
-    b.xor_a()
-    b.ld_mem_label_a('CTXPOS')
-
-    b.label('CTX_PLOOP')
-    b.ld_a_n(CONTEXT_LEN + 1)
-    b.ld_hl_label('CTXN')
-    b.sub_hl_ind()  # A = (context_len + 1) - n, the exclusive position bound
-    b.ld_b_a()
-    b.ld_a_mem_label('CTXPOS')
-    b.cp_b()
-    b.jr_nc('CTX_NEXT_N')
-    b.call('CTX_HASH')
-    b.ld_a_mem_label('CTXPOS')
-    b.inc_a()
-    b.ld_mem_label_a('CTXPOS')
-    b.jr('CTX_PLOOP')
-
-    b.label('CTX_NEXT_N')
-    b.ld_a_mem_label('CTXN')
-    b.inc_a()
-    b.ld_mem_label_a('CTXN')
-    b.cp_n(4)
-    b.jr_c('CTX_NLOOP')
-    b.ret()
+    libnn.emit_encode_ctx(b, plat, emit_clear=clear_ctx_buckets)
 
     # === CTX_HASH: hash CTXN characters from CTXPOS, seeded with CTXPOS*7 ====
     b.label('CTX_HASH')
@@ -1063,9 +962,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
         _emit_layers_column(b, model)
 
     # === DATA ================================================================
-    b.label('CHARTBL')
-    for c in charset:
-        b.db(0 if c == '\x00' else ord(c))
+    libnn.emit_charset_table(b, charset)
 
     scratch = ['TOKLEN', 'TOKC1', 'TOKC2', 'TOKC3']
     if position_bands > 1:

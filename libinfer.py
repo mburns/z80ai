@@ -18,8 +18,20 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any, TypeAlias
 
 import numpy as np
+import numpy.typing as npt
+
+#: A trained model, as it travels between loadmodel and the code generators.
+#:
+#: The pair is deliberate. ``Params`` is the arrays, keyed by the names
+#: :func:`layer_names` orders; ``Arch`` is everything about the model that is
+#: not an array, and it is heterogeneous on purpose - a model writes the
+#: optional fields only when they carry information, so this cannot be a
+#: TypedDict without claiming keys that are usually absent.
+Params: TypeAlias = dict[str, npt.NDArray[Any]]
+Arch: TypeAlias = dict[str, Any]
 
 NUM_BUCKETS = 128
 CONTEXT_LEN = 8
@@ -147,7 +159,7 @@ class Model:
         return [self.input_size] + [int(w.shape[0]) for w in self.weights]
 
     @classmethod
-    def from_params(cls, params: dict, charset: str,
+    def from_params(cls, params: Params, charset: str,
                     position_bands: int = FLAT,
                     split_seed: int | None = None,
                     phrases: list[str] | None = None,
@@ -174,7 +186,7 @@ class Model:
                                arch.get("phrases"),
                                arch.get("accum_bits", 16))
 
-    def architecture(self) -> dict:
+    def architecture(self) -> Arch:
         sizes = self.layer_sizes
         arch = {
             "input_size": sizes[0],
@@ -317,7 +329,7 @@ def forward_hoisted(
 Z80_MAX_LAYER = 256
 
 
-def layer_names(params: dict) -> list[str]:
+def layer_names(params: Params) -> list[str]:
     """Layer names in run order.
 
     Sorted numerically, not lexically: a 10-layer model would otherwise run
@@ -329,7 +341,7 @@ def layer_names(params: dict) -> list[str]:
     )
 
 
-def discover_layers(params: dict) -> tuple[list[str], list[int]]:
+def discover_layers(params: Params) -> tuple[list[str], list[int]]:
     """Return (ordered layer names, [input, hidden..., output] sizes)."""
     names = layer_names(params)
     sizes: list[int] = []
@@ -361,7 +373,7 @@ class BuildInputs:
     needs to lay out labels and count loops.
     """
 
-    params: dict
+    params: Params
     charset: str
     #: Position bands the query encoder was trained with; a build that
     #: tokenizes differently from training produces confident nonsense.

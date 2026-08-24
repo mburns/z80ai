@@ -15,16 +15,18 @@ silently reading zeroes.
 from __future__ import annotations
 
 import contextlib
-from typing import ClassVar
+from collections.abc import Callable
+from typing import Any, ClassVar
 
 # Entry points and memory maps come from the target modules rather than being
 # restated: the emulator's idea of where BDOS sits and the code generator's have
 # to agree, and the surest way to guarantee that is to have only one of them.
+from libagon import AGON_CR
 from libagon import MOS_API as AGON_MOS_API
 from libagon import MOS_GETKEY as AGON_MOS_GETKEY
 from libagon import MOS_LOAD as AGON_MOS_LOAD
 from libagon import MOS_OUTCHAR as AGON_MOS_OUTCHAR
-from libcpc import CPC_HIMEM
+from libcpc import CPC_CR, CPC_HIMEM
 from libcpc import KM_WAIT_CHAR as CPC_KM_WAIT_CHAR
 from libcpc import ORG_ADDR as CPC_ORG_ADDR
 from libcpc import SCR_SET_MODE as CPC_SCR_SET_MODE
@@ -34,13 +36,67 @@ from libnext import NEXT_REG_CPU_SPEED, NEXT_REG_SELECT, NEXT_REG_VALUE
 from libnext import SPEEDS as NEXT_SPEEDS
 from libz80emu import Z80, Z80Error
 from libzx import ORG_ADDR as ZX_DEFAULT_ORG
-from libzx import ZX_CHAN_OPEN, ZX_CLS, ZX_KEY_INPUT, ZX_PRINT_A, ZX_RAM_TOP
+from libzx import (
+    ZX_CHAN_OPEN,
+    ZX_CLS,
+    ZX_ENTER,
+    ZX_KEY_INPUT,
+    ZX_PRINT_A,
+    ZX_RAM_TOP,
+)
 
 #: Where a transient program's stack starts, a little below the BDOS. Real CP/M
 #: hands over whatever the CCP was using; anywhere clear of the image will do.
 CPM_STACK = 0xE000
 
 # --- CP/M --------------------------------------------------------------------
+
+
+#: The key that ends a line, on every machine here. Asserted rather than
+#: written as 13, because the shared shim below has to agree with all three
+#: targets and there is no reason to trust that it does.
+ENTER = ZX_ENTER
+assert ENTER == CPC_CR == AGON_CR
+
+
+class _StdinKeys:
+    """Console traffic for a chat-driven host: queued input, collected output.
+
+    ZXHost, CPCHost and AgonHost each had their own copy of both halves. The
+    key feed was byte-identical between ZX and CPC and differed from Agon only
+    in who pops the return address; the character collector was identical in
+    all three.
+    """
+
+    stdin: list[str]
+    output: list[str]
+    finished: bool
+
+    def _feed_key(self, cpu: Z80) -> bool:
+        """Put the next queued character in A. False when the input ran out.
+
+        A caller that returns to the guest itself - the RST-based hosts - pops
+        only when this returned True; a halted CPU has no return address to
+        take.
+        """
+        if not self.stdin:
+            self.finished = True
+            cpu.halted = True
+            return False
+        line = self.stdin[0]
+        if line == "":
+            self.stdin.pop(0)
+            cpu.a = ENTER
+        else:
+            self.stdin[0] = line[1:]
+            cpu.a = ord(line[0])
+        return True
+
+    def _emit_char(self, cpu: Z80) -> bool:
+        """Collect the character in A and return to the guest."""
+        self.output.append(chr(cpu.a))
+        cpu.pc = cpu._pop()
+        return True
 
 
 class CPMExit(Exception):
@@ -163,7 +219,7 @@ def run_cpm(
 # --- ZX Spectrum -------------------------------------------------------------
 
 
-class ZXHost:
+class ZXHost(_StdinKeys):
     """Stubs for the handful of 48K ROM routines the TAP build calls."""
 
     def __init__(self, stdin: list[str] | None = None, org: int = ZX_DEFAULT_ORG) -> None:
@@ -191,22 +247,11 @@ class ZXHost:
         return True
 
     def _print_a(self, cpu: Z80) -> bool:
-        self.output.append(chr(cpu.a))
-        cpu.pc = cpu._pop()
-        return True
+        return self._emit_char(cpu)
 
     def _key_input(self, cpu: Z80) -> bool:
-        if not self.stdin:
-            self.finished = True
-            cpu.halted = True
+        if not self._feed_key(cpu):
             return True
-        line = self.stdin[0]
-        if line == "":
-            self.stdin.pop(0)
-            cpu.a = 13
-        else:
-            self.stdin[0] = line[1:]
-            cpu.a = ord(line[0])
         cpu.pc = cpu._pop()
         return True
 
@@ -284,7 +329,7 @@ def run_next(
 # --- Amstrad CPC -------------------------------------------------------------
 
 
-class CPCHost:
+class CPCHost(_StdinKeys):
     """Stubs for the firmware jumpblock entries the CPC build calls.
 
     The jumpblock lives in RAM on a real CPC, so a program reaches the firmware
@@ -314,9 +359,7 @@ class CPCHost:
         self.cpu.sp = self._stack
 
     def _txt_output(self, cpu: Z80) -> bool:
-        self.output.append(chr(cpu.a))
-        cpu.pc = cpu._pop()
-        return True
+        return self._emit_char(cpu)
 
     def _scr_set_mode(self, cpu: Z80) -> bool:
         self.mode = cpu.a
@@ -324,17 +367,8 @@ class CPCHost:
         return True
 
     def _km_wait_char(self, cpu: Z80) -> bool:
-        if not self.stdin:
-            self.finished = True
-            cpu.halted = True
+        if not self._feed_key(cpu):
             return True
-        line = self.stdin[0]
-        if line == "":
-            self.stdin.pop(0)
-            cpu.a = 13
-        else:
-            self.stdin[0] = line[1:]
-            cpu.a = ord(line[0])
         cpu.pc = cpu._pop()
         return True
 
@@ -399,7 +433,7 @@ AGON_RAM_LO = 0x040000
 AGON_RAM_HI = 0x0C0000
 
 
-class AgonHost:
+class AgonHost(_StdinKeys):
     """eZ80 ADL-mode host implementing the MOS entry points we use.
 
     ``files`` is the SD card: a name -> bytes mapping, held in memory rather
@@ -419,7 +453,7 @@ class AgonHost:
         #: name -> contents. Lookup is case-insensitive, like FAT.
         self.files = {name.upper(): data for name, data in (files or {}).items()}
         #: handle -> [name, position]. Handle 0 means failure, so start at 1.
-        self.handles: dict[int, list] = {}
+        self.handles: dict[int, list[Any]] = {}
         #: Bytes served from the card. bench.py reports this rather than
         #: pretending a hook that costs no T-states cost some.
         self.io_bytes = 0
@@ -460,23 +494,10 @@ class AgonHost:
     # --- MOS entry points ----------------------------------------------------
 
     def _out_char(self, cpu: Z80) -> bool:
-        self.output.append(chr(cpu.a))
-        cpu.pc = cpu._pop()
-        return True
+        return self._emit_char(cpu)
 
     def _getkey(self, cpu: Z80) -> bool:
-        if not self.stdin:
-            self.finished = True
-            cpu.halted = True
-            return False        # halted: do not pop a return address
-        line = self.stdin[0]
-        if line == "":
-            self.stdin.pop(0)
-            cpu.a = 13
-        else:
-            self.stdin[0] = line[1:]
-            cpu.a = ord(line[0])
-        return True
+        return self._feed_key(cpu)
 
     def _load(self, cpu: Z80) -> bool:
         """mos_load: whole file to an address, one call, no handle to leak."""
@@ -533,7 +554,7 @@ class AgonHost:
 
     #: Dispatch on A. Anything absent raises, which is the property the module
     #: docstring promises and the reason a typo fails loudly.
-    _API: ClassVar[dict] = {
+    _API: ClassVar[dict[int, Callable[[AgonHost, Z80], bool]]] = {
         MOS_GETKEY: _getkey,
         MOS_LOAD: _load,
         MOS_FOPEN: _fopen,

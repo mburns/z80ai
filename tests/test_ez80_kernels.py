@@ -20,10 +20,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from helpers import read24, reference_input, run_ez80_until
 
 import buildez80
 import libinfer
+from helpers import read24, reference_input, run_ez80_until
 from libez80 import AGON_MAX_IMAGE
 from libhost import run_agon
 from libinfer import Model

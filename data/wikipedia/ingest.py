@@ -34,6 +34,7 @@ import re
 import sqlite3
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -167,9 +168,9 @@ REDIRECT = re.compile(r'<redirect title="(.*?)"')
 TEXT_OPEN = re.compile(r"<text[^>]*>")
 
 TAG = re.compile(r"<[^>]+>")
-REF = re.compile(r"<ref[^>]*>.*?</ref>|<ref[^>]*/>", re.S)
-HEADING = re.compile(r"^=+.*?=+$", re.M)
-TABLE = re.compile(r"\{\|.*?\|\}", re.S)
+REF = re.compile(r"<ref[^>]*>.*?</ref>|<ref[^>]*/>", re.DOTALL)
+HEADING = re.compile(r"^=+.*?=+$", re.MULTILINE)
+TABLE = re.compile(r"\{\|.*?\|\}", re.DOTALL)
 ENTITY = {"&quot;": '"', "&amp;": "&", "&lt;": "<", "&gt;": ">", "&nbsp;": " ",
           "&#39;": "'", "&ndash;": "-", "&mdash;": "-"}
 
@@ -261,7 +262,7 @@ def clean(markup: str) -> str:
     text = CACHEKEY.sub(" ", text)
     text = text.replace("'''", "").replace("''", "")
     # Leading list and indent markers survive the above and read as noise.
-    text = re.sub(r"^[*#:;|]+", " ", text, flags=re.M)
+    text = re.sub(r"^[*#:;|]+", " ", text, flags=re.MULTILINE)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -282,7 +283,7 @@ def lead_of(markup: str) -> str:
 # keeps them, because a question like "where was Bell born" is answered by a
 # lookup and not by reading prose.
 
-INFOBOX = re.compile(r"\{\{\s*Infobox\b", re.I)
+INFOBOX = re.compile(r"\{\{\s*Infobox\b", re.IGNORECASE)
 
 #: Infobox keys that lay the page out rather than saying anything about the
 #: subject. About a third of all fields, and none of them answers a question.
@@ -293,12 +294,12 @@ FURNITURE = re.compile(
     r"|flag|map|link|ref|note|footnote|upright|padding))$"
     r"|^(module|embed|child|nocat|fetchwikidata|onlysourced|suppressfields"
     r"|dateformat|coordinates|latd|latm|lats|longd|longm|longs|pushpin.*)$",
-    re.I)
+    re.IGNORECASE)
 
 #: Values that survived cleaning but say nothing: markup scraps, bare units,
 #: template flags.
 JUNK_VALUE = re.compile(r"^[\s|=*#:;{}\[\]<>/-]*$|^\d+\s*px$|^(yes|no|y|n|on|off"
-                        r"|none|null|unknown|n/a|tbd|ALL)$", re.I)
+                        r"|none|null|unknown|n/a|tbd|ALL)$", re.IGNORECASE)
 
 #: A value longer than this is a paragraph that wandered into a field.
 MAX_VALUE_LEN = 120
@@ -371,8 +372,11 @@ def infobox_fields(body: str) -> list[tuple[str, str]]:
     return out
 
 
-def pages(path: Path):
-    """Yield (title, redirect_target_or_None, lead) for every ns0 page."""
+def pages(path: Path) -> Iterator[tuple[str, str | None, str, list[tuple[str, str]]]]:
+    """Yield (title, redirect_target_or_None, lead, infobox_fields) per ns0 page.
+
+    A redirect carries no lead and no fields, so both are empty for one.
+    """
     opener = bz2.open if path.suffix == ".bz2" else open
     title = ns = redirect = None
     in_text = False

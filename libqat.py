@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Quantization-Aware Training (QAT) with Overflow Simulation.
 

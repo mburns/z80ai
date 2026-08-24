@@ -11,8 +11,6 @@ import numpy as np
 import pytest
 
 import buildfastz80com
-import buildz80com
-import buildz80tap
 import libinfer
 
 LAYOUTS = ["plain", "rotated"]
@@ -58,11 +56,25 @@ def test_plain_layout_codes():
     assert [(byte >> (2 * i)) & 3 for i in range(4)] == [0, 1, 2, 3]
 
 
-def test_builders_delegate_to_the_shared_packer():
-    """Both packed backends use the rotated layout, so they share one kernel."""
-    w = np.random.default_rng(3).integers(-2, 2, size=(6, 10))
-    assert buildz80com.pack_2bit_weights(w) == libinfer.pack_2bit(w, "rotated")
-    assert buildz80tap.pack_2bit_weights(w) == libinfer.pack_2bit(w, "rotated")
+def test_builders_delegate_to_the_shared_packer(tiny_model_path):
+    """Every packed backend uses the rotated layout, so they share one kernel.
+
+    This used to compare four identical per-module pack_2bit_weights wrappers
+    against libinfer. They are gone: libnn.prepare_packed does the packing, so
+    the property is now structural rather than four coincidences. What is left
+    worth checking is that it really is the rotated layout.
+    """
+    import libcpm
+    import libnn
+
+    packed = libnn.prepare_packed(tiny_model_path, libcpm.CPMPlatform())
+    model = packed.model
+    w1q, w1c = libinfer.split_query_half(model.weight(0))
+    assert packed.packed_query == libinfer.pack_2bit(w1q, "rotated")
+    assert packed.packed_weights[0] == libinfer.pack_2bit(w1c, "rotated")
+    for i in range(1, model.num_layers):
+        assert packed.packed_weights[i] == libinfer.pack_2bit(model.weight(i),
+                                                              "rotated")
 
 
 def test_the_plain_layout_is_still_supported():

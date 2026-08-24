@@ -188,7 +188,7 @@ def report(pairs: list[tuple[str, str]], phrasebook: bool = False) -> list[str]:
         )
 
     # A character used by only a line or two still costs a whole output neuron.
-    char_lines: Counter = Counter()
+    char_lines: Counter[str] = Counter()
     for _, response in pairs:
         for c in set(response):
             char_lines[c] += 1

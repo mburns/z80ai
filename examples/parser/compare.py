@@ -57,8 +57,10 @@ def response_accuracy(model, pairs, query_encoder, context_encoder) -> float:
 
 
 def run(bands: int, train_pairs, eval_pairs, hidden, epochs, seed) -> dict:
+    # torch's is the only RNG this draws from: neither feedme nor libdata
+    # touches numpy's global one, so the np.random.seed that used to sit here
+    # seeded a generator nothing sampled.
     torch.manual_seed(seed)
-    np.random.seed(seed)
 
     query_encoder = feedme.TrigramEncoder(num_buckets=128, position_bands=bands)
     context_encoder = feedme.ContextEncoder(num_buckets=128, context_len=8)
