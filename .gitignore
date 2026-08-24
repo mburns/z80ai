@@ -11,6 +11,14 @@ cpm
 *.bin
 packages/
 dist/
+# Built from a MediaWiki dump by data/wikipedia/ingest.py - ~110MB, and
+# reproducible from any snapshot, so it is not worth a git object. The -wal
+# and -shm sidecars are SQLite's, and appear whenever the database is opened.
+*.db
+*.db-wal
+*.db-shm
+*.IDX
+*.DAT
 .venv/
 .pytest_cache/
 
