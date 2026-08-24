@@ -441,19 +441,25 @@ def connect(path: Path, migrate: bool = False) -> sqlite3.Connection:
     db.execute("PRAGMA foreign_keys=ON")
 
     found = db.execute("PRAGMA user_version").fetchone()[0]
-    if found and found != SCHEMA_VERSION:
+    extra, missing = _drift(db)
+    if found and (found != SCHEMA_VERSION or extra or missing):
         if not migrate:
+            detail = []
+            if found != SCHEMA_VERSION:
+                detail.append(f"it is version {found}, this is {SCHEMA_VERSION}")
+            if extra:
+                detail.append(f"it has {', '.join(sorted(extra))}, "
+                              f"which this schema does not define")
+            if missing:
+                detail.append(f"it is missing {', '.join(sorted(missing))}")
             raise SystemExit(
-                f"{path} uses schema version {found}, this is version "
-                f"{SCHEMA_VERSION}.\nRe-ingest the dump to rebuild it.")
+                f"{path} does not match this schema:\n  "
+                + "\n  ".join(detail)
+                + "\nRe-ingest the dump to rebuild it.")
         # Every user table, read back from the database rather than listed
-        # here. A hand-maintained list has to be updated whenever the schema
-        # gains a table, and when it is not, the old table survives a version
-        # bump that `CREATE TABLE IF NOT EXISTS` then silently accepts - which
-        # leaves a database stamped with the new version and carrying the old
-        # layout. That is the exact failure the version check exists to stop,
-        # and it happened here: adding `fact` left its previous definition and
-        # a dropped index in place across the bump to version 4.
+        # here: a hand-written list has to be updated whenever the schema gains
+        # one, and when it is not, the old table survives and
+        # `CREATE TABLE IF NOT EXISTS` accepts it silently.
         stale = [name for (name,) in db.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' "
             "AND name NOT LIKE 'sqlite_%'")]
@@ -463,6 +469,29 @@ def connect(path: Path, migrate: bool = False) -> sqlite3.Connection:
     db.executescript(_schema())
     db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return db
+
+
+def _expected_objects() -> set[str]:
+    """Table and index names the current schema defines."""
+    return set(re.findall(r"CREATE (?:TABLE|INDEX) IF NOT EXISTS (\w+)",
+                          _schema()))
+
+
+def _drift(db: sqlite3.Connection) -> tuple[set[str], set[str]]:
+    """(objects the database has and the schema does not, and the reverse).
+
+    Checked in addition to the version, because a version only catches a change
+    somebody remembered to declare. Removing an index and bumping the version
+    is not enough on its own: a database that a *previous, buggy* migration
+    already stamped with the new version passes the version check and keeps the
+    index forever. That happened here - an 86MB index survived its own removal
+    twice - and comparing the schema to the database is what notices.
+    """
+    present = {name for (name,) in db.execute(
+        "SELECT name FROM sqlite_master WHERE type IN ('table', 'index') "
+        "AND name NOT LIKE 'sqlite_%'")}
+    expected = _expected_objects()
+    return present - expected, expected - present
 
 
 def ingest(db: sqlite3.Connection, dump: Path,
