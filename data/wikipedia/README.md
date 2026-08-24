@@ -3,13 +3,47 @@
 The whole encyclopedia on an Agon Light: 283,997 articles, searched in plain
 English, from an SD card.
 
-```bash
-# once, from a MediaWiki dump (~4 minutes)
-python data/wikipedia/ingest.py ~/Downloads/simplewiki-20260801-pages-articles.xml.bz2
+## Building it from nothing
 
-# then, whenever the database changes
+Three commands, about twenty minutes, most of it the download.
+
+```bash
+# 1. Fetch a dump (~340MB). Any snapshot works; this is the one it was built
+#    against. https://dumps.wikimedia.org/simplewiki/ lists the rest, and
+#    `latest/` always points at the newest.
+curl -O https://dumps.wikimedia.org/simplewiki/20260801/simplewiki-20260801-pages-articles.xml.bz2
+
+# 2. Into the database (~5 minutes). Nothing else needs the dump afterwards.
+python data/wikipedia/ingest.py simplewiki-20260801-pages-articles.xml.bz2
+
+# 3. Into a card (~4 minutes). Add --limit 20000 for a small one that builds
+#    in seconds, ranked by how many redirects point at each article.
 python buildwikisearch.py --out dist/WIKI
 ```
+
+`data/simple_english_wikipedia.db` is **not in git** — it is 337MB of derived
+data, and step 2 rebuilds it from any snapshot. The dump is not in git either.
+What *is* committed is everything needed to turn one into the other.
+
+The database records where its contents came from, so a card can be traced
+back to a snapshot without asking anyone:
+
+```console
+$ python data/wikipedia/ingest.py --stats
+  schema_version               4
+  simplewiki.articles          283997
+  simplewiki.digest            a3f21c9d4e7b8012
+  simplewiki.dump              simplewiki-20260801-pages-articles.xml.bz2
+  simplewiki.facts             1950164
+  simplewiki.ingested          2026-08-23T19:42:59
+  simplewiki.redirects         114771
+  simplewiki.url               https://dumps.wikimedia.org/simplewiki/20260801/...
+```
+
+The URL is reconstructed from the filename, since a Wikimedia dump name
+carries its wiki and its date. A dump named anything else records no URL
+rather than a guessed one.
+
 
 That writes three files. Copy all three onto the card and run `WIKI`:
 
@@ -38,9 +72,9 @@ transaction. A dump is a complete snapshot, so that is a sync rather than a
 merge: articles that were deleted upstream disappear, and an interrupted run
 leaves the previous corpus intact. Re-run `buildwikisearch.py` afterwards.
 
-```bash
-python data/wikipedia/ingest.py --stats     # what is in there, and from when
-```
+A schema change bumps `PRAGMA user_version`, and a database written by an older
+one refuses to open rather than being read as though it were current. Ingest
+may rebuild it, since it replaces every row regardless.
 
 The binary contains no corpus and no counts except the article total, so a
 rebuilt card drops in beside an unchanged `WIKI.bin` unless the *format*

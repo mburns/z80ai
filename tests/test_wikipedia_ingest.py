@@ -136,7 +136,28 @@ def test_provenance_is_recorded(ingest, tmp_path):
     meta = dict(db.execute("SELECT key, value FROM meta").fetchall())
     assert meta["simplewiki.dump"] == dump.name
     assert meta["simplewiki.articles"] == "1"
+    assert meta["simplewiki.facts"] == "3"      # name, writer, genre
+    assert len(meta["simplewiki.digest"]) == 16
     assert meta["schema_version"] == str(ingest.SCHEMA_VERSION)
+
+
+def test_a_wikimedia_dump_records_where_it_came_from(ingest, tmp_path):
+    """A filename says what a file was called on one machine. The URL says
+    which snapshot it is, which is what another contributor needs."""
+    db, _, _ = build_db(ingest, tmp_path,
+                        name="simplewiki-20260801-pages-articles.xml")
+    url = db.execute("SELECT value FROM meta WHERE key = 'simplewiki.url'"
+                     ).fetchone()[0]
+    assert url == ("https://dumps.wikimedia.org/simplewiki/20260801/"
+                   "simplewiki-20260801-pages-articles.xml")
+
+
+def test_a_dump_named_anything_else_records_no_url(ingest, tmp_path):
+    """Guessing one would be worse than admitting there isn't one."""
+    assert ingest.dump_url("some-local-export.xml") is None
+    db, _, _ = build_db(ingest, tmp_path, name="some-local-export.xml")
+    assert db.execute("SELECT COUNT(*) FROM meta WHERE key LIKE '%.url'"
+                      ).fetchone()[0] == 0
 
 
 def test_reingesting_replaces_rather_than_merges(ingest, tmp_path):
@@ -286,6 +307,31 @@ def test_the_schema_version_is_recorded_and_checked(ingest, tmp_path):
         ingest.connect(db_path)
     # ...but ingest may rebuild, since it replaces every row regardless.
     ingest.connect(db_path, migrate=True)
+
+
+def test_a_version_bump_removes_tables_the_new_schema_does_not_define(
+        ingest, tmp_path):
+    """The failure the version check exists to stop, which it once allowed.
+
+    Migration used to drop a hand-written list of tables. A schema that gained
+    one left the old definition in place - `CREATE TABLE IF NOT EXISTS` accepts
+    it silently - so the database ended up stamped with the new version while
+    carrying the old layout, indexes and all.
+    """
+    _, db_path, _ = build_db(ingest, tmp_path)
+
+    db = sqlite3.connect(db_path)
+    db.execute("CREATE TABLE leftover (x TEXT)")
+    db.execute("CREATE INDEX leftover_x ON leftover (x)")
+    db.execute("PRAGMA user_version = 1")
+    db.commit()
+    db.close()
+
+    db = ingest.connect(db_path, migrate=True)
+    names = {n for (n,) in db.execute("SELECT name FROM sqlite_master")}
+    assert "leftover" not in names
+    assert "leftover_x" not in names
+    assert db.execute("PRAGMA user_version").fetchone()[0] == ingest.SCHEMA_VERSION
 
 
 def test_the_database_is_readable_without_the_ingest_module(ingest, tmp_path):

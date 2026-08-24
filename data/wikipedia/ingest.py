@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import bz2
+import hashlib
 import re
 import sqlite3
 import time
@@ -47,6 +48,34 @@ LEAD_CHARS = 300
 #: it, but the schema is identical without it and there is no reason to refuse
 #: to run on an older library for a type check.
 STRICT = "STRICT, " if sqlite3.sqlite_version_info >= (3, 37, 0) else ""
+
+#: Where the dumps come from. A Wikimedia dump filename carries its wiki and
+#: its date, so the canonical URL can be reconstructed from the file alone -
+#: which means the database can record *where* its contents came from rather
+#: than only what the file happened to be called locally.
+DUMP_NAME = re.compile(r"^(?P<wiki>[a-z]+)-(?P<date>\d{8})-(?P<kind>.+)$")
+DUMP_BASE = "https://dumps.wikimedia.org"
+
+
+def dump_url(name: str) -> str | None:
+    """The canonical download URL for a Wikimedia dump filename."""
+    m = DUMP_NAME.match(name)
+    if not m:
+        return None
+    return f"{DUMP_BASE}/{m['wiki']}/{m['date']}/{name}"
+
+
+def file_digest(path: Path, limit: int = 1 << 26) -> str:
+    """A short digest of the dump, so a rebuild can be told apart from a reuse.
+
+    The first 64MB rather than the whole 338MB file: enough that two different
+    snapshots cannot collide in practice, and fast enough to run every time
+    without anyone deciding to skip it.
+    """
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        h.update(fh.read(limit))
+    return h.hexdigest()[:16]
 
 
 def _schema() -> str:
@@ -417,7 +446,18 @@ def connect(path: Path, migrate: bool = False) -> sqlite3.Connection:
             raise SystemExit(
                 f"{path} uses schema version {found}, this is version "
                 f"{SCHEMA_VERSION}.\nRe-ingest the dump to rebuild it.")
-        for table in ("meta", "article", "redirect"):
+        # Every user table, read back from the database rather than listed
+        # here. A hand-maintained list has to be updated whenever the schema
+        # gains a table, and when it is not, the old table survives a version
+        # bump that `CREATE TABLE IF NOT EXISTS` then silently accepts - which
+        # leaves a database stamped with the new version and carrying the old
+        # layout. That is the exact failure the version check exists to stop,
+        # and it happened here: adding `fact` left its previous definition and
+        # a dropped index in place across the bump to version 4.
+        stale = [name for (name,) in db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name NOT LIKE 'sqlite_%'")]
+        for table in stale:
             db.execute(f"DROP TABLE IF EXISTS {table}")
 
     db.executescript(_schema())
@@ -466,14 +506,22 @@ def ingest(db: sqlite3.Connection, dump: Path,
                    "SELECT ?, title, target FROM new_redirect", (source,))
         db.execute("INSERT INTO fact (source, subject, property, value) "
                    "SELECT ?, subject, property, value FROM new_fact", (source,))
-        for key, value in (
+        # Provenance, so the database says which snapshot it holds and where
+        # that snapshot can be fetched again. A filename alone does not: it
+        # says what the file was called on one machine.
+        provenance = [
             ("schema_version", str(SCHEMA_VERSION)),
             (f"{source}.dump", dump.name),
+            (f"{source}.digest", file_digest(dump)),
             (f"{source}.ingested", time.strftime("%Y-%m-%dT%H:%M:%S")),
             (f"{source}.articles", str(articles)),
             (f"{source}.redirects", str(redirects)),
             (f"{source}.facts", str(facts)),
-        ):
+        ]
+        url = dump_url(dump.name)
+        if url:
+            provenance.insert(2, (f"{source}.url", url))
+        for key, value in provenance:
             db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
 
     db.execute("DROP TABLE new_article")
