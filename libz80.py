@@ -198,6 +198,10 @@ class Z80Builder:
         self.emit(0xD2)
         self.fixup_word(label)
 
+    def jp_c(self, label: str) -> None:
+        self.emit(0xDA)
+        self.fixup_word(label)
+
     def jp_hl(self) -> None: self.emit(0xE9)  # JP (HL) - jump to the address in HL
 
     def jr(self, label: str) -> None:
