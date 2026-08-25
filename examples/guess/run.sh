@@ -2,8 +2,9 @@
 # Retrain the guess model from the checked-in data and run it under CP/M.
 #
 # To regenerate the data instead of using the shipped set (needs Ollama or an
-# ANTHROPIC_API_KEY, and is not reproducible - see data/adventure/generate.py
-# for one that is):
+# ANTHROPIC_API_KEY, and is not reproducible - see data/questions/relations.py
+# for one that is: it builds its set from a pinned public TSV under a fixed
+# seed, so the same command twice gives the same file):
 #   ./gendata.py -t 'chair' -d 30 -n 1000 --nonsense | tee -a chair.txt
 #   cat chair.txt | ./balance.py -t 5000 -o --stats | gzip > training-data.txt.gz
 set -eu

@@ -13,11 +13,11 @@ getting it wrong does not raise - it answers about the wrong article.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
 
+import conftest
 import libgraph
 import liboracle
 import libsearch
@@ -27,11 +27,8 @@ import oracle
 @pytest.fixture(scope="module")
 def ingest(repo_root):
     """data/wikipedia/ingest.py is a script in a subdirectory, not a module."""
-    path = Path(repo_root) / "data" / "wikipedia" / "ingest.py"
-    spec = importlib.util.spec_from_file_location("wiki_ingest", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return conftest.load_script(
+        str(Path(repo_root) / "data" / "wikipedia" / "ingest.py"), "wiki_ingest")
 
 
 #: Titles chosen for what they collide with. "Jane" and "Jane Austen" both

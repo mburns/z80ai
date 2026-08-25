@@ -9,7 +9,6 @@ balanced dataset starved.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
@@ -17,16 +16,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "data"))
 
+import conftest
 import lint
 
 
 def _load_subset(repo_root):
     """data/clinc150/subset.py is not importable by name - it is in a subdir."""
-    path = Path(repo_root) / "data" / "clinc150" / "subset.py"
-    spec = importlib.util.spec_from_file_location("clinc_subset", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return conftest.load_script(
+        str(Path(repo_root) / "data" / "clinc150" / "subset.py"), "clinc_subset")
 
 
 @pytest.fixture(scope="module")

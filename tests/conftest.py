@@ -8,6 +8,7 @@ by the ``slow``-marked tests.
 
 from __future__ import annotations
 
+import importlib.util
 import itertools
 import os
 import sys
@@ -22,6 +23,29 @@ from libinfer import Model
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXAMPLES = os.path.join(REPO, "examples")
+
+
+def load_script(path: str, name: str):
+    """Import a script that lives in a subdirectory and is not on the path.
+
+    Several of these live under ``data/`` - ``ingest.py``, ``subset.py`` - and
+    are run by filename rather than imported, so a test that wants their
+    internals has to load them by location.
+
+    The `sys.modules` registration is the part that is easy to leave out and
+    breaks a long way from here. Every module in this repo starts with ``from
+    __future__ import annotations``, which makes annotations strings, and
+    ``@dataclass`` resolves those through ``sys.modules[cls.__module__]`` - so
+    a script loaded without being registered raises ``'NoneType' object has no
+    attribute '__dict__'`` at import, the first time anyone adds a dataclass to
+    it. Three copies of this function each had that bug.
+    """
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None, path
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 # Roughly the weight distribution QAT produces: mostly zero, few -2s.
 _WEIGHT_VALUES = np.array([-2, -1, 0, 1], dtype=np.int8)
