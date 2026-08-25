@@ -83,6 +83,62 @@ def test_the_index_round_trips_through_the_reference(reference):
         assert reference._postings(term), term
 
 
+# --- gap-encoded postings -------------------------------------------------------
+#
+# Doc ids ascend within a term and cluster, so the gaps are small: 65.8% fit in
+# a byte over the full card. Storing the gap rather than the id took the index
+# from 33.1 MB to 23.1. What makes it safe is that the width rides in the two
+# spare bits of a byte that only ever needed five for the weight - so nothing
+# about the accumulator changes, and neither does the count of bytes read per
+# posting being knowable before it is read.
+
+
+@pytest.mark.parametrize("docs", [
+    [0],                                  # the first gap is measured from zero
+    [0, 1, 2],                            # every gap one byte
+    [5, 300],                             # a two-byte gap
+    [0, 200_000],                         # a three-byte gap
+    [1, 2, 300, 400, 100_000, 300_000],   # all three widths in one list
+])
+def test_postings_survive_the_gap_encoding(docs):
+    entries = [libsearch.Posting(doc, 1 + (doc % libsearch.MAX_WEIGHT))
+               for doc in docs]
+    decoded = libsearch.decode_postings(libsearch.encode_postings(entries))
+    assert [(p.doc, p.weight) for p in decoded] == \
+           [(p.doc, p.weight) for p in entries]
+
+
+def test_the_encoding_is_smaller_than_the_flat_one_it_replaced():
+    """Four bytes a posting was the old format; the gain is the whole point."""
+    entries = [libsearch.Posting(doc, 7) for doc in range(0, 2000, 3)]
+    assert len(libsearch.encode_postings(entries)) < 4 * len(entries)
+
+
+def test_a_posting_out_of_order_is_still_read_back_correctly():
+    """The encoder sorts, because the gaps are meaningless otherwise.
+
+    Nothing upstream produces an unsorted list today - the builder walks
+    documents in order - but the encoding now depends on that, and a dependency
+    worth having is one that does not rely on a dict's iteration order.
+    """
+    entries = [libsearch.Posting(9, 1), libsearch.Posting(2, 2),
+               libsearch.Posting(700, 3)]
+    decoded = libsearch.decode_postings(libsearch.encode_postings(entries))
+    assert [(p.doc, p.weight) for p in decoded] == [(2, 2), (9, 1), (700, 3)]
+
+
+def test_the_width_rides_in_the_bits_the_weight_never_uses():
+    """A weight is five bits, so bits 5 and 6 were spare and are now the width.
+
+    If a weight ever needed six bits this would corrupt it silently, so the
+    two are pinned against each other here rather than in separate places.
+    """
+    assert libsearch.MAX_WEIGHT == 0x1F
+    tagged = libsearch.encode_postings([libsearch.Posting(1, libsearch.MAX_WEIGHT)])
+    assert tagged[0] & libsearch.MAX_WEIGHT == libsearch.MAX_WEIGHT
+    assert tagged[0] >> libsearch.WEIGHT_BITS == 0          # a one-byte gap
+
+
 def test_a_term_that_was_never_indexed_returns_nothing(reference):
     assert reference._postings("aardvark") == []
     assert reference._postings("the") == []      # a stopword, excluded at build
@@ -177,10 +233,21 @@ def test_a_missing_card_says_so(card):
 
 
 def test_the_reference_refuses_a_foreign_index(tmp_path):
+    """Including a card in the format this one replaced.
+
+    The magic is read from `libsearch` rather than spelled out, because the
+    version in it moves whenever the layout does and a test that pins the old
+    spelling fails for the one reason that is not a bug.
+    """
     bad = tmp_path / "bad.IDX"
     bad.write_bytes(b"NOTZWIK" + bytes(64))
-    with pytest.raises(ValueError, match="not a ZWIKI1 index"):
+    with pytest.raises(ValueError, match=f"not a {libsearch.MAGIC.decode()} index"):
         libsearch.CardSearch(bad, bad)
+
+    stale = tmp_path / "stale.IDX"
+    stale.write_bytes(b"ZWIKI1" + bytes(64))
+    with pytest.raises(ValueError, match="not a "):
+        libsearch.CardSearch(stale, stale)
 
 
 # --- the page-tiered accumulator ------------------------------------------------

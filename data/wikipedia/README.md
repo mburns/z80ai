@@ -39,7 +39,7 @@ one has no other symptom — every id in it is still some article.
 
 | | full corpus |
 |---|---|
-| `WIKI.IDX` | 33.1 MB |
+| `WIKI.IDX` | 23.1 MB |
 | `WIKI.DAT` | 74.5 MB |
 | `WIKI.GRF` | 2.4 MB — 167,922 edges |
 | `WIKI.bin` | 95.6 KB |
@@ -87,9 +87,9 @@ That writes three files. Copy all three onto the card and run `WIKI`:
 
 | | |
 |---|---|
-| `WIKI.bin` | 6 KB — the program |
-| `WIKI.IDX` | 38 MB — hashed dictionary and postings |
-| `WIKI.DAT` | 80 MB — titles and leads |
+| `WIKI.bin` | 7.4 KB — the program |
+| `WIKI.IDX` | 23.1 MB — hashed dictionary and postings |
+| `WIKI.DAT` | 74.5 MB — titles and leads |
 
 ```
 Simple English Wikipedia - 283,997 articles
@@ -181,7 +181,7 @@ encyclopedia — resident, no sharding, no routing.
 | | |
 |---|---|
 | accumulator | 277 KB in SRAM, plus a 1,110-byte page table in the image |
-| program | 7,455 bytes |
+| program | 7,584 bytes |
 
 The two passes over the accumulator — clearing it and scanning it for the best
 three — used to dominate every query at 284,000 bytes apiece, whatever the
@@ -195,15 +195,15 @@ measured on the full 283,997-article card, not a synthetic one:
 
 | query | instructions | card bytes | s @ 18.432 MHz | finds |
 |---|---:|---:|---:|---|
-| `z80` | 63,018 | 6,226 | 0.00 | Z80 |
-| `zilog z80` | 66,359 | 6,282 | 0.00 | Z80 |
-| `everest` | 203,922 | 6,410 | 0.01 | Mount Everest |
-| `jane austen` | 1,268,035 | 8,390 | 0.07 | Reception history of Jane Austen |
-| `mount` | 1,774,842 | 9,558 | 0.10 | Mount Pleasant |
-| `mount everest` | 1,808,709 | 9,806 | 0.10 | Mount Everest |
-| `world war` | 4,570,758 | 76,430 | 0.25 | World War I |
-| `the united states of america` | 6,444,806 | 245,518 | 0.35 | President of the United States… |
-| `the` | 42,642 | 90 | 0.00 | *nothing* |
+| `z80` | 63,011 | 6,221 | 0.00 | Z80 |
+| `zilog z80` | 66,533 | 6,275 | 0.00 | Z80 |
+| `everest` | 206,753 | 6,353 | 0.01 | Mount Everest |
+| `jane austen` | 1,279,822 | 7,610 | 0.07 | Jane Austen |
+| `mount` | 1,796,552 | 8,220 | 0.10 | Mount Everest |
+| `mount everest` | 1,827,941 | 8,411 | 0.10 | Mount Everest |
+| `world war` | 4,903,859 | 41,475 | 0.27 | World War I |
+| `the united states of america` | 7,577,578 | 126,202 | 0.41 | United States |
+| `the` | 42,640 | 90 | 0.00 | *nothing* |
 
 **What sets the cost is the commonest word in the query, not how many words it
 has.** `mount everest` costs what `mount` costs on its own — the rare word is
@@ -220,6 +220,44 @@ the second is the one the design does not help.
 The last row is the cheap kind of failure: a word that common is not in the
 dictionary at all, so the query is refused at the index for 90 bytes rather than
 scored against the corpus.
+
+### The postings are gaps, not document ids
+
+Which is where the index's other 10 MB went. A posting used to be a flat
+three-byte document id and a one-byte weight, and three quarters of the file
+was postings — the hashed dictionary everyone assumes is the bloated part is an
+eighth of it.
+
+Document ids ascend within a term and cluster, because a term's articles are
+related: **65.8% of the gaps between them fit in one byte and 33.1% in two.**
+So a posting stores the gap from the one before, and the width rides in bits 5
+and 6 of the weight byte — a weight is five bits and those two were spare, so
+the tag costs nothing.
+
+    index          33,083,799 -> 23,136,084 bytes    -30.1%
+    whole card    107,637,689 -> 97,690,103          -9.2%
+    program             7,455 -> 7,584               +129
+
+Decoding is a running add and a compare, and the add is the operation this
+design has always been willing to pay for — the accumulator that scores a query
+is a byte and an `add` too. It is not free: a query retires up to 18% more
+instructions and reads up to 49% fewer bytes, and on this machine the card is
+slower than the processor, so the trade is worth taking.
+
+| query | instructions | card bytes | total at 18.432 MHz and 250 KB/s |
+|---|---|---|---|
+| `z80` | 62,906 → 63,011 | 6,226 → 6,221 | unchanged |
+| `mount everest` | 1,809,585 → 1,827,941 | 9,806 → 8,411 | 0.14 s → 0.13 s |
+| `world war` | 4,571,035 → 4,903,859 | 76,430 → 41,475 | 0.55 s → **0.43 s** |
+| `the united states of america` | 6,444,411 → 7,577,578 | 245,518 → 126,202 | 1.31 s → **0.90 s** |
+
+The queries that were cheap stay cheap and the ones that were slow get faster,
+which is the shape you want: the extra 0.06 s of decoding on the last row buys
+back 0.47 s of reading.
+
+A card in the old layout is refused rather than misread — the magic went from
+`ZWIKI1` to `ZWIKI2` — because every byte in it is still a plausible posting
+and the failure would otherwise be wrong answers rather than an error.
 
 ## Facts, for the oracle this is not
 
