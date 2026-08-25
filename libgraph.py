@@ -335,6 +335,60 @@ def from_categories(db: sqlite3.Connection, source: str, resolve: Resolver,
     return [(title, target) for title, (_rank, target) in best.items()]
 
 
+#: An ISO 3166-2 subdivision code names its country in the half before the
+#: dash, by definition of the standard. Hampshire records `iso_code = GB-HAM`
+#: and records no container at all, and it is not alone: 2,648 climbs - 6.3% of
+#: every person with a birthplace - stop at a place carrying one of these.
+SUBDIVISION_CODE = re.compile(r"^([A-Z]{2})-[A-Z0-9]{1,3}$")
+
+#: Where a country states its own code. `iso3166code` is the standard itself;
+#: `cctld` is the same two letters for all but a handful, and covers four times
+#: as many countries here.
+COUNTRY_CODE_FIELDS = ("iso3166code", "cctld")
+
+#: The two disagree for a few countries and the United Kingdom is the one that
+#: matters: ISO says GB, the internet says .uk.
+CCTLD_ISO = {"uk": "GB"}
+
+
+def _claimed_countries(db: sqlite3.Connection, source: str,
+                       resolve: Resolver) -> set[str]:
+    """Everything enough infoboxes call a country, before any refinement."""
+    counts: dict[str, int] = {}
+    for (value,) in db.execute(
+            "SELECT value FROM fact WHERE source = ? AND property = ?",
+            (source, TYPE_FIELD["country"])):
+        target = resolve(value)
+        if target:
+            counts[target] = counts.get(target, 0) + 1
+    return {e for e, n in counts.items() if n >= TYPE_FLOOR}
+
+
+def country_codes(db: sqlite3.Connection, source: str,
+                  countries: set[str]) -> dict[str, str]:
+    """ISO code -> the corpus's name for that country.
+
+    Read off the countries' own articles rather than written down here. A
+    hardcoded table would be 249 lines that go stale and might not match any
+    title in this corpus; this is in the corpus's own spelling by construction,
+    and it names 91 of them.
+    """
+    out: dict[str, str] = {}
+    for prop in COUNTRY_CODE_FIELDS:
+        for subject, value in db.execute(
+                "SELECT subject, value FROM fact WHERE source = ? "
+                "AND property = ?", (source, prop)):
+            if subject not in countries:
+                continue
+            # `cctld = ch, .swiss` and `cctld = it d` both occur: take the
+            # first token however it was separated, and drop a leading dot.
+            first = re.split(r"[,\s]+", value.strip())[0].lstrip(".")
+            if not re.fullmatch(r"[A-Za-z]{2}", first):
+                continue
+            out.setdefault(CCTLD_ISO.get(first.lower(), first.upper()), subject)
+    return out
+
+
 def build(db: sqlite3.Connection, source: str,
           report: Callable[[str], None] = lambda _m: None) -> tuple[int, int]:
     """Populate ``edge`` for one source from its facts. Returns (edges, dropped)."""
@@ -374,11 +428,49 @@ def build(db: sqlite3.Connection, source: str,
         for relation, options in relations.items():
             for _rank, _ordinal, value in sorted(options):
                 target = resolve(value)
-                if target is not None:
+                # A thing is not inside itself. `Los Angeles located_in Los
+                # Angeles` stopped 486 climbs where they stood, because the
+                # type test fires before the step - so "what country was X
+                # born in" answered Los Angeles. Falling through to the next
+                # candidate keeps whatever the page said second.
+                if target is not None and target != subject:
                     rows.append((source, subject, relation, target))
                     break
             else:
                 dropped += 1        # no field for it named an article we hold
+
+    # A place that named no container it holds, but that states an ISO 3166-2
+    # subdivision code, is in the country the half before the dash names. That
+    # is what the standard means, and 2,648 climbs - 6.3% of everyone with a
+    # birthplace - stop at such a place: Washington (state), Moscow, Maryland
+    # and Baden-Wurttemberg record `US-WA`, `RU-MOW`, `US-MD`, `DE-BW` and
+    # nothing else at all.
+    #
+    # A fallback, after every real field has been tried: a container the page
+    # states is better evidence than one the standard implies.
+    #
+    # The country set here is the raw one, counted from `country` fields alone.
+    # `types()` refines it by asking which claimed countries the *edges* say sit
+    # inside another, so it cannot run until the edges exist - and this has to
+    # run before them. The refinement is not needed for this: a place demoted
+    # for being inside a country does not also carry a ccTLD.
+    have_edge = {subject for _s, subject, relation, _o in rows
+                 if relation == "located_in"}
+    codes = country_codes(db, source, _claimed_countries(db, source, resolve))
+    from_code = 0
+    for subject, value in db.execute(
+            "SELECT subject, value FROM fact WHERE source = ? "
+            "AND property LIKE 'iso%'", (source,)):
+        if subject in have_edge or subject not in titles:
+            continue
+        m = SUBDIVISION_CODE.match(value.strip())
+        named = codes.get(m.group(1)) if m else None
+        if named and named != subject:
+            rows.append((source, subject, "located_in", named))
+            have_edge.add(subject)
+            from_code += 1
+    if from_code:
+        report(f"  {from_code:,} places placed by their ISO code")
 
     db.execute("DELETE FROM edge WHERE source = ?", (source,))
     db.executemany("INSERT OR REPLACE INTO edge VALUES (?, ?, ?, ?)", rows)
@@ -451,7 +543,24 @@ def types(db: sqlite3.Connection, source: str,
             target = resolve(value)
             if target:
                 counts[(kind, target)] = counts.get((kind, target), 0) + 1
-    return sorted(k for k, n in counts.items() if n >= TYPE_FLOOR)
+    # Three infoboxes calling a thing a country is a low bar for a corpus this
+    # size: California, Chicago and Los Angeles all clear it, and a climb that
+    # reaches one stops and answers it. So a claim is dropped when the same
+    # graph contradicts it - and the contradiction that counts is being inside
+    # *another country*, not being inside anything at all. France records that
+    # it is in Europe and is still a country; California records that it is in
+    # the United States and is not.
+    #
+    # Six entities, and 1,294 of 19,238 answered climbs: before this, "what
+    # country was X born in" answered Chicago 428 times and California 312.
+    claimed = {k[1] for k, n in counts.items()
+               if n >= TYPE_FLOOR and k[0] == "country"}
+    within = dict(db.execute(
+        "SELECT subject, object FROM edge WHERE source = ? AND relation = ?",
+        (source, "located_in")))
+    demoted = {e for e in claimed if within.get(e) in claimed}
+    return sorted(k for k, n in counts.items()
+                  if n >= TYPE_FLOOR and k[1] not in demoted)
 
 
 def is_a(db: sqlite3.Connection, source: str, entity: str, kind: str) -> bool:

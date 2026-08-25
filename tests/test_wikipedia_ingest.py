@@ -134,9 +134,11 @@ def test_provenance_is_recorded(ingest, tmp_path):
     meta = dict(db.execute("SELECT key, value FROM meta").fetchall())
     assert meta["simplewiki.dump"] == dump.name
     assert meta["simplewiki.articles"] == "1"
-    # name, writer, genre, and premiere - the last of which is a `{{start
-    # date}}` that this ingest reads and an older one deleted.
-    assert meta["simplewiki.facts"] == "4"
+    # writer, genre and premiere - the last a `{{start date}}` this ingest
+    # reads and an older one deleted. `name = Hamlet` on the page called
+    # Hamlet is not among them: a fact whose value is its own subject says
+    # nothing, and 4.7% of this corpus was that.
+    assert meta["simplewiki.facts"] == "3"
     assert len(meta["simplewiki.digest"]) == 16
     assert meta["schema_version"] == str(ingest.SCHEMA_VERSION)
 
