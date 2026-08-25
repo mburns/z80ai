@@ -413,3 +413,53 @@ def test_rebuilding_replaces_types_rather_than_accumulating(db):
     before = db.execute("SELECT COUNT(*) FROM entity_type").fetchone()[0]
     libgraph.build(db, "w")
     assert db.execute("SELECT COUNT(*) FROM entity_type").fetchone()[0] == before
+
+
+# --- placing somewhere by the code it prints ----------------------------------
+
+
+def test_a_place_with_only_an_iso_code_is_still_placed(db):
+    """Washington (state) records `iso_code = US-WA` and no container at all,
+    and 2,648 climbs - 6.3% of everyone with a birthplace - stop at a place
+    like it. The half before the dash names the country, by definition."""
+    load(db, ["Washington (state)", "United States"],
+         [("Washington (state)", "iso_code", "US-WA"),
+          ("United States", "cctld", "us")]
+         + [(f"Filler {i}", "country", "United States") for i in range(3)])
+    assert libgraph.follow(db, "w", "Washington (state)",
+                           ["located_in"]).value == "United States"
+
+
+def test_a_stated_container_beats_the_code(db):
+    """A fallback and only a fallback: what the page says outranks what the
+    standard implies."""
+    load(db, ["Bavaria", "Germany", "Europe"],
+         [("Bavaria", "iso_code", "DE-BY"),
+          ("Bavaria", "country", "Europe"),
+          ("Germany", "cctld", "de")]
+         + [(f"Filler {i}", "country", "Germany") for i in range(3)])
+    assert libgraph.follow(db, "w", "Bavaria", ["located_in"]).value == "Europe"
+
+
+def test_a_code_naming_no_country_here_places_nothing(db):
+    """`RU-MOW` is a valid code, and Russia's article in this corpus states no
+    code of its own, so Moscow stays unplaced rather than guessing."""
+    load(db, ["Moscow", "Russia"], [("Moscow", "iso", "RU-MOW")])
+    assert not libgraph.follow(db, "w", "Moscow", ["located_in"]).complete
+
+
+def test_the_country_code_map_reads_the_corpus(db):
+    """The table is not written down here: a country states its own code, and
+    the map is in the corpus's own spelling by construction."""
+    load(db, ["Germany", "United Kingdom"],
+         [("Germany", "cctld", "de"), ("United Kingdom", "cctld", "uk")]
+         + [(f"F{i}", "country", "Germany") for i in range(3)]
+         + [(f"G{i}", "country", "United Kingdom") for i in range(3)])
+    titles = {t for (t,) in db.execute("SELECT title FROM article")}
+    resolve = libgraph.Resolver(titles, {})
+    codes = libgraph.country_codes(db, "w", libgraph._claimed_countries(
+        db, "w", resolve))
+    assert codes["DE"] == "Germany"
+    # ISO says GB where the internet says .uk, and the standard wins.
+    assert codes["GB"] == "United Kingdom"
+    assert "UK" not in codes
