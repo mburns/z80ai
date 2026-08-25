@@ -20,10 +20,28 @@ A chain question can only be asked about a subject the chain can start from:
 not apply", and the first is the one worth fixing. So each path reports:
 
     startable   subjects holding the path's first relation
+    moot        of those, the walks that stopped where no answer could exist
     complete    of those, the walks that reached a value
     of corpus   startable/articles, so the conditional share stays honest
 
 `libgraph.py` quotes the middle column, which is why it is the one to compare.
+
+## Why `moot` had to be split out of the misses
+
+The same argument one hop further in. Holding the first relation makes a
+question askable; it does not make it answerable. `created_by born_in` starts
+from a work, steps to whoever made it, and asks where *they* were born - and a
+third of the time the creator is Microsoft, ABBA or Capcom. A band has no
+birthplace to be missing.
+
+Counted as misses, those read as a graph failing: the path scored **51.7%**
+while every comparable chain sat near 77%. Counted apart, it scores **74.3%**
+and the remaining 1,976 stalls are real gaps in real people. Nothing about the
+graph changed - the oracle already declined these and fell back to search, and
+the only thing that was wrong was the scoreboard.
+
+So `rate` is over `startable - moot`, and `moot` is printed rather than
+folded away, because a path made mostly of them is worth knowing about too.
 
 **A falling rate is not always a loss, so read the counts beside it.** Anything
 that makes more subjects startable adds the ones that were failing for a reason
@@ -117,27 +135,42 @@ def head_subjects(db: sqlite3.Connection, source: str,
 
 
 def score_path(db: sqlite3.Connection, source: str, steps: list[str],
-               subjects: list[str]) -> dict[str, Any]:
+               subjects: list[str],
+               persons: set[str] | None = None) -> dict[str, Any]:
     """Walk ``steps`` from every subject and tally where the walks stopped.
 
     `stopped_at` is the point of the whole file: a path that fails is failing
     at one particular hop, and which one decides what would fix it. A chain
     losing everything at its second hop wants coverage; one losing subjects at
     its first wants a property mapped.
+
+    `moot` is the walks that stopped somewhere no answer could exist - the hop
+    needed a person and reached a band. Those are not coverage the graph is
+    missing, and counting them as misses understates the path: 61% of what
+    `created_by born_in` could not finish was a question about Microsoft, ABBA
+    or Capcom. They are reported apart from `stopped_at` rather than dropped,
+    because a path made almost entirely of them is worth knowing about too.
     """
-    complete = 0
+    persons = persons if persons is not None else set()
+    complete = moot = 0
     stopped_at: dict[str, int] = {}
     for subject in subjects:
         answer = libgraph.follow(db, source, subject, steps)
         if answer.complete:
             complete += 1
+        elif (answer.missing in libgraph.NEEDS_PERSON
+                and answer.at is not None and answer.at not in persons):
+            moot += 1
         else:
             key = answer.missing or "?"
             stopped_at[key] = stopped_at.get(key, 0) + 1
+    askable = len(subjects) - moot
     return {
         "startable": len(subjects),
+        "moot": moot,
+        "askable": askable,
         "complete": complete,
-        "rate": complete / len(subjects) if subjects else 0.0,
+        "rate": complete / askable if askable else 0.0,
         "stopped_at": dict(sorted(stopped_at.items(),
                                   key=lambda kv: -kv[1])),
     }
@@ -323,11 +356,14 @@ def measure(db: sqlite3.Connection, source: str,
         "candidates": candidates(db, source),
     }
 
+    persons = libgraph.people(db, source)
+    result["reach"]["people"] = len(persons)
+
     for label, steps in paths_to_score():
         subjects = head_subjects(db, source, steps[0])
         if sample and len(subjects) > sample:
             subjects = sorted(rng.sample(subjects, sample))
-        scored = score_path(db, source, steps, subjects)
+        scored = score_path(db, source, steps, subjects, persons)
         scored["of_corpus"] = (scored["startable"] / result["reach"]["articles"]
                                if result["reach"]["articles"] else 0.0)
         result["paths"][label] = scored
@@ -401,18 +437,23 @@ def report(now: dict[str, Any], was: dict[str, Any] | None = None) -> None:
     # is 100% whatever happens, and everything that moved moved in the count.
     # Showing only the rate reports a change of nothing for exactly the rows a
     # newly-mapped property or a recovered value lands on.
-    print(f"\n  {'path':<22}{'startable':>10}{'+/-':>8}"
+    # `moot` sits between the two counts because that is where it acts: it is
+    # subtracted from `startable` to give the denominator `rate` uses. A walk
+    # counted there is one the graph was never going to answer and should not
+    # be marked down for - where a band was born, when a company died.
+    print(f"\n  {'path':<22}{'startable':>10}{'+/-':>8}{'moot':>8}"
           f"{'answered':>10}{'+/-':>8}{'rate':>7}{'+/-':>9}")
     for label, p in now["paths"].items():
         b = was["paths"].get(label) if was else None
         print(f"  {label:<22}{p['startable']:>10,}"
               f"{delta(p['startable'], b['startable'] if b else None, as_pct=False):>8}"
+              f"{p['moot']:>8,}"
               f"{p['complete']:>10,}"
               f"{delta(p['complete'], b['complete'] if b else None, as_pct=False):>8}"
               f"{pct(p['rate']):>7}"
               f"{delta(p['rate'] * 100, b['rate'] * 100 if b else None):>9}")
 
-    print("\n  where incomplete walks stopped")
+    print("\n  where incomplete walks stopped   (moot walks excluded)")
     for label, p in now["paths"].items():
         if p["stopped_at"] and p["rate"] < 1.0:
             worst = ", ".join(f"{k} ({v:,})"

@@ -107,6 +107,95 @@ def test_an_incomplete_walk_is_attributed_to_the_hop_that_broke(db):
     assert scored["stopped_at"] == {"in_country": 1}      # Carol, via London
 
 
+# --- questions with no answer -------------------------------------------------
+
+
+@pytest.mark.parametrize("category,is_person", [
+    ("1935 births", True),
+    ("2016 deaths", True),
+    ("Living people", True),
+    ("1990s births", True),
+    ("Musical groups from Ohio", False),
+    ("Software companies", False),
+    ("Deaths from cancer", False),        # about a cause, not a person
+])
+def test_which_categories_make_a_person(db, category, is_person):
+    """`people` reads categories as well as infoboxes, because a birth date is
+    decisive and only 45.7% of articles carry any infobox at all. The tail has
+    to stay tight: `Deaths from cancer` is not a birth-year category and the
+    articles in it are diseases."""
+    db.execute("INSERT INTO article (source, title, lead) VALUES ('w', 'X', '')")
+    db.execute("INSERT INTO category (source, title, name) VALUES ('w', 'X', ?)",
+               (category,))
+    assert ("X" in libgraph.people(db, "w")) is is_person
+
+
+def test_a_birthplace_alone_already_says_person(db):
+    persons = libgraph.people(db, "w")
+    assert {"Alice", "Bob", "Carol"} <= persons
+    assert "France" not in persons
+
+
+def test_asking_a_band_where_it_was_born_is_not_a_miss(db):
+    """The finding this exists for. `created_by born_in` read 51.7% because
+    61% of what it could not finish was a question about Microsoft, ABBA or
+    Capcom - and a band has no birthplace to be missing. Counting those as
+    misses marked the graph down for the only answer it could give."""
+    db.execute("INSERT INTO article (source, title, lead) "
+               "VALUES ('w', 'Sonic Boom', '')")
+    db.execute("INSERT INTO article (source, title, lead) "
+               "VALUES ('w', 'Ballad', '')")
+    # Two works: one by a person the graph can place, one by a band.
+    db.executemany("INSERT OR REPLACE INTO edge VALUES ('w', ?, ?, ?)",
+                   [("Ballad", "created_by", "Alice"),
+                    ("Anthem", "created_by", "Sonic Boom")])
+    db.execute("INSERT INTO article (source, title, lead) "
+               "VALUES ('w', 'Anthem', '')")
+
+    subjects = coverage.head_subjects(db, "w", "created_by")
+    persons = libgraph.people(db, "w")
+    scored = coverage.score_path(db, "w", ["created_by", "born_in"],
+                                 subjects, persons)
+
+    assert scored["startable"] == 2
+    assert scored["moot"] == 1               # Anthem, whose creator is a band
+    assert scored["askable"] == 1
+    assert scored["complete"] == 1           # Ballad, via Alice
+    assert scored["rate"] == 1.0             # not 50%
+    assert scored["stopped_at"] == {}        # the band is not a broken hop
+
+
+def test_a_person_without_a_birthplace_is_still_a_miss(db):
+    """The correction must not swallow the thing worth fixing. Dave is a person
+    - the corpus files him under a birth year - and the graph simply has no
+    birthplace for him. That is coverage, and it stays counted."""
+    db.execute("INSERT INTO article (source, title, lead) "
+               "VALUES ('w', 'Dave', '')")
+    db.execute("INSERT INTO article (source, title, lead) "
+               "VALUES ('w', 'Sonata', '')")
+    db.execute("INSERT INTO category (source, title, name) "
+               "VALUES ('w', 'Dave', '1935 births')")
+    db.execute("INSERT OR REPLACE INTO edge VALUES "
+               "('w', 'Sonata', 'created_by', 'Dave')")
+
+    persons = libgraph.people(db, "w")
+    assert "Dave" in persons
+
+    scored = coverage.score_path(db, "w", ["created_by", "born_in"],
+                                 ["Sonata"], persons)
+    assert scored["moot"] == 0
+    assert scored["stopped_at"] == {"born_in": 1}
+
+
+def test_the_walk_says_where_it_stopped_not_only_what_was_missing(db):
+    """`missing` alone cannot tell a gap from a category error, which is the
+    whole basis of the correction above."""
+    answer = libgraph.follow(db, "w", "Carol", ["born_in", "in_country"])
+    assert not answer.complete
+    assert answer.missing == "in_country"
+    assert answer.at == "London"
+
+
 # --- the hop count ------------------------------------------------------------
 
 
