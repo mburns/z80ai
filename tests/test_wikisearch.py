@@ -258,3 +258,47 @@ def test_the_accumulator_clears_the_image():
 def test_a_corpus_too_large_to_score_fails_at_build_time():
     with pytest.raises(AssertionError, match="too large to score"):
         buildwikibin.build(600_000)
+
+
+# --- notability, which decides which article someone meant --------------------
+
+
+def test_alternate_names_outrank_a_shorter_page_that_repeats_the_word():
+    """The bug this exists for, in miniature.
+
+    BM25 rewards a short document that repeats a term, and neither is evidence
+    of being the article someone meant. Over twenty question probes on the full
+    corpus every miss had this shape - "Albert Einstein Square" over Albert
+    Einstein, "East Berlin" over Berlin, "Napoleon II" over Napoleon - because
+    the derived page is a stub that says the name twice.
+
+    Wikipedia's editors have already voted, by writing redirects.
+    """
+    titles = ["Napoleon", "Napoleon II"]
+    leads = [
+        "Napoleon was a French military leader who became emperor. "
+        "He fought many wars across Europe and changed its borders and laws.",
+        "Napoleon II was the son of Napoleon.",
+    ]
+    aliases = {0: ["Napoleon Bonaparte", "Bonaparte", "Emperor Napoleon"],
+               1: ["Napoleon the Second"]}
+
+    unfamed = libsearch.build(titles, leads, {})
+    famed = libsearch.build(titles, leads, aliases)
+
+    def best(index):
+        scores = {p.doc: p.weight for p in index.postings["napoleon"]}
+        return max(scores, key=lambda d: scores[d])
+
+    assert best(unfamed) == 1, "the stub should win without notability"
+    assert best(famed) == 0, "and lose once its alternate names are counted"
+
+
+def test_notability_does_not_invent_a_match():
+    """A famous article that never mentions the term must stay unmatched -
+    the boost scales a score, it does not create one."""
+    index = libsearch.build(
+        ["Famous", "Obscure"], ["a b c", "telephone"],
+        {0: [f"alias {i}" for i in range(20)]})
+    docs = {p.doc for p in index.postings["telephone"]}
+    assert docs == {1}
