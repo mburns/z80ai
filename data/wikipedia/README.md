@@ -21,6 +21,29 @@ python data/wikipedia/ingest.py simplewiki-20260801-pages-articles.xml.bz2
 python buildwikisearch.py --out dist/WIKI
 ```
 
+For a card that answers questions rather than only finding articles, train the
+relation classifier and pass it to step 3:
+
+```bash
+python data/questions/relations.py > relations.txt
+python classify.py --file relations.txt -o relations.npz \
+       --accum-bits 24 --balance
+python buildwikisearch.py --out dist/WIKI --relations relations.npz
+```
+
+That writes a fourth file, `WIKI.GRF`, and a binary that walks it. **Pass the
+same `--limit` to every build of one card.** A document id is a position in the
+article list, so a limited card renumbers everything; the header carries a
+digest of the titles and the program refuses a mismatched pair, because a wrong
+one has no other symptom — every id in it is still some article.
+
+| | full corpus |
+|---|---|
+| `WIKI.IDX` | 33.1 MB |
+| `WIKI.DAT` | 74.5 MB |
+| `WIKI.GRF` | 2.1 MB — 150,335 edges |
+| `WIKI.bin` | 95.6 KB |
+
 `data/simple_english_wikipedia.db` is **not in git** — it is 337MB of derived
 data, and step 2 rebuilds it from any snapshot. The dump is not in git either.
 What *is* committed is everything needed to turn one into the other.
