@@ -17,10 +17,15 @@ Three parts, each doing only what it measurably wins at:
 It is wrong often, in two different ways, and both are worth knowing about.
 
 A two-hop question has to survive the classifier recognising that it *is* two
-hops (43.8% on phrasings the model never saw) and then a graph that can
-actually complete the walk (about 45%, because 54% of articles carry no
-infobox). Those compound. This is not a machine that answers chained questions
-reliably; it is a machine that sometimes does, and can tell you when it did.
+hops (about 50% on phrasings the model never saw) and then a graph that can
+actually complete the walk (77%, since the graph learned to read value
+templates and categories). Those compound. This is not a machine that answers
+chained questions reliably; it is a machine that sometimes does, and can tell
+you when it did.
+
+"About 50%" is deliberately vague: over five seeds the same measurement ranges
+from 43.1% to 56.2% on its 320 held-out questions, so a decimal place here
+would be reporting the seed. `data/questions/relations.py` has the numbers.
 
 What it does with the failures is the point. A broken walk reports what it
 *did* learn, so the machine says "Edinburgh. The archive does not record what

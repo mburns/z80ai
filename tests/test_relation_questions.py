@@ -58,7 +58,13 @@ def test_every_climb_steps_a_relation_that_exists():
 
 
 def test_held_out_phrasings_never_appear_in_training(db):
-    """The whole point. Without this the 43.8% would drift up unnoticed."""
+    """The whole point. Without this the score would drift up unnoticed.
+
+    It guards the separation and not the number, which is the right division:
+    the number moves 13 points across seeds on 320 questions, so no assertion
+    on its value could be both true and useful. The separation is exact and
+    can be asserted exactly.
+    """
     train, unseen = relations.chains(db, "simplewiki", 5, hold_out=2)
     assert train and unseen
 
