@@ -219,6 +219,40 @@ def write_index(index: Index, path: Path) -> dict[str, int]:
 
     Each bucket's chain is contiguous, so a query term is one seek and one
     sequential read - no second lookup, no pointer chasing across the card.
+
+    ## Where the 33.1 MB goes
+
+    Measured over the full 283,997-article card, because the obvious guess is
+    wrong. `NUM_BUCKETS` is 1,048,576 against 306,566 terms and looks like the
+    over-provisioned thing to cut:
+
+        posting data     25,111,312   75.9%   6,277,828 x (u24 doc + u8 weight)
+        bucket table      4,194,304   12.7%   1,048,576 x u32
+        term headers      3,513,052   10.6%   length, term, count
+        chain ends          265,111    0.8%
+
+    The table is an eighth of the file. Halving it saves 2 MB of a 107 MB card
+    and doubles a chain that currently averages 0.29 terms per bucket, which is
+    a poor trade for the thing it costs. The postings are three quarters.
+
+    ## What the postings would give up
+
+    Doc ids ascending within a term - checked, not assumed - and the gaps are
+    small because a term's articles cluster:
+
+        gap fits in 1 byte    3,929,064   65.8%
+        gap needs 2 bytes     1,973,524   33.1%
+        gap needs 3 bytes        68,674    1.2%
+
+    Storing the gap rather than the id, length-tagged, takes the doc field from
+    3 bytes to about 1.36 and the file from 33.1 MB to roughly 23 MB - a 30%
+    saving on the index and 9% on the card. Decoding is ``running += gap``,
+    which is the one operation this design already says it is willing to pay;
+    the length tag costs a compare rather than arithmetic.
+
+    Not done here, because the reader is generated eZ80 in ``buildwikibin.py``
+    and the format is shared with a program that has to agree with it byte for
+    byte. Written down so the next person starts from the measurement.
     """
     chains: dict[int, list[str]] = {}
     for term in sorted(index.postings):           # sorted: reproducible output
