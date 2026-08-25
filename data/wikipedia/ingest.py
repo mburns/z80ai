@@ -15,7 +15,8 @@ rather than merging into them - which is what makes re-running it a sync, and
 what makes deletions propagate. The swap happens in one transaction, so an
 interrupted run leaves the previous corpus intact.
 
-Five tables carry the corpus:
+Five tables carry the corpus, and a sixth carries what was read out of prose
+rather than out of a table:
 
   article   what the machine can answer with. Title plus the opening sentences,
             because a 300-character lead is about a third of a 40x24 screen and
@@ -33,6 +34,11 @@ Five tables carry the corpus:
             containment is written down at all - `Infobox U.S. state` has no
             country field, so Michigan says it is in the United States only by
             being filed under `1837 establishments in the United States`.
+  derived   facts read out of the lead text, each tagged with the method that
+            produced it. Kept apart from `fact` so that nothing inferred can be
+            mistaken for something the encyclopedia tabulated, and so that two
+            extractors can be measured against each other. Ingest never writes
+            it; `birthplaces.py` does.
 
 ## Normalizing, and where it stops
 
@@ -75,7 +81,7 @@ import libgraph
 DB_PATH = Path(__file__).resolve().parent.parent / "simple_english_wikipedia.db"
 #: Bumped whenever the table definitions change. The database is derived data,
 #: so a mismatch is resolved by re-ingesting rather than by migrating.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 #: Characters of lead text kept per article. A 40x24 Agon screen holds about
 #: 960, so this is a third of one - enough to say what a thing is.
@@ -230,6 +236,27 @@ CREATE TABLE IF NOT EXISTS property (
     PRIMARY KEY (source, name),
     CHECK (uses > 0)
 ) {STRICT}WITHOUT ROWID;
+
+-- Facts read out of prose rather than out of an infobox, kept apart from
+-- `fact` on purpose: every row names the method that produced it, so nothing
+-- derived can ever be mistaken for something the encyclopedia tabulated. A
+-- reader wanting only what Wikipedia stated reads `fact` and is done.
+--
+-- `method` is part of the key rather than a column beside it, so two
+-- extractors can disagree about the same person and both be kept - which is
+-- what makes one measurable against the other. See `birthplaces.py`.
+CREATE TABLE IF NOT EXISTS derived (
+    source   TEXT NOT NULL,
+    subject  TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    object   TEXT NOT NULL,
+    method   TEXT NOT NULL,
+    PRIMARY KEY (source, subject, relation, method),
+    CHECK (object <> ''),
+    CHECK (method <> '')
+) {STRICT}WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS derived_method ON derived (source, method);
 
 CREATE INDEX IF NOT EXISTS property_unmapped
     ON property (source, uses DESC) WHERE relation IS NULL;
