@@ -106,6 +106,9 @@ listing rather than an exception.
 | `test_wikisearch.py` | The search card format, and that the eZ80 program and `libsearch` agree on what it says |
 | `test_wikipedia_ingest.py` | Turning a MediaWiki dump into the database, and the markup cases that reached the screen before they were fixed |
 | `test_wikipedia_normalize.py` | Cleaning a fact on the way in: what a property name may look like, when a trailing digit is an index and when it is a unit, what type a value is, and what the CHECK constraints refuse |
+| `test_graphcard.py` | The fact graph as a card file, and that `CardGraph` answers what `libgraph` answers — including the corpus digest that is the only guard against a graph whose ids mean a different article list |
+| `test_graphwalk.py` | The hop on the machine: every edge in the fixture, both directions, against the reference. A binary search off by one record returns some other article rather than failing, so agreement is the only signal |
+| `test_wikioracle.py` | The four stages as one program — search, classify, walk, answer — and that a question the graph cannot answer still gets the article |
 
 ## In CI
 
