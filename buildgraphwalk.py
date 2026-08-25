@@ -39,7 +39,7 @@ would call 0x010000 zero, so the test is `SBC HL,DE` against zero instead.
 from __future__ import annotations
 
 from libez80 import EZ80Builder
-from libgraphcard import EDGE_SIZE, PLAIN
+from libgraphcard import EDGE_SIZE, INVERSE, PLAIN, RELATION
 
 #: Every walk cell is 24-bit, which is a word on this machine.
 CELLS = (
@@ -53,6 +53,8 @@ CELLS = (
     "GW_CLIMB",     # climbs left before giving up
     "GW_TYPEAT",    # byte offset of the current type's id list
     "GW_TYPEN",     # how many ids are in it
+    "GW_FWD",       # byte offset of the forward table
+    "GW_REV",       # and of the reverse one
 )
 
 #: Matches libgraphcard.CLIMB_LIMIT. A containment hierarchy is shallow, and a
@@ -338,8 +340,23 @@ def emit_walk(b: EZ80Builder, num_edges: int, types_at: int, num_types: int,
     b.ld_mem_label_hl("GW_LEFT")
 
     b.ld_hl_mem_label("GW_STEPS")
-    b.ld_a_hl()                        # relation
+    b.ld_a_hl()                        # relation, with the direction flag
+    b.push_af()
+    b.and_n(RELATION)
     b.ld_mem_label_a("GW_REL")
+    # The high bit says which table to search. "Who was born in Edinburgh" is
+    # the same row from the other end, and the card holds it sorted both ways.
+    b.pop_af()
+    b.and_n(INVERSE)
+    b.jp_z("GW_STEP_FWD")
+    b.ld_hl_mem_label("GW_REV")
+    b.jp("GW_STEP_BASE")
+    b.label("GW_STEP_FWD")
+    b.ld_hl_mem_label("GW_FWD")
+    b.label("GW_STEP_BASE")
+    b.ld_mem_label_hl("GW_BASE")
+
+    b.ld_hl_mem_label("GW_STEPS")
     b.inc_hl()
     b.ld_a_hl()                        # kind
     b.inc_hl()
