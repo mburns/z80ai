@@ -52,7 +52,7 @@ from libez80 import AGON_LOAD_ADDR, AGON_SRAM_TOP, EZ80Builder, agon_header
 if TYPE_CHECKING:
     from libinfer import BuildInputs
 
-from libsearch import MAGIC, MAX_QUERY_TERMS, NUM_BUCKETS
+from libsearch import MAGIC, MAX_QUERY_TERMS, MAX_WEIGHT, NUM_BUCKETS
 
 MOS_API = 0x08
 MOS_OUTCHAR = 0x10
@@ -609,10 +609,10 @@ def _emit_score_term(b: EZ80Builder, acc_base: int) -> None:
 
     b.label("ST_ADVANCE")
     b.call("ST_COUNT")
-    # Then skip 4 * NPOST bytes of postings.
+    # Then skip the payload. It is a byte count now rather than a posting
+    # count, which is the whole reason the header carries bytes: once postings
+    # vary in width, a count no longer says how far a colliding term reaches.
     b.ld_hl_mem_label("NPOST")
-    b.add_hl_hl()
-    b.add_hl_hl()
     b.ld_de_mem_label("SEEKOFF")
     b.add_hl_de()
     b.ld_mem_label_hl("SEEKOFF")
@@ -624,20 +624,32 @@ def _emit_score_term(b: EZ80Builder, acc_base: int) -> None:
     b.ret()
 
     # Stream the postings in blocks, adding each weight into its slot.
+    #
+    # A posting is a tag byte and one to three gap bytes, so unlike the flat
+    # four it replaced it can straddle the end of a block. Rather than stitch
+    # one across the boundary, the file cursor advances by the bytes that held
+    # *whole* postings and the straggler is read again at the head of the next
+    # block. That re-reads at most three bytes per CHUNK, and cannot stall: the
+    # first posting of a block always fits, because a block is either a whole
+    # CHUNK - far longer than any posting - or the last few bytes of a payload
+    # that ends on a posting boundary by construction.
     b.label("ST_STREAM")
+    b.ld_hl_nn(0)
+    b.ld_mem_label_hl("RUNDOC")      # every gap is measured from zero
+
     b.label("STS_BLOCK")
-    b.ld_hl_mem_label("NPOST")
+    b.ld_hl_mem_label("NPOST")       # payload bytes still unread
     b.ld_de_nn(0)
     b.or_a()
     b.sbc_hl_de()
     b.ret_z()
 
     b.ld_hl_mem_label("NPOST")
-    b.ld_de_nn(CHUNK // 4)
+    b.ld_de_nn(CHUNK)
     b.or_a()
     b.sbc_hl_de()
     b.jr_c("STS_PART")
-    b.ld_hl_nn(CHUNK // 4)
+    b.ld_hl_nn(CHUNK)
     b.jr("STS_HAVE")
     b.label("STS_PART")
     b.ld_hl_mem_label("NPOST")
@@ -651,20 +663,117 @@ def _emit_score_term(b: EZ80Builder, acc_base: int) -> None:
     b.ld_c_a()
     b.ld_hl_label("IOBUF")
     b.ld_de_mem_label("NTHIS")
-    b.add_hl_hl()                    # bytes = 4 * postings
-    b.ld_hl_mem_label("NTHIS")
-    b.add_hl_hl()
-    b.add_hl_hl()
-    b.push_hl()
-    b.pop_de()
-    b.ld_hl_label("IOBUF")
     b.call("READ")
 
-    # Advance the file cursor past what we just consumed.
+    # Add each (gap, weight) into the accumulator, saturating at 255, and flag
+    # the article's 256-doc page so the clear and report passes visit only
+    # pages this query touched.
+    b.ld_ix_label("IOBUF")
     b.ld_hl_mem_label("NTHIS")
-    b.add_hl_hl()
-    b.add_hl_hl()
-    b.ld_de_mem_label("SEEKOFF")
+    b.ld_mem_label_hl("NLEFT")
+    b.ld_hl_nn(0)
+    b.ld_mem_label_hl("CONSUMED")
+
+    b.label("STS_ONE")
+    b.ld_hl_mem_label("NLEFT")
+    b.ld_de_nn(0)
+    b.or_a()
+    b.sbc_hl_de()
+    b.jp_z("STS_NEXT")
+
+    # Bits 5 and 6 of the tag hold one less than the gap's width, so the three
+    # cases are two compares - no shift, and no arithmetic at all.
+    b.ld_a_ixd(0)
+    b.and_n(0x60)
+    b.jp_z("STS_W1")
+    b.cp_n(0x20)
+    b.jp_z("STS_W2")
+
+    b.ld_hl_mem_label("NLEFT")       # a three-byte gap: four bytes in all
+    b.ld_de_nn(4)
+    b.or_a()
+    b.sbc_hl_de()
+    b.jp_c("STS_NEXT")
+    b.ld_hl_ixd(1)
+    b.ld_de_nn(4)
+    b.jp("STS_GAP")
+
+    b.label("STS_W2")
+    b.ld_hl_mem_label("NLEFT")
+    b.ld_de_nn(3)
+    b.or_a()
+    b.sbc_hl_de()
+    b.jp_c("STS_NEXT")
+    b.ld_hl_nn(0)
+    b.ld_l_ixd(1)
+    b.ld_h_ixd(2)
+    b.ld_de_nn(3)
+    b.jp("STS_GAP")
+
+    b.label("STS_W1")
+    b.ld_hl_mem_label("NLEFT")
+    b.ld_de_nn(2)
+    b.or_a()
+    b.sbc_hl_de()
+    b.jp_c("STS_NEXT")
+    b.ld_hl_nn(0)
+    b.ld_l_ixd(1)
+    b.ld_de_nn(2)
+
+    # HL is the gap and DE the posting's size. The running total is the whole
+    # of the decoding: an add, which is what this card has always been willing
+    # to pay for.
+    b.label("STS_GAP")
+    b.push_de()
+    b.ex_de_hl()
+    b.ld_hl_mem_label("RUNDOC")
+    b.add_hl_de()
+    b.ld_mem_label_hl("RUNDOC")
+
+    b.ld_de_nn(0)
+    b.ld_a_mem_label("RUNDOC", 1)
+    b.ld_e_a()
+    b.ld_a_mem_label("RUNDOC", 2)
+    b.ld_d_a()
+    b.ld_hl_label("PAGE_TAB")
+    b.add_hl_de()
+    b.ld_hl_n(1)
+
+    b.ld_hl_mem_label("RUNDOC")
+    b.ld_bc_nn(acc_base)
+    b.add_hl_bc()
+    b.push_hl()
+    b.pop_iy()
+    b.ld_a_iyd(0)
+    b.ld_c_a()
+    b.ld_a_ixd(0)
+    b.and_n(MAX_WEIGHT)              # the five bits the tag shares
+    b.add_a_c()
+    b.jr_nc("STS_STORE")
+    b.ld_a_n(255)                    # saturate rather than wrap
+    b.label("STS_STORE")
+    b.ld_iyd_a(0)
+
+    b.pop_de()                       # the posting's size, kept across the above
+    b.push_ix()
+    b.pop_hl()
+    b.add_hl_de()
+    b.push_hl()
+    b.pop_ix()
+    b.ld_hl_mem_label("NLEFT")
+    b.or_a()
+    b.sbc_hl_de()
+    b.ld_mem_label_hl("NLEFT")
+    b.ld_hl_mem_label("CONSUMED")
+    b.add_hl_de()
+    b.ld_mem_label_hl("CONSUMED")
+    b.jp("STS_ONE")
+
+    # Only the bytes that held whole postings. Anything left is the front of
+    # one that straddles, and the next block starts there rather than after it.
+    b.label("STS_NEXT")
+    b.ld_hl_mem_label("SEEKOFF")
+    b.ld_de_mem_label("CONSUMED")
     b.add_hl_de()
     b.ld_mem_label_hl("SEEKOFF")
     b.jp_nc("STS_NC")
@@ -672,63 +781,12 @@ def _emit_score_term(b: EZ80Builder, acc_base: int) -> None:
     b.inc_a()
     b.ld_mem_label_a("SEEKOFF", 3)
     b.label("STS_NC")
-
     b.ld_hl_mem_label("NPOST")
-    b.ld_de_mem_label("NTHIS")
+    b.ld_de_mem_label("CONSUMED")
     b.or_a()
     b.sbc_hl_de()
     b.ld_mem_label_hl("NPOST")
-
-    # Add each (doc, weight) into the accumulator, saturating at 255, and flag
-    # the article's 256-doc page so the clear and report passes visit only
-    # pages this query touched.
-    b.ld_ix_label("IOBUF")
-    b.ld_hl_mem_label("NTHIS")
-    b.ld_mem_label_hl("NLEFT")
-
-    b.label("STS_ONE")
-    b.ld_hl_mem_label("NLEFT")
-    b.ld_de_nn(0)
-    b.or_a()
-    b.sbc_hl_de()
-    b.jp_z("STS_BLOCK")
-    b.ld_hl_mem_label("NLEFT")
-    b.ld_de_nn(1)
-    b.or_a()
-    b.sbc_hl_de()
-    b.ld_mem_label_hl("NLEFT")
-
-    # The page index is the top two bytes of the 24-bit document id.
-    b.ld_de_nn(0)
-    b.ld_a_ixd(1)
-    b.ld_e_a()
-    b.ld_a_ixd(2)
-    b.ld_d_a()
-    b.ld_hl_label("PAGE_TAB")
-    b.add_hl_de()
-    b.ld_hl_n(1)
-
-    b.ld_hl_ixd(0)                   # document id
-    b.ld_bc_nn(acc_base)
-    b.add_hl_bc()
-    b.push_hl()
-    b.pop_iy()
-    b.ld_a_iyd(0)
-    b.ld_c_a()
-    b.ld_a_ixd(3)                    # the five-bit weight
-    b.add_a_c()
-    b.jr_nc("STS_STORE")
-    b.ld_a_n(255)                    # saturate rather than wrap
-    b.label("STS_STORE")
-    b.ld_iyd_a(0)
-
-    b.ld_de_nn(4)
-    b.push_ix()
-    b.pop_hl()
-    b.add_hl_de()
-    b.push_hl()
-    b.pop_ix()
-    b.jp("STS_ONE")
+    b.jp("STS_BLOCK")
 
 
 def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
@@ -1304,7 +1362,11 @@ def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, num_pages: int,
     b.label("BESTSC")
     b.ds(TOP_K)
 
+    # RUNDOC is the running document id a term's gaps add up to, and CONSUMED
+    # is how many bytes of the current block held whole postings - see
+    # ST_STREAM for why the second is not simply the block size.
     for name in ("SEEKOFF", "HTMP", "HTMP2", "NPOST", "NTHIS", "NLEFT",
+                 "RUNDOC", "CONSUMED",
                  "SCANID", "PGLEFT", "PACC"):
         b.label(name)
         b.d24(0)

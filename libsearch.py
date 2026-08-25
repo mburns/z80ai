@@ -49,7 +49,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-MAGIC = b"ZWIKI1"
+MAGIC = b"ZWIKI2"
 #: Buckets in the hashed dictionary. Comfortably more than the ~427,000 terms
 #: Simple English Wikipedia produces, so most buckets hold one term.
 NUM_BUCKETS = 1 << 20
@@ -214,6 +214,53 @@ def _u24(value: int) -> bytes:
     return value.to_bytes(3, "little")
 
 
+#: Gap widths a posting may use, and the tag value that says which. The tag
+#: shares a byte with the weight: five bits are all a weight ever needs, so the
+#: width rides in bits 5 and 6 and costs nothing.
+GAP_WIDTHS = (1, 2, 3)
+
+
+def encode_postings(entries: list[Posting]) -> bytes:
+    """Postings as (tag, gap) pairs, the gap measured from the one before.
+
+    Doc ids ascend within a term and the gaps are small, because a term's
+    articles cluster: measured over the full card 65.8% of them fit in a byte
+    and 33.1% in two. Storing the gap rather than the id takes the doc field
+    from a flat 3 bytes to about 1.36 and the whole index from 33.1 MB to 23.
+
+    The first posting's gap is measured from zero, so there is no special case
+    at the head of a list - the decoder starts a running total at zero and adds
+    every gap it reads, including the first.
+
+    Adding is the one operation this design has always been willing to pay for:
+    the accumulator that scores a query is a byte and an ``add``, and so is
+    this. What the tag costs is a mask and two compares, not arithmetic.
+    """
+    out = bytearray()
+    running = 0
+    for posting in sorted(entries, key=lambda p: p.doc):
+        gap = posting.doc - running
+        running = posting.doc
+        width = next(w for w in GAP_WIDTHS if gap < 1 << (8 * w))
+        out.append(((width - 1) << WEIGHT_BITS) | posting.weight)
+        out += gap.to_bytes(width, "little")
+    return bytes(out)
+
+
+def decode_postings(payload: bytes) -> list[Posting]:
+    """The inverse, and the shape the eZ80 decoder walks."""
+    out: list[Posting] = []
+    running = 0
+    at = 0
+    while at < len(payload):
+        tag = payload[at]
+        width = (tag >> WEIGHT_BITS) + 1
+        running += int.from_bytes(payload[at + 1:at + 1 + width], "little")
+        out.append(Posting(running, tag & MAX_WEIGHT))
+        at += 1 + width
+    return out
+
+
 def write_index(index: Index, path: Path) -> dict[str, int]:
     """Write WIKI.IDX: a bucket table, then a chain of terms per bucket.
 
@@ -244,15 +291,26 @@ def write_index(index: Index, path: Path) -> dict[str, int]:
         gap needs 2 bytes     1,973,524   33.1%
         gap needs 3 bytes        68,674    1.2%
 
-    Storing the gap rather than the id, length-tagged, takes the doc field from
-    3 bytes to about 1.36 and the file from 33.1 MB to roughly 23 MB - a 30%
-    saving on the index and 9% on the card. Decoding is ``running += gap``,
-    which is the one operation this design already says it is willing to pay;
-    the length tag costs a compare rather than arithmetic.
+    So the postings store the gap rather than the id, length-tagged - see
+    ``encode_postings``. Measured over the same card, the index goes from
+    33,083,799 bytes to 23,136,084: **30.1% off the index and 9.2% off the
+    card**, which is the 9,947,715 bytes the table above predicted, to the byte.
 
-    Not done here, because the reader is generated eZ80 in ``buildwikibin.py``
-    and the format is shared with a program that has to agree with it byte for
-    byte. Written down so the next person starts from the measurement.
+    ## What it costs, which is not nothing
+
+    Decoding is an add and a compare per posting rather than a fixed stride, so
+    a query retires more instructions and reads fewer bytes. Both scale with
+    the number of postings, and they pull in opposite directions:
+
+        z80                          62,906 ->    63,011    6,226 ->   6,221
+        mount everest             1,809,585 -> 1,827,941    9,806 ->   8,411
+        world war                 4,571,035 -> 4,903,859   76,430 ->  41,475
+        the united states of      6,444,411 -> 7,577,578  245,518 -> 126,202
+
+    At 18.432 MHz against a card sustaining 250 KB/s, the last of those goes
+    from 1.31 seconds to 0.90 - the extra 0.06s of decoding buys back 0.47s of
+    reading. The queries that were cheap stay cheap; the ones that were slow
+    get faster, because on this machine the card is slower than the processor.
     """
     chains: dict[int, list[str]] = {}
     for term in sorted(index.postings):           # sorted: reproducible output
@@ -262,11 +320,14 @@ def write_index(index: Index, path: Path) -> dict[str, int]:
     for bucket, terms in chains.items():
         out = bytearray()
         for term in terms:
-            entries = index.postings[term]
             encoded = term.encode("utf-8")[:255]
-            out += bytes([len(encoded)]) + encoded + _u24(len(entries))
-            for posting in entries:
-                out += _u24(posting.doc) + bytes([posting.weight])
+            payload = encode_postings(index.postings[term])
+            # The payload's length in *bytes*, not its posting count. A reader
+            # that meets a colliding term has to step over it without decoding
+            # it, and once postings vary in width a count no longer says how
+            # far that is.
+            out += bytes([len(encoded)]) + encoded + _u24(len(payload))
+            out += payload
         out += b"\x00"                            # end of chain
         blocks[bucket] = bytes(out)
 
@@ -360,12 +421,10 @@ class CardSearch:
             if length == 0:                        # end of chain
                 return []
             found = self.index.read(length).decode("utf-8", "replace")
-            count = int.from_bytes(self.index.read(3), "little")
-            payload = self.index.read(4 * count)
+            size = int.from_bytes(self.index.read(3), "little")
+            payload = self.index.read(size)
             if found == term:
-                return [Posting(int.from_bytes(payload[i:i + 3], "little"),
-                                payload[i + 3])
-                        for i in range(0, len(payload), 4)]
+                return decode_postings(payload)
             # A different term in the same bucket: a collision, so keep walking.
 
     def article(self, doc: int) -> tuple[str, str]:
