@@ -76,6 +76,56 @@ class Search(Protocol):
 UNKNOWN, SEARCH, PARTIAL, FACT = "unknown", "search", "partial", "fact"
 
 
+def mask(question: str, subject: str) -> str:
+    """The question with the entity's words taken out of it.
+
+    **Measured, and not used.** It is here because the negative result is worth
+    keeping reproducible, not because anything calls it in `ask`.
+
+    The idea was sound and the mechanism is real: the encoder hashes character
+    trigrams over the whole query, so a name is most of a short question and
+    the classifier reads the subject as though it were part of the verb.
+    `tools/name_sensitivity.py` measures what that costs - hold a phrasing
+    fixed, vary only the name, and twelve of Wikipedia's thirty-two chain
+    phrasings change their answer, against 117 of the silo's 240. The entity is
+    known before the relation is, on the device as well as here, so the words
+    could be removed rather than reasoned about.
+
+    What it buys, measured on the silo where the subject of every question is
+    recorded:
+
+        steady phrasings      123/240  ->  239/240
+        trained phrasings       96.1%  ->    95.0%
+        unseen phrasings        44.5%  ->    53.3%  at one seed, +1.1% at three
+
+    So it does exactly what it was aimed at and nothing else. Consistency was
+    not what limited accuracy: a model fails an unseen wording because it never
+    saw the wording, and taking the name out does not teach it that "grandad"
+    means two hops. The third row is the one that decided it - +8.8% at seed 0
+    became -5.4% at seed 1, which is the same spread `data/questions/relations.py`
+    already documents for this measurement.
+
+    It cannot be tested on Wikipedia's one-hop classes at all. SimpleQuestions
+    records a subject as a Wikidata Q-id rather than as the words that appear
+    in the question, so there is nothing to remove.
+
+    Word-level rather than substring, because the question is whatever somebody
+    typed and the title is canonical: "wong's" and "Wong" are the same word and
+    not the same string. Removing a possessive is the one rule with a judgement
+    in it, and without it "alexander e wong's father" keeps `wong's`, which is
+    most of the name and all of the problem.
+    """
+    drop = {_word(w) for w in subject.split()} - {""}
+    kept = [w for w in question.split() if _word(w) not in drop]
+    return " ".join(kept)
+
+
+def _word(token: str) -> str:
+    """A token reduced to what two spellings of one name have in common."""
+    token = token.lower().removesuffix("'s").removesuffix("s'")
+    return "".join(c for c in token if c.isalnum())
+
+
 @dataclass
 class Response:
     """An answer, and an honest account of how much of one it is."""
@@ -137,6 +187,10 @@ class Oracle:
         `in_country` is a climb rather than a step: it repeats `located_in`
         until the value is a country. The question asks for a type, and how
         many hops that takes is the graph's business, not the model's.
+
+        The whole question goes to the encoder, name and all. Removing the
+        subject first is an obvious-looking improvement that was tried and
+        measured - see `mask` for what it was worth, which was nothing.
         """
         if self.relations is None:
             return None

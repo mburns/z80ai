@@ -108,10 +108,33 @@ def _capture(main: Callable[[], None], argv: list[str], handle: TextIO) -> None:
         sys.argv = saved
 
 
-def train_model(train: Path, model: Path) -> None:
+#: The classifier is the most expensive thing on the card - `benchcard.py`
+#: measured it at 78.1% of a query against the graph walk's 1.9% - so its size
+#: is a decision worth recording rather than a default worth inheriting.
+#: Swept over the silo's twenty paths, trained accuracy against unseen
+#: phrasings averaged over three held-out splits:
+#:
+#:     hidden    weights   trained   unseen
+#:     256,192    85,760     96.1%    45.0%     classify.py's default
+#:     128,96     30,592     95.3%    45.8%     <- this
+#:     64          9,472     90.1%    43.8%
+#:     32          4,736     76.1%    39.1%
+#:     (none)      2,560     81.4%    37.8%
+#:
+#: 128,96 gives up 0.8 points of trained accuracy for 2.8x fewer weights, and
+#: is no worse on unseen phrasings than the default is - that column is noise
+#: at this width either way. Below it the drop is real: 64 costs six points and
+#: 32 costs twenty, and a 32-wide bottleneck is *worse* than no hidden layer at
+#: all, which is the shape of a layer too narrow to carry 128 buckets rather
+#: than a model too small to learn.
+HIDDEN_SIZES = "128,96"
+
+
+def train_model(train: Path, model: Path, hidden: str = HIDDEN_SIZES) -> None:
     subprocess.run(
         [sys.executable, str(REPO / "classify.py"), "--file", str(train),
-         "-o", str(model), "--accum-bits", "24", "--balance", "--quiet"],
+         "-o", str(model), "--accum-bits", "24", "--balance", "--quiet",
+         "--hidden-sizes", hidden],
         check=True, cwd=REPO)
 
 
@@ -169,6 +192,9 @@ def main() -> None:
                     help="Index only this many articles. Must match every "
                          "build of one card - a document id is a position in "
                          "the article list, and a wrong one is still an article")
+    ap.add_argument("--hidden-sizes", default=HIDDEN_SIZES,
+                    help="Classifier width. See HIDDEN_SIZES for the sweep "
+                         "this default came from")
     ap.add_argument("--skip-train", action="store_true",
                     help="Reuse the model already in --out")
     args = ap.parse_args()
@@ -184,9 +210,9 @@ def main() -> None:
     if not args.skip_train:
         print(f"training the card's classifier on {full.name} "
               f"(every phrasing)...")
-        train_model(full, model)
+        train_model(full, model, args.hidden_sizes)
         print(f"training a throwaway on {reduced.name} to measure with...")
-        train_model(reduced, probe)
+        train_model(reduced, probe, args.hidden_sizes)
     elif not model.exists() or not probe.exists():
         raise SystemExit(f"--skip-train, but {model} or {probe} is missing")
 

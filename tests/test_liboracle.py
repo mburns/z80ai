@@ -196,3 +196,33 @@ def test_an_unreadable_relation_still_speaks(db, monkeypatch):
     r = liboracle.Response(liboracle.PARTIAL, said="Steventon",
                            missing="some_new_relation")
     assert "any more than that" in liboracle.speak(r)
+
+
+# --- masking ------------------------------------------------------------------
+#
+# `mask` is measured and unused - see its docstring for what it was worth.
+# It is tested because the measurement it supports has to stay reproducible,
+# and because two of these cases are the reasons it is written the way it is.
+
+
+def test_masking_takes_the_name_out_and_leaves_the_question():
+    assert liboracle.mask("where was jane austen born",
+                          "Jane Austen") == "where was born"
+
+
+def test_masking_strips_the_possessive_that_hides_the_name():
+    """Without this rule `wong's` survives, which is most of the name and all
+    of the problem the masking was for."""
+    assert liboracle.mask("who is alexander e wong's father",
+                          "Alexander E. Wong") == "who is father"
+
+
+def test_masking_removes_a_title_word_even_when_it_is_a_frame_word():
+    """The known hazard, pinned rather than papered over: a title made of
+    ordinary words takes those words out of the question with it, and what is
+    left is not a question any more."""
+    assert liboracle.mask("who wrote born in the usa", "Born in the USA") == "who wrote"
+
+
+def test_masking_a_name_that_is_not_there_changes_nothing():
+    assert liboracle.mask("what is a black hole", "Jane Austen") == "what is a black hole"

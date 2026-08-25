@@ -12,7 +12,8 @@ import gzip
 import random
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 
 Pair = tuple[str, str]
 
@@ -143,6 +144,72 @@ def score_predictions(pairs: Sequence[Pair],
     overall = sum(correct.values()) / len(pairs)
     macro = sum(correct[k] / total[k] for k in total) / len(total)
     return overall, macro
+
+
+@dataclass
+class Steadiness:
+    """How much of a classifier's answer is the question, and how much is the
+    subject it was asked about."""
+
+    #: questions asked, and how many got the label their phrasing means
+    asked: int = 0
+    right: int = 0
+    #: phrasings where every subject got the same answer, right or wrong
+    steady: int = 0
+    phrasings: int = 0
+    #: (label, phrasing, share right, the label it mostly gave instead)
+    worst: list[tuple[str, str, float, str]] = field(default_factory=list)
+
+    @property
+    def accuracy(self) -> float:
+        return self.right / self.asked if self.asked else 1.0
+
+    @property
+    def steadiness(self) -> float:
+        return self.steady / self.phrasings if self.phrasings else 1.0
+
+
+def name_sensitivity(templates: Mapping[str, Sequence[str]],
+                     subjects: Callable[[str, int], Sequence[str]],
+                     predict: Callable[[str], str],
+                     per_template: int = 40) -> Steadiness:
+    """Ask one phrasing about many subjects, and see whether the answer moves.
+
+    Accuracy over a question set cannot separate two failures that need
+    different fixes: a phrasing the model never learned, and a phrasing it did
+    learn whose answer depends on *who* is being asked about. The second is
+    invisible in a per-question score and is the one the encoder causes - a
+    query is hashed into 128 trigram buckets and a name is most of a short
+    question, so the subject is not something the model steps over on its way
+    to the verb.
+
+    ``templates`` maps a label to phrasings containing ``{s}``; ``subjects``
+    returns names to substitute for a given label, so a question is only ever
+    asked about somebody it makes sense for.
+
+    `steady` counts phrasings where changing only the name never changes the
+    answer. It says whether a model can be relied on for a question it has
+    already been taught, which accuracy does not.
+    """
+    out = Steadiness()
+    for label, phrasings in templates.items():
+        names = subjects(label, per_template * len(phrasings))
+        for i, phrasing in enumerate(phrasings):
+            block = names[i * per_template:(i + 1) * per_template]
+            if not block:
+                continue
+            got = [predict(phrasing.format(s=name)) for name in block]
+            hits = sum(1 for g in got if g.lower() == label.lower())
+            out.asked += len(got)
+            out.right += hits
+            out.phrasings += 1
+            out.steady += len(set(got)) == 1
+            if hits < len(got):
+                instead = Counter(g.lower() for g in got if g.lower() != label.lower())
+                out.worst.append((label, phrasing, hits / len(got),
+                                  instead.most_common(1)[0][0]))
+    out.worst.sort(key=lambda row: row[2])
+    return out
 
 
 def contradictions(pairs: Sequence[Pair]) -> dict[str, set[str]]:

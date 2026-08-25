@@ -126,6 +126,20 @@ def entity_lookup(stem: Path, db: sqlite3.Connection, sample: int,
     return first, top3, missing, shared
 
 
+def _model_weights(path: Path) -> int:
+    """Read the size out of the model rather than remembering it.
+
+    It was a literal here for exactly one build. `buildcard.py` then halved the
+    classifier and this line went on reporting the old number, which is the
+    quietest way a measurement tool can start lying.
+    """
+    import libinfer
+
+    if not path.exists():
+        return 0
+    return sum(int(w.size) for w in libinfer.Model.load(str(path)).weights)
+
+
 def _slope(points: list[tuple[int, float]]) -> float:
     """Least squares through (hops, cost). Two lines rather than a dependency."""
     n = len(points)
@@ -146,6 +160,10 @@ def main() -> None:
     ap.add_argument("--probe", type=int, default=500,
                     help="People to test the entity lookup on. Runs against "
                          "the index directly, not the emulator, so it is cheap")
+    ap.add_argument("--model", type=Path,
+                    default=REPO / "dist" / "silo-relations.npz",
+                    help="The classifier baked into the card, so its size is "
+                         "read rather than remembered")
     ap.add_argument("--search-card", type=Path,
                     default=REPO / "dist" / "SILOSEARCH",
                     help="A card built without --relations, over the same "
@@ -222,7 +240,7 @@ def main() -> None:
               f"{search:,.0f} instructions.")
         print(f"    search      {search / whole:>6.1%}")
         print(f"    classifier  {(whole - search) / whole:>6.1%}   "
-              f"one forward pass, 85,760 two-bit weights")
+              f"one forward pass, {_model_weights(args.model):,} two-bit weights")
         print(f"    the walk    {per_hop * 4 / whole:>6.1%}   four hops")
         classifier = whole - search
         print(f"  The graph is the cheap part by a factor of "

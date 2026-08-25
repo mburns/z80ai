@@ -21,7 +21,8 @@ explains why it is a separate database file.
 
 If you only read one section, read [where a question's time actually
 goes](#where-a-questions-time-actually-goes): on the real card the graph walk
-is 1.9% of a query and the classifier is 78%.
+is 3.7% of a query and the classifier is 54% — and that is *after* halving the
+classifier, which halved the query with it.
 
 ## Why bother inventing a corpus
 
@@ -231,9 +232,9 @@ python data/silo/benchcard.py        # runs it in the emulator, ~2 min
 
 | | |
 |---|---:|
-| `SILO.bin` | 96.2 KB — program, path table and classifier |
+| `SILO.bin` | 38.9 KB — program, path table and classifier |
 | `SILO.IDX` | 4.9 MB — 1,525 terms, 323,732 postings |
-| `SILO.DAT` | 3.5 MB — titles and leads |
+| `SILO.DAT` | 1.2 MB — titles and leads, byte-pair packed |
 | `SILO.GRF` | 1.6 MB — 105,404 edges over 16 relations |
 | accumulator | 13 KB resident, one byte per article |
 
@@ -247,32 +248,71 @@ without `--relations` — one that searches and neither classifies nor walks:
 
 | | share of a query |
 |---|---:|
-| the classifier — one forward pass, 85,760 two-bit weights | **78.1%** |
-| the search — BM25 over 13,072 articles | 21.9% |
-| the graph walk — four hops | 1.9% |
+| the classifier — one forward pass, 30,592 two-bit weights | **54.0%** |
+| the search — BM25 over 13,072 articles | 46.0% |
+| the graph walk — four hops | 3.7% |
 
-**The graph is the cheap part, by a factor of forty.** What the card pays for is
-deciding which question it was asked, not answering it. That is the opposite of
-where the effort has gone in this repository, and it is the useful thing to know
-before optimising anything.
+**The graph is the cheap part, by a factor of fifteen.** What the card pays for
+is deciding which question it was asked, not answering it. That is the opposite
+of where the effort has gone in this repository, and it is the useful thing to
+know before optimising anything.
+
+Those shares are after [shrinking the
+classifier](#the-classifier-was-two-and-a-half-times-larger-than-it-needed-to-be).
+Before that the classifier alone was 78% of a query.
 
 A hop moves about **178 bytes** off the card: a binary search over 105,404
 fixed-width records is 17 probes of 7 bytes, which is what the measurement
 recovers. In instructions a hop is around 3,600 — a slope over five hop counts,
-and smaller than the spread of any single query, so it is quoted as *under 1% of
+and smaller than the spread of any single query, so it is quoted as *under 2% of
 a question* rather than as a constant. Quoting such a number to four digits is
 the mistake this repository already made once.
+
+### The classifier was two and a half times larger than it needed to be
+
+`classify.py` defaults to 256,192 hidden units. Nothing had ever asked whether a
+twenty-way decision needs them. Swept over the silo's paths, with accuracy on
+trained phrasings and on unseen ones averaged over three held-out splits:
+
+| hidden | weights | trained | unseen |
+|---|---:|---:|---:|
+| 256,192 | 85,760 | 96.1% | 45.0% |
+| **128,96** | **30,592** | **95.3%** | **45.8%** |
+| 64 | 9,472 | 90.1% | 43.8% |
+| 32 | 4,736 | 76.1% | 39.1% |
+| (none) | 2,560 | 81.4% | 37.8% |
+
+128,96 gives up 0.8 points for 2.8× fewer weights and is no worse on unseen
+phrasings — that column is noise at either width. Below it the loss is real: 64
+costs six points, 32 costs twenty, and **a 32-wide bottleneck is worse than no
+hidden layer at all**, which is the shape of a layer too narrow to carry 128
+buckets rather than a model too small to learn.
+
+Measured on the card, not extrapolated — both cards built from the same corpus
+on the same commit, since [#51](../../pull/51) repacked `.DAT` and comparing
+across it would have measured that instead:
+
+| | 256,192 | 128,96 |
+|---|---:|---:|
+| binary | 94.4 KB | **38.9 KB** |
+| a question, at one hop | 756,277 | **383,117** instructions |
+| card bytes | 4,961 | 4,961 |
+| routes correctly, trained phrasings | 95.8% | 95.6% |
+
+Near enough half the work for 0.2 points. **Card bytes do not move at all**,
+which is the cleanest confirmation that the classifier is arithmetic and not
+I/O — and therefore that shrinking it is free everywhere except accuracy.
 
 ### The hop limit, on the actual machine
 
 ```
   hops   instructions      +/-  card bytes    +/-  answered
-     1        752,372   17,509       2,996    430     20/20
-     2        753,648   20,539       3,394  1,316     19/20
-     3        758,356   15,628       3,391    280     20/20
-     4        767,983   10,531       3,845    978     19/20
-     5        763,128   10,173       3,659    251     20/20
-     6        775,518   18,872       7,520  1,289      2/20  <- past the hop limit
+     1        383,117   17,591       4,961    430     20/20
+     2        384,939   22,094       5,359  1,316     19/20
+     3        389,216   15,618       5,356    280     20/20
+     4        399,280   11,192       5,810    978     19/20
+     5        393,922   10,172       5,624    251     20/20
+     6        414,843   18,699       9,485  1,289      2/20  <- past the hop limit
 ```
 
 Generation 6 needs a seventh hop and `CLIMB_LIMIT` allows six. On the eZ80 that
@@ -315,6 +355,40 @@ whole question into 128 trigram buckets and a name is most of a short question,
 so who you ask about is most of what is asked. `who is alexander e wong's
 father` routes to the grandfather path; `who is corey w wong's father` routes
 correctly. Same question, different person, different answer.
+
+### Masking the name out: tried, measured, not shipped
+
+If the subject is most of what the encoder sees, take it out. The oracle
+resolves which document a question is about *before* it needs the relation —
+`ask` searches first, and so does the eZ80 program — so the entity's words can
+be removed rather than reasoned about. `liboracle.mask` does it and
+`relationpaths.py --mask` regenerates the training set that way.
+
+| | steady phrasings | trained phrasings | unseen phrasings |
+|---|---:|---:|---:|
+| as shipped | 123/240 | **96.1%** | 44.5% |
+| masked | **239/240** | 95.0% | 53.3% *(one seed)* |
+
+It does exactly what it was aimed at and **nothing else**. Consistency was not
+what limited accuracy — a model fails an unseen wording because it never saw
+the wording, and taking the name out does not teach it that "grandad" means two
+hops.
+
+The third column is what decided it. +8.8 points at seed 0 became **−5.4 at
+seed 1** and 0.0 at seed 2: mean +1.1%, which is noise of exactly the size
+`data/questions/relations.py` already documents for this measurement. Quoting
+the seed-0 run would have been the same mistake as the two disputed values of
+the multi-hop number, made deliberately.
+
+So the trade is a consistent 95.0% in place of an inconsistent 96.1%, plus new
+eZ80 code to read a title back off the card and strip its tokens before
+`TOKENIZE`. Not worth it. The code stays so the negative result is
+reproducible, and nothing calls it.
+
+It also cannot be tested on Wikipedia's one-hop classes at all: SimpleQuestions
+records a subject as a Wikidata Q-id rather than as the words appearing in the
+question, so there is nothing to remove. This corpus could answer the question
+only because it knows who every question is about.
 
 ### A dense graph never says "I don't know"
 
