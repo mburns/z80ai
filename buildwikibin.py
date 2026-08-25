@@ -43,8 +43,15 @@ tools/mostest.py and the note in EZ80.md.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+import libgraphcard
 from libez80 import AGON_LOAD_ADDR, AGON_SRAM_TOP, EZ80Builder, agon_header
+
+if TYPE_CHECKING:
+    from libinfer import BuildInputs
+
 from libsearch import MAGIC, MAX_QUERY_TERMS, NUM_BUCKETS
 
 MOS_API = 0x08
@@ -55,6 +62,33 @@ MOS_FCLOSE = 0x0B
 MOS_FREAD = 0x1A
 MOS_FLSEEK = 0x1C
 FA_READ = 0x01
+
+@dataclass
+class OracleSpec:
+    """What the oracle build needs beyond the search build.
+
+    Held together rather than passed as five arguments because the three files
+    are one card: a graph whose ids mean anything only beside the index they
+    were built from.
+    """
+
+    #: Card file holding the fact graph.
+    graph_name: str
+    #: Byte offset of the forward edge table, and how many edges it holds.
+    forward_at: int
+    num_edges: int
+    #: Byte offset of the type table, and how many types it holds.
+    types_at: int
+    num_types: int
+    #: Document count and title digest the .GRF was built against. A mismatch
+    #: has no other symptom - every id in the wrong graph is still an article.
+    num_docs: int
+    digest: int
+    #: phrase index -> the (relation, kind) steps it means.
+    paths: list[list[tuple[int, int]]]
+    #: The phrasebook model, as buildez80.load_for_build returns it.
+    model: BuildInputs | None = None
+
 
 MAX_INPUT_LEN = 120
 MAX_TOKEN_LEN = 32
@@ -73,8 +107,14 @@ def accumulator_base(num_docs: int) -> int:
 
 def build(num_docs: int, index_name: str = "WIKI.IDX",
           text_name: str = "WIKI.DAT",
-          org: int = AGON_LOAD_ADDR) -> EZ80Builder:
-    """Emit the search program for a card holding ``num_docs`` articles."""
+          org: int = AGON_LOAD_ADDR,
+          oracle: OracleSpec | None = None) -> EZ80Builder:
+    """Emit the search program for a card holding ``num_docs`` articles.
+
+    With ``oracle``, the same program answers from the fact graph first and
+    falls back to listing articles - which is what the search build already
+    is, so the fallback costs nothing.
+    """
     num_pages = (num_docs + 255) >> 8
     acc_base = accumulator_base(num_docs)
     b = EZ80Builder(org=org)
@@ -101,6 +141,16 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     b.or_a()
     b.jp_nz("BADCARD")
 
+    if oracle is not None:
+        b.ld_hl_label("GRFNAME")
+        b.call("OPEN")
+        b.or_a()
+        b.jp_z("NOCARD")
+        b.ld_mem_label_a("GRFH")
+        b.call("CHECKGRAPH")
+        b.or_a()
+        b.jp_nz("BADCARD")
+
     b.label("MAINLOOP")
     b.call("PRNL")
     b.ld_hl_label("PROMPT")
@@ -116,7 +166,7 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
 
     b.call("CLEAR_ACC")
     b.call("SCORE_QUERY")
-    b.call("REPORT")
+    b.call("ORACLE" if oracle else "REPORT")
     b.jp("MAINLOOP")
 
     b.label("QUIT")
@@ -354,9 +404,14 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     b.ret()
 
     _emit_score_term(b, acc_base)
-    _emit_report(b, num_docs, acc_base, num_pages)
+    _emit_report(b, num_docs, acc_base, num_pages, oracle is not None)
+    if oracle is not None:
+        _emit_oracle(b, oracle)
+        _emit_classifier(b, oracle)
     _emit_console(b)
     _emit_data(b, num_docs, acc_base, num_pages, index_name, text_name)
+    if oracle is not None:
+        _emit_classifier_data(b, oracle)
 
     top = b.org + len(b.code)
     assert top <= acc_base, (
@@ -677,7 +732,7 @@ def _emit_score_term(b: EZ80Builder, acc_base: int) -> None:
 
 
 def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
-                 num_pages: int) -> None:
+                 num_pages: int, split_report: bool = False) -> None:
     """Find the best three scores and print their articles.
 
     Pages the query never touched hold only zeros, so the scan walks the page
@@ -714,7 +769,7 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
     b.ld_de_nn(num_docs)
     b.or_a()
     b.sbc_hl_de()
-    b.jp_nc("RP_SHOW")               # skipped past the final article
+    b.jp_nc("RP_SCANNED")            # skipped past the final article
     b.jr("RP_PNXT")
 
     # A flagged page: scan it byte by byte. B counts a full page's 256
@@ -740,7 +795,7 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
     b.ld_de_nn(num_docs)
     b.or_a()
     b.sbc_hl_de()
-    b.jp_z("RP_SHOW")                # RP_OFFER sits between, well past JR range
+    b.jp_z("RP_SCANNED")             # RP_OFFER sits between, past JR range
     b.inc_ix()
     b.djnz("RP_SCAN")
 
@@ -756,7 +811,7 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
     b.sbc_hl_de()
     b.ld_mem_label_hl("PGLEFT")
     b.jp_nz("RP_PAGE")
-    b.jp("RP_SHOW")                  # unreached: the SCANID checks fire first
+    b.jp("RP_SCANNED")               # unreached: the SCANID checks fire first
 
     # RP_OFFER: A is a score, (SCANID) its document. Insert if it beats one.
     b.label("RP_OFFER")
@@ -779,6 +834,14 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
         b.ret()
         b.label(f"RP_NEXT{k}")
     b.ret()
+
+    # The scan ends here. An oracle wants the best document without the
+    # listing - it prints a fact when it has one - so `split_report` cuts
+    # REPORT in two at this line. Without it the label costs no bytes and
+    # the scan falls through into the listing exactly as before.
+    b.label("RP_SCANNED")
+    if split_report:
+        b.ret()
 
     b.label("RP_SHOW")
     b.ld_a_mem_label("BESTSC")
@@ -823,7 +886,27 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
     b.push_hl()
     b.pop_ix()
     b.ld_hl_ixd(0)
+    b.call("READ_ARTICLE")
 
+    b.call("PRNL")
+    b.ld_hl_label("TEXTBUF")
+    b.call("PRSTR")                  # the title, up to its NUL
+    b.call("PRNL")
+    # The lead follows immediately after that NUL.
+    b.ld_hl_label("TEXTBUF")
+    b.label("SO_FIND")
+    b.ld_a_hl()
+    b.inc_hl()
+    b.or_a()
+    b.jr_nz("SO_FIND")
+    b.call("PRSTR")
+    b.call("PRNL")
+    b.ret()
+
+    # READ_ARTICLE: HL is a document id; leave its title and lead in TEXTBUF.
+    # Split out of SHOW_ONE because an oracle wants the title of an article it
+    # walked to, which is not one of the three the search scored.
+    b.label("READ_ARTICLE")
     # The offset table sits after a 4-byte count: 4 + 4 * id.
     b.add_hl_hl()
     b.add_hl_hl()
@@ -853,20 +936,6 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
     b.ld_hl_label("TEXTBUF")
     b.ld_de_nn(CHUNK)
     b.call("READ")
-
-    b.call("PRNL")
-    b.ld_hl_label("TEXTBUF")
-    b.call("PRSTR")                  # the title, up to its NUL
-    b.call("PRNL")
-    # The lead follows immediately after that NUL.
-    b.ld_hl_label("TEXTBUF")
-    b.label("SO_FIND")
-    b.ld_a_hl()
-    b.inc_hl()
-    b.or_a()
-    b.jr_nz("SO_FIND")
-    b.call("PRSTR")
-    b.call("PRNL")
     b.ret()
 
 
@@ -934,6 +1003,235 @@ def _emit_console(b: EZ80Builder) -> None:
     b.label("RI_DONE")
     b.call("PRNL")
     b.ret()
+
+
+
+#: Stride of the resident paths table. A power of two so indexing it is three
+#: doublings rather than a multiply, and wide enough for the longest path any
+#: phrase means - which is two, with room left over.
+PATH_STRIDE = 16
+
+#: `libinfer.NUM_BUCKETS` is 128 trigram buckets; the `NUM_BUCKETS`
+#: imported above is libsearch's 1,048,576 hash buckets. Same name, four
+#: orders of magnitude apart, so the classifier code names its module.
+#: The graph card's magic, from libgraphcard.
+GRAPH_MAGIC = libgraphcard.MAGIC
+
+
+def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
+    """Answer from the fact graph, and fall back to the search when it cannot.
+
+    The four stages, each already measured on its own:
+
+        which article   the BM25 scan that REPORT just did
+        which relation  the phrasebook classifier, one forward pass
+        the answer      a walk over the graph card
+        otherwise       the article listing, which is the search build
+
+    That last line is the whole reason this is one program rather than two: a
+    machine that answers "the archive does not record that" and stops is worse
+    than one that hands you the article it was reading. `liboracle` calls those
+    FACT and SEARCH and marks which it gave you; here the difference is a fact
+    printed plainly against a list of articles under a heading.
+    """
+    # CHECKGRAPH: the graph's magic, then that it was built for this corpus.
+    #
+    # The second half is the one that matters. A .GRF from a different build
+    # has valid ids for a different article list, so it answers fluently and
+    # wrongly - there is no other symptom, and no way to notice by reading the
+    # output. A refuses on mismatch.
+    b.label("CHECKGRAPH")
+    b.ld_hl_nn(0)
+    b.ld_mem_label_hl("SEEKOFF")
+    b.xor_a()
+    b.ld_mem_label_a("SEEKOFF", 3)
+    b.ld_a_mem_label("GRFH")
+    b.ld_c_a()
+    b.call("SEEK")
+    b.ld_a_mem_label("GRFH")
+    b.ld_c_a()
+    b.ld_hl_label("IOBUF")
+    b.ld_de_nn(len(GRAPH_MAGIC) + 10)
+    b.call("READ")
+
+    b.ld_hl_label("IOBUF")
+    b.ld_de_label("GRFMAGIC")
+    b.ld_b_n(len(GRAPH_MAGIC))
+    b.label("CG_LP")
+    b.ld_a_hl()
+    b.ld_c_a()
+    b.ld_a_de()
+    b.cp_c()
+    b.jp_nz("CG_BAD")
+    b.inc_hl()
+    b.inc_de()
+    b.djnz("CG_LP")
+
+    # num_docs and digest follow the magic and two count bytes.
+    b.ld_hl_mem_label("IOBUF", len(GRAPH_MAGIC) + 2)
+    b.ld_de_nn(spec.num_docs & 0xFFFFFF)
+    b.or_a()
+    b.sbc_hl_de()
+    b.jp_nz("CG_BAD")
+    b.xor_a()
+    b.ret()
+    b.label("CG_BAD")
+    b.ld_a_n(1)
+    b.ret()
+
+    b.label("ORACLE")
+    b.call("REPORT")                 # scan only: fills BESTID and BESTSC
+    b.ld_a_mem_label("BESTSC")
+    b.or_a()
+    b.jp_z("RP_SHOW")                # nothing matched at all
+
+    b.call("TOKENIZE")
+    b.call("INFER")
+    b.call("ARGMAX")                 # -> RESULT, the phrase index
+
+    # RESULT indexes the paths table: a step count, then that many
+    # (relation, kind) pairs.
+    b.ld_hl_mem_label("RESULT")
+    b.add_hl_hl()
+    b.add_hl_hl()
+    b.add_hl_hl()
+    b.add_hl_hl()                    # RESULT * 16
+    b.ld_de_label("PATHTAB")
+    b.add_hl_de()
+    b.ld_a_hl()                      # the step count
+    b.or_a()
+    b.jp_z("RP_SHOW")                # a phrase with no walkable path
+    b.push_hl()
+    b.ld_hl_nn(0)
+    b.ld_mem_label_hl("GW_LEFT")
+    b.ld_mem_label_a("GW_LEFT")      # widen the count to 24 bits
+    b.pop_hl()
+    b.inc_hl()
+    b.ld_mem_label_hl("GW_STEPS")
+
+    b.ld_hl_mem_label("BESTID")
+    b.ld_mem_label_hl("GW_HERE")
+    b.ld_hl_nn(spec.forward_at)
+    b.ld_mem_label_hl("GW_BASE")
+    b.call("GW_FOLLOW")
+    b.jp_c("RP_SHOW")                # no fact: hand over the articles instead
+
+    b.call("PRNL")
+    b.ld_hl_mem_label("GW_HERE")
+    b.call("READ_ARTICLE")
+    b.ld_hl_label("TEXTBUF")
+    b.call("PRSTR")                  # the title alone: this is an answer
+    b.ld_a_n(ord("."))
+    b.rst(MOS_OUTCHAR)
+    b.jp("PRNL")
+
+
+
+def _emit_classifier(b: EZ80Builder, spec: OracleSpec) -> None:
+    """The phrasebook classifier and the graph walk, borrowed wholesale.
+
+    Nothing here is new. `libnn.emit_tokenizer` hashes the query into buckets,
+    `buildez80` emits the column-major layers and the argmax, and
+    `buildgraphwalk` does the hop - this only supplies the buffers they expect
+    and the paths table that turns a phrase index into a walk.
+
+    That it works at all is because both builders were written to the same
+    convention: `AgonPlatform` reads the query from `INPLEN` and `INPBUF`,
+    which is exactly what the wiki program's line editor already fills.
+    """
+    import buildez80
+    import buildgraphwalk
+    import libagon
+    import libinfer
+
+    assert spec.model is not None
+    model = spec.model
+    plat = libagon.AgonPlatform()
+
+    # buildez80's tokenizer, not libnn's: an activation is three bytes
+    # here and libnn's writes two, which is what Platform.activation_size
+    # documents as the boundary of what these two machines can share.
+    buildez80._emit_tokenizer_helpers(b, plat, libinfer.FLAT)
+
+    b.label("INFER")
+    b.call("SCAN_IN")
+    b.jp("LAYER1")
+
+    buildez80._emit_argmax(b)
+    buildgraphwalk.emit_walk(
+        b, spec.num_edges, spec.types_at, spec.num_types,
+        handle_label="GRFH", buffer_label="IOBUF", seekoff_label="SEEKOFF")
+
+    # After every routine that uses JR: from here the code is far too long for
+    # a relative jump to reach across, which is why buildez80 orders it so too.
+    buildez80._emit_column_epilogue(b)
+    buildez80._emit_input_scan(b, "SCAN_IN", range(libinfer.NUM_BUCKETS), "LEPI1")
+    buildez80._emit_layers_column(b, model, phrasebook=True)
+
+
+def _emit_classifier_data(b: EZ80Builder, spec: OracleSpec) -> None:
+    """Buffers the borrowed emitters address by name."""
+    import buildgraphwalk
+    import libinfer
+
+    assert spec.model is not None
+
+    model = spec.model
+    layer_sizes = model.layer_sizes
+
+    # The scratch the borrowed emitters name. INPLEN is the wiki program's
+    # own - both builders call the query length that - so it is not repeated.
+    for name in ("TOKLEN", "TOKC1", "TOKC2", "TOKC3", "TOKPOS",
+                 "CTXPOS", "CTXN", "GENCNT", "RELUF",
+                 "TMP0", "TMP1", "TMP2"):
+        b.label(name)
+        b.db(0)
+    for name in ("SPSAV", "SPTMP", "INBASE", "BIASP", "TMPV", "MAXI", "IDX",
+                 "RESULT"):
+        b.label(name)
+        b.d24(0)
+
+    # INBUF and CTXBUF must stay adjacent: layer 1 reads a single vector
+    # through the INBUF label, and a phrasebook only fills the first half.
+    b.label("INBUF")
+    b.ds(libinfer.NUM_BUCKETS * 3)
+    b.label("CTXBUF")
+    b.ds(libinfer.NUM_BUCKETS * 3)
+    assert b.labels["CTXBUF"] == b.labels["INBUF"] + libinfer.NUM_BUCKETS * 3
+
+    hidden = layer_sizes[1:-1] or [layer_sizes[-1]]
+    b.label("BUF_A")
+    b.ds(max(hidden) * 3)
+    b.label("BUF_B")
+    b.ds(max(hidden) * 3)
+    b.label("OUTBUF")
+    b.ds(model.output_size * 3)
+    b.label("OUTEND")
+    b.ds(3)
+    b.label("ACC")
+    b.ds24(max(layer_sizes[1:]))
+    b.label("COLLIST")
+    b.ds24(max(layer_sizes[:-1]) + 1)
+
+    # The paths table: one fixed-width row per phrase, so the index is three
+    # doublings rather than a multiply. A phrase whose path this cannot walk -
+    # an inverse, for now - gets a zero count and falls back to the search.
+    b.label("PATHTAB")
+    for steps in spec.paths:
+        row = [len(steps)]
+        for relation, kind in steps:
+            row += [relation, kind]
+        assert len(row) <= PATH_STRIDE, f"path too long: {steps}"
+        b.emit(*row, *([0] * (PATH_STRIDE - len(row))))
+
+    b.label("GRFMAGIC")
+    b.emit(*GRAPH_MAGIC)
+    b.label("GRFNAME")
+    b.ascii(spec.graph_name)
+    b.db(0)
+    b.label("GRFH")
+    b.db(0)
+    buildgraphwalk.emit_cells(b)
 
 
 def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, num_pages: int,
