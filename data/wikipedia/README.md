@@ -181,20 +181,45 @@ encyclopedia — resident, no sharding, no routing.
 | | |
 |---|---|
 | accumulator | 277 KB in SRAM, plus a 1,110-byte page table in the image |
-| card read per query | ~23 KB → 0.09 s at 250 KB/s |
-| instructions per query | 5.4 M before the page tier → ~0.74 s at 18.432 MHz |
-| program | 7,450 bytes |
+| program | 7,455 bytes |
 
 The two passes over the accumulator — clearing it and scanning it for the best
 three — used to dominate every query at 284,000 bytes apiece, whatever the
-query. The accumulator is now tiered: one flag per 256-article page, set when
-a posting lands, and both passes visit only flagged pages. A lookup that names
-its subject touches a handful of pages and retires a fraction of the
-instructions (7x on a two-term entity query, measured on a synthetic 100k-article
-corpus); a term common enough to flag every page pays the whole-corpus scan as
-before, plus the table's overhead. The 5.4 M figure is the pre-tier measurement
-on this corpus; the tiered number waits on a rebuilt card to be measured
-honestly.
+query, for 5.4 M instructions a query however rare the word. The accumulator is
+now tiered: one flag per 256-article page, set when a posting lands, and both
+passes visit only flagged pages.
+
+`benchwiki.py` runs the real card in the emulator and counts what a query
+costs, which is how the numbers below stopped being provisional. They were
+measured on the full 283,997-article card, not a synthetic one:
+
+| query | instructions | card bytes | s @ 18.432 MHz | finds |
+|---|---:|---:|---:|---|
+| `z80` | 63,018 | 6,226 | 0.00 | Z80 |
+| `zilog z80` | 66,359 | 6,282 | 0.00 | Z80 |
+| `everest` | 203,922 | 6,410 | 0.01 | Mount Everest |
+| `jane austen` | 1,268,035 | 8,390 | 0.07 | Reception history of Jane Austen |
+| `mount` | 1,774,842 | 9,558 | 0.10 | Mount Pleasant |
+| `mount everest` | 1,808,709 | 9,806 | 0.10 | Mount Everest |
+| `world war` | 4,570,758 | 76,430 | 0.25 | World War I |
+| `the united states of america` | 6,444,806 | 245,518 | 0.35 | President of the United States… |
+| `the` | 42,642 | 90 | 0.00 | *nothing* |
+
+**What sets the cost is the commonest word in the query, not how many words it
+has.** `mount everest` costs what `mount` costs on its own — the rare word is
+nearly free and the common one flags most of the page table either way. That is
+a better description than the one this file used to give, which counted terms:
+`zilog z80` and `mount everest` are both two-term entity lookups and one is
+27 times dearer than the other.
+
+So the tiering is worth **86x on a query of rare words** and nothing at all on a
+common one, where 6.4 M against the old 5.4 M is the whole-corpus scan it always
+paid plus the page table's overhead. Both cases are in the table above because
+the second is the one the design does not help.
+
+The last row is the cheap kind of failure: a word that common is not in the
+dictionary at all, so the query is refused at the index for 90 bytes rather than
+scored against the corpus.
 
 ## Facts, for the oracle this is not
 

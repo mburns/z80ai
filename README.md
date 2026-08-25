@@ -102,6 +102,12 @@ BM25 gets 11 of 13. All the arithmetic happens at build time, so the machine
 does nothing but add bytes; that is what keeps the score accumulator at one
 byte per article — 277KB, resident, for the whole encyclopedia.
 
+`benchwiki.py` runs the card in the emulator and counts what a query costs.
+Looking up `zilog z80` retires 66,359 instructions and reads 6,282 bytes;
+`mount everest` costs 1.8 M because *mount* is a common word and *everest* is
+not. What sets the price is the commonest word in the query, not how many words
+it has.
+
 It is a search box, not an oracle: "who wrote hamlet" returns *Hamlet*, and
 reading the answer out of the article is comprehension, which is out of reach.
 
