@@ -144,7 +144,7 @@ Get running in under 5 minutes:
 **3. Run:**
 
 - **CP/M**: `iz-cpm CHAT.COM` — or `CHAT-COL.COM`, the same model with the
-  fastest weight layout (24x quicker per character, 8KB larger)
+  fastest weight layout (13x quicker per character, 8KB larger)
 - **ZX Spectrum**: `fuse --tape CHAT.TAP`, then `CLEAR 24575`, `LOAD "" CODE` and `RANDOMIZE USR 24576`
 - **ZX Spectrum Next**: `CHAT-NEXT.TAP`, loaded the same way — 8x quicker, because
   it clocks the CPU to 28MHz. It also runs on a plain 48K machine
@@ -237,13 +237,13 @@ costs. For the shipped 256→256→192→128→11 `guess` model:
 
 | target | size | instructions | Z80 T-states | seconds |
 |---|---|---|---|---|
-| CP/M, packed weights | 39,563 | 2,313,383 | 20,698,833 | 5.17 @ 4 MHz |
+| CP/M, packed weights | 39,666 | 1,246,304 | 9,902,388 | 2.48 @ 4 MHz |
 | CP/M, index lists | 44,800 | 256,473 | 1,598,895 | 0.40 @ 4 MHz |
-| CP/M, column-major | 47,872 | 95,243 | 758,657 | **0.19 @ 4 MHz** |
-| ZX Spectrum | 39,592 | 2,313,383 | 20,698,833 | 5.91 @ 3.5 MHz |
-| Agon eZ80, byte stream | 146,626 | 923,194 | — | — |
-| Agon eZ80, unrolled | 251,997 | 90,340 | — | — |
-| Agon eZ80, column-major | 389,300 | 38,012 | — | — |
+| CP/M, column-major | 47,872 | 95,247 | 758,697 | **0.19 @ 4 MHz** |
+| ZX Spectrum | 39,695 | 1,246,304 | 9,902,388 | 2.83 @ 3.5 MHz |
+| Agon eZ80, byte stream | 146,645 | 923,194 | — | — |
+| Agon eZ80, unrolled | 252,016 | 90,340 | — | — |
+| Agon eZ80, column-major | 389,319 | 38,012 | — | — |
 
 ```bash
 python bench.py --model examples/guess/model.npz \
@@ -313,6 +313,11 @@ sum. What may *not* move is the `>>2`, which floors, so `PREQ` stops short of it
 | CP/M, packed weights | 3,004,037 | 2,313,383 | **1.30×** |
 | CP/M, index lists | 318,417 | 256,473 | **1.24×** |
 | Agon eZ80, column-major | 41,565 | 35,774 | **1.16×** |
+
+These were measured before the packed kernel moved its bookkeeping into
+registers, so its absolute counts are higher than the table above. The ratios
+are what this section is about, and hoisting removes half of layer 1's inputs
+either way.
 
 The packed builds gain most because they walk every weight including the zeros,
 and layer 1's query half is 32,768 of the model's 140,672 weights. Measured on a
