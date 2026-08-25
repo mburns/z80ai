@@ -800,8 +800,17 @@ def split_fields(body: str) -> list[str]:
     return fields
 
 
-def infobox_fields(body: str) -> list[tuple[str, str]]:
+def infobox_fields(body: str, title: str = "") -> list[tuple[str, str]]:
     """Top-level ``| key = value`` pairs, cleaned but not yet re-indexed.
+
+    A field whose value is the article's own title is dropped: 91,504 of them,
+    4.7% of every fact, and not one says anything. `name = Televisa` on the
+    page called Televisa is the commonest by far at 69,160, with
+    `official_name`, `fullname`, `subject_name` and `title` behind it.
+
+    It is the same emptiness as `Los Angeles located_in Los Angeles`, which
+    libgraph drops at the edge; this drops it a step earlier, where it is a
+    fact about nothing rather than an edge to nowhere.
 
     Splitting an index off a repeated field needs the whole vocabulary - see
     ``index_families`` - so it happens once the dump has been read, not here.
@@ -828,6 +837,8 @@ def infobox_fields(body: str) -> list[tuple[str, str]]:
         # on screen would otherwise put "&lt;br&gt;" in every multi-part value.
         value = normalize_value(clean(unexpanded(expand_templates(value))))
         if not value or JUNK_VALUE.match(value) or len(value) > MAX_VALUE_LEN:
+            continue
+        if value == title:
             continue
         seen.add(key)
         out.append((key, value))
@@ -948,7 +959,7 @@ def pages(path: Path) -> Iterator[Page]:
             continue
         box = infobox_body(markup)
         yield Page(title, None, lead_of(markup),
-                   infobox_fields(box) if box else [],
+                   infobox_fields(box, title) if box else [],
                    categories_of(markup))
 
 
