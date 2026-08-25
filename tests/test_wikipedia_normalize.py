@@ -213,3 +213,30 @@ def test_the_same_field_twice_at_different_indices_is_two_facts(db):
 
     with pytest.raises(sqlite3.IntegrityError):
         insert(db, property="subdivision_name", ordinal=1, value="Elsewhere")
+
+
+# --- a fact about nothing -----------------------------------------------------
+
+
+def test_a_value_that_is_the_articles_own_title_is_dropped():
+    """`name = Televisa` on the page called Televisa, 69,160 times, and
+    `official_name`, `fullname` and `title` behind it. 91,504 facts - 4.7% of
+    the corpus - saying that a thing is called what it is called."""
+    fields = ingest.infobox_fields(
+        "Infobox company\n| name = Televisa\n| founded = 1973\n", "Televisa")
+    assert dict(fields) == {"founded": "1973"}
+
+
+def test_a_fuller_form_of_the_name_survives():
+    """The 28% that differ are worth keeping: they are the official or longer
+    name, which the title is not."""
+    fields = ingest.infobox_fields(
+        'Infobox company\n| name = "Grupo Televisa, S.A.B."\n', "Televisa")
+    assert dict(fields)["name"] == '"Grupo Televisa, S.A.B."'
+
+
+def test_dropping_self_reference_needs_the_title():
+    """Called without one - as a unit test might - nothing is dropped, rather
+    than everything matching the empty string."""
+    fields = ingest.infobox_fields("Infobox\n| name = Televisa\n")
+    assert dict(fields) == {"name": "Televisa"}
