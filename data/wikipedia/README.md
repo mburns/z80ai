@@ -134,8 +134,13 @@ Wikipedia has a redirect for, and you get the article:
 ```
 
 **It is a search engine, and — given `--relations` — an oracle as well.**
-Measured on thirteen probe queries, the right article is in the top three
-eleven times.
+`tools/probe_entities.py` scores twenty question probes against a built card:
+the right article is **first 85% of the time and in the top three every time**.
+
+First is the number that matters. A search engine is judged on the top three
+because a person reads all of them; an oracle walks only the first, and its
+mistakes have no symptom — the graph answers correctly about the wrong subject
+and what comes back is fluent and wrong.
 
 "Who wrote hamlet" used to return *Hamlet*, and this paragraph used to explain
 that this was a search engine working correctly: extracting the answer from the
