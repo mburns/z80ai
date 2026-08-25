@@ -15,7 +15,7 @@ rather than merging into them - which is what makes re-running it a sync, and
 what makes deletions propagate. The swap happens in one transaction, so an
 interrupted run leaves the previous corpus intact.
 
-Four tables carry the corpus:
+Five tables carry the corpus:
 
   article   what the machine can answer with. Title plus the opening sentences,
             because a 300-character lead is about a third of a 40x24 screen and
@@ -27,6 +27,12 @@ Four tables carry the corpus:
             with the value's type worked out on the way in.
   property  the vocabulary those facts are written in, counted, and marked
             with the relation libgraph reads it as - where there is one.
+  category  what a page files itself under. An infobox says what its author
+            chose to tabulate; a category says what they chose to file it
+            under, and for a great many pages the second is the only place a
+            containment is written down at all - `Infobox U.S. state` has no
+            country field, so Michigan says it is in the United States only by
+            being filed under `1837 establishments in the United States`.
 
 ## Normalizing, and where it stops
 
@@ -58,7 +64,8 @@ import re
 import sqlite3
 import sys
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -68,7 +75,7 @@ import libgraph
 DB_PATH = Path(__file__).resolve().parent.parent / "simple_english_wikipedia.db"
 #: Bumped whenever the table definitions change. The database is derived data,
 #: so a mismatch is resolved by re-ingesting rather than by migrating.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 #: Characters of lead text kept per article. A 40x24 Agon screen holds about
 #: 960, so this is a third of one - enough to say what a thing is.
@@ -187,6 +194,16 @@ CREATE TABLE IF NOT EXISTS redirect (
 
 CREATE INDEX IF NOT EXISTS redirect_target ON redirect (source, target);
 
+CREATE TABLE IF NOT EXISTS category (
+    source TEXT NOT NULL,
+    title  TEXT NOT NULL,
+    name   TEXT NOT NULL,
+    PRIMARY KEY (source, title, name),
+    CHECK (name <> '')
+) {STRICT}WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS category_name ON category (source, name);
+
 CREATE TABLE IF NOT EXISTS fact (
     source   TEXT NOT NULL,
     subject  TEXT NOT NULL,
@@ -304,6 +321,214 @@ def _strip_links(text: str) -> str:
 #: MediaWiki appends a cache key to some page texts: a long run of letters and
 #: digits that is not a word and reads as line noise in a lead.
 CACHEKEY = re.compile(r"\b(?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z])[a-z0-9]{20,}\b")
+
+
+# --- value templates ----------------------------------------------------------
+#
+# `clean()` strips every `{{...}}`, contents and all, because a lead has to
+# survive an infobox that ran past the window we captured. Applied to a *value*
+# the same rule is a deletion: `{{birth date|1847|3|3}}` cleans to the empty
+# string and the fact is gone.
+#
+# Measured over the 20260801 snapshot with `templates.py`: 301,306 infobox
+# values are written as a template and 232,947 of them are dropped - 8.0% of
+# every named field. The losses land on properties that matter. ~41,000 birth
+# dates, ~18,400 death dates, 6,199 `spouse` values behind `{{marriage}}`, and
+# 4,660 `subdivision_name` values behind `{{flag}}` - the last two are fields
+# `libgraph.CANONICAL` maps, so those are `spouse_of` and `located_in` edges
+# the graph never saw.
+#
+# So a value gets one pass of expansion before it is cleaned. Only templates
+# whose meaning is unambiguous are listed; everything else still falls to
+# `_strip_braced`, because inventing a reading is worse than dropping a field.
+#
+# Some of the biggest losses cannot be repaired here at all, and it is worth
+# writing down which, so the same scan does not send the next reader after them
+# again:
+#
+#   france metadata wikidata  15,471   holds no text. The template fetches a
+#   austria population wikidata 2,382  population from Wikidata at render time,
+#   official website           1,812   so there is nothing inside to expand.
+#                                      These are an argument for ingesting
+#                                      Wikidata, not a rule this table can hold.
+#
+#   cite web                  15,818   a citation is provenance, not a value.
+#                                      Expanding it would put a publisher and a
+#                                      retrieval date in the fact table.
+#
+#   medal, medalcompetition   ~7,000   a medal table is a career, and flattening
+#   medalcountry, medalsport           one into a single value invents a reading
+#                                      of it. `years`/`clubs` are the same shape
+#                                      and are already the biggest unmapped
+#                                      properties in the corpus.
+#
+#   coord                      1,536   recoverable, but a coordinate is not a
+#                                      relation anything walks, and its argument
+#                                      order has enough variants to be its own
+#                                      parser. Left until something needs it.
+
+
+def _positional(args: list[str]) -> list[str]:
+    """The unnamed arguments, in order. `abbr=on` is a flag, not a value."""
+    return [a.strip() for a in args if "=" not in a]
+
+
+def _iso_date(args: list[str]) -> str | None:
+    """`|1847|3|3` -> `1847-03-03`, the one date shape `value_kind` reads.
+
+    A bare year is returned as itself rather than padded into a January the
+    first that nobody wrote. `{{death date and age|1990|5|1|1920|3|2}}` leads
+    with the death, so taking the first three is right for both templates.
+    """
+    parts = [a for a in _positional(args) if a.isdigit()]
+    if not parts:
+        return None
+    year = parts[0]
+    if len(year) not in (3, 4):
+        return None
+    if len(parts) < 3:
+        return year
+    month, day = parts[1], parts[2]
+    if not (1 <= int(month) <= 12 and 1 <= int(day) <= 31):
+        return year
+    return f"{year}-{int(month):02d}-{int(day):02d}"
+
+
+def _first(args: list[str]) -> str | None:
+    """The first unnamed argument - a wrapper's whole contribution."""
+    parts = _positional(args)
+    return parts[0] if parts else None
+
+
+def _second(args: list[str]) -> str | None:
+    """`{{lang|fr|Paris}}` says Paris in French; the text is the second."""
+    parts = _positional(args)
+    return parts[1] if len(parts) > 1 else None
+
+
+#: A wiki bullet: the marker, and whatever precedes it on its own line.
+BULLET = re.compile(r"(?:^|\n)\s*[*#:;]+\s*")
+
+
+def _joined(args: list[str]) -> str | None:
+    """A list template's items, comma-separated.
+
+    Two spellings reach here and both have to work. `{{hlist|Actor|Singer}}`
+    puts one item per argument; `{{plainlist|* Actor * Singer}}` puts a wiki
+    bullet list inside a single argument. Splitting on the marker as well as
+    the pipe reads both, and keeps the asterisks out of the fact either way.
+    """
+    items: list[str] = []
+    for arg in _positional(args):
+        items.extend(BULLET.split(arg) if BULLET.search(arg) else [arg])
+    kept = [s for s in (i.strip() for i in items) if s]
+    return ", ".join(kept) if kept else None
+
+
+def _measure(args: list[str]) -> str | None:
+    """`{{convert|5|km|mi}}` is five kilometres; the rest is display."""
+    parts = _positional(args)
+    if not parts:
+        return None
+    return " ".join(parts[:2]) if len(parts) > 1 else parts[0]
+
+
+#: Template name (folded the way `normalize_property` folds a key) -> what its
+#: arguments mean. A name absent here keeps today's behaviour.
+VALUE_TEMPLATES: dict[str, Callable[[list[str]], str | None]] = {
+    # Dates. The largest single loss in the corpus.
+    "birth date": _iso_date,
+    "birth date and age": _iso_date,
+    "birth-date": _iso_date,
+    "death date": _iso_date,
+    "death date and age": _iso_date,
+    "start date": _iso_date,
+    "start date and age": _iso_date,
+    "end date": _iso_date,
+    "film date": _iso_date,
+    # `nowrap` exists to keep a value on one line, so its contents are the
+    # value. `{{small}}`, `{{big}}`, `{{nobold}}` and `{{noitalic}}` are not
+    # here for the opposite reason, and it cost 686 edges to find out: the wiki
+    # idiom is `| successor = Osman Hussein {{small|(Acting)}}`, so reading
+    # them turns a title that resolves into one that does not. Deleting an
+    # annotation is what the old cleaner did well, and it is kept.
+    "nowrap": _first,
+    # A flag is a picture of a country and the name of one, and which it is
+    # depends on where it sits. `subdivision_name = {{flag|France}}` is the
+    # value - 4,660 of these, on the field that made chaining work. But
+    # `birth_place = {{flagicon|IRI}} Urmia` is an icon beside the value, and
+    # reading it gives "IRI Urmia", which names no article and loses the edge
+    # the plain "Urmia" had. So these are read only when the template is the
+    # whole value; see WHOLE_VALUE_ONLY.
+    "flag": _first,
+    "flagcountry": _first,
+    "flagu": _first,
+    # A marriage names a spouse, which `CANONICAL` maps to `spouse_of`.
+    "marriage": _first,
+    "url": _first,
+    "lang": _second,
+    # Lists.
+    "plainlist": _joined,
+    "flatlist": _joined,
+    "hlist": _joined,
+    "ubl": _joined,
+    "unbulleted list": _joined,
+    "collapsible list": _joined,
+    # Measurements.
+    "convert": _measure,
+    "cvt": _measure,
+    "val": _measure,
+}
+
+#: Templates that are a value when they stand alone and decoration when they do
+#: not. A flag beside a place name is an icon; a flag *as* the field is the
+#: country. Reading the first kind cost 155 `located_in` edges and a scatter of
+#: `born_in` ones, by turning "Urmia" into "IRI Urmia".
+#:
+#: `flagicon` is absent from `VALUE_TEMPLATES` entirely rather than listed
+#: here: its argument is an IOC country code, so even standing alone it yields
+#: "IRI" rather than a title anything holds.
+WHOLE_VALUE_ONLY = frozenset({"flag", "flagcountry", "flagu"})
+
+#: One value is not a page: a handful of nested templates is the most any of
+#: them holds, and a bound means a pathological value cannot spin here.
+MAX_EXPANSIONS = 32
+
+
+def expand_templates(value: str) -> str:
+    """Rewrite the templates this module understands into their plain text.
+
+    Innermost first, so `{{nowrap|{{convert|5|km}}}}` becomes `{{nowrap|5 km}}`
+    and then `5 km`. A template with no rule is left exactly as it was, for
+    `clean()` to strip as before - this only ever adds facts.
+    """
+    for _ in range(MAX_EXPANSIONS):
+        close = value.find("}}")
+        if close == -1:
+            return value
+        open_ = value.rfind("{{", 0, close)
+        if open_ == -1:
+            return value
+
+        # Innermost, so the body holds no braces and `split_fields` is cutting
+        # on the same top-level `|` that separates a template's arguments.
+        fields = split_fields(value[open_ + 2:close])
+        name = fields[0].strip().lower().replace("_", " ")
+        rule = VALUE_TEMPLATES.get(name)
+        if name in WHOLE_VALUE_ONLY and value.strip() != value[open_:close + 2]:
+            rule = None                 # decoration beside a value, not the value
+        replacement = rule(fields[1:]) if rule else None
+        if replacement is None:
+            # No rule, or the arguments did not fit it. Neutralise the braces
+            # so the scan moves on, and leave the text for `_strip_braced`.
+            replacement = "\x00" + value[open_ + 2:close] + "\x01"
+        value = value[:open_] + replacement + value[close + 2:]
+    return value
+
+
+def unexpanded(value: str) -> str:
+    """Put back the braces `expand_templates` set aside, for the cleaner."""
+    return value.replace("\x00", "{{").replace("\x01", "}}")
 
 
 def clean(markup: str) -> str:
@@ -540,15 +765,17 @@ def infobox_body(markup: str) -> str | None:
     return None
 
 
-def infobox_fields(body: str) -> list[tuple[str, str]]:
-    """Top-level ``| key = value`` pairs, cleaned but not yet re-indexed.
-
-    Splitting an index off a repeated field needs the whole vocabulary - see
-    ``index_families`` - so it happens once the dump has been read, not here.
+def split_fields(body: str) -> list[str]:
+    """An infobox body cut into its top-level ``key = value`` fields.
 
     Split by hand rather than by regex: a value may itself contain ``|`` inside
     a nested template or a piped link, and splitting on those turns one field
     into several fragments, none of which is a fact.
+
+    Separate from ``infobox_fields`` so that anything wanting to look at what a
+    value held *before* cleaning - which templates it used, say - reads the
+    fields the ingest actually sees rather than its own second copy of this
+    rule. ``[0]`` is the template name, not a field.
     """
     body = COMMENT.sub("", body)
     fields: list[str] = []
@@ -570,6 +797,16 @@ def infobox_fields(body: str) -> list[tuple[str, str]]:
         else:
             current.append(ch)
     fields.append("".join(current))
+    return fields
+
+
+def infobox_fields(body: str) -> list[tuple[str, str]]:
+    """Top-level ``| key = value`` pairs, cleaned but not yet re-indexed.
+
+    Splitting an index off a repeated field needs the whole vocabulary - see
+    ``index_families`` - so it happens once the dump has been read, not here.
+    """
+    fields = split_fields(body)
 
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -581,10 +818,15 @@ def infobox_fields(body: str) -> list[tuple[str, str]]:
         if named is None or named in seen:
             continue
         key = named
-        # The same cleaner the lead uses, so entities are resolved before tags
-        # are stripped rather than after - the bug that put "<ref></ref>" on
-        # screen would otherwise put "&lt;br&gt;" in every multi-part value.
-        value = normalize_value(clean(value))
+        # Templates first, because the cleaner deletes them: a value written as
+        # `{{birth date|1847|3|3}}` has to become text before a rule that
+        # strips every `{{...}}` sees it. Only the templates in
+        # `VALUE_TEMPLATES` change; the rest are handed on untouched.
+        #
+        # Then the same cleaner the lead uses, so entities are resolved before
+        # tags are stripped rather than after - the bug that put "<ref></ref>"
+        # on screen would otherwise put "&lt;br&gt;" in every multi-part value.
+        value = normalize_value(clean(unexpanded(expand_templates(value))))
         if not value or JUNK_VALUE.match(value) or len(value) > MAX_VALUE_LEN:
             continue
         seen.add(key)
@@ -592,10 +834,14 @@ def infobox_fields(body: str) -> list[tuple[str, str]]:
     return out
 
 
-def pages(path: Path) -> Iterator[tuple[str, str | None, str, list[tuple[str, str]]]]:
-    """Yield (title, redirect_target_or_None, lead, infobox_fields) per ns0 page.
+def raw_pages(path: Path) -> Iterator[tuple[str, str | None, str]]:
+    """Yield (title, redirect_target_or_None, markup) for every ns0 page.
 
-    A redirect carries no lead and no fields, so both are empty for one.
+    Reading a dump and interpreting one are separate jobs, and this is the
+    first. Anything that wants the markup before the ingest's opinions are
+    applied to it - counting which templates a value used, say - gets it here
+    rather than keeping a second copy of a loop whose every line is load
+    bearing. A redirect carries no markup worth reading, so it yields "".
     """
     opener = bz2.open if path.suffix == ".bz2" else open
     title = ns = redirect = None
@@ -643,14 +889,67 @@ def pages(path: Path) -> Iterator[tuple[str, str | None, str, list[tuple[str, st
 
             if "</page>" in line and title is not None:
                 if ns == 0:
-                    markup = "".join(body)
                     if redirect:
-                        yield title, redirect, "", []
+                        yield title, redirect, ""
                     else:
-                        box = infobox_body(markup)
-                        yield (title, None, lead_of(markup),
-                               infobox_fields(box) if box else [])
+                        yield title, None, "".join(body)
                 title = None
+
+
+#: `[[Category:Cities in France]]`, up to its sort key. Case varies by author
+#: and MediaWiki does not care, so neither does this.
+CATEGORY = re.compile(r"\[\[\s*category\s*:([^\]|]+)", re.IGNORECASE)
+
+
+def categories_of(markup: str) -> list[str]:
+    """The categories a page files itself under, in the order it names them.
+
+    Read from the raw markup rather than the cleaned text, because `clean()`
+    drops them - correctly, since a category is not a sentence and the lead is
+    prose. They are kept anyway: an infobox says what a page's author chose to
+    tabulate, and a category says what they chose to file it under, and the
+    second is often the only place a containment is written down. `Infobox
+    U.S. state` has no country field at all, so Michigan records that it is in
+    the United States only in `1837 establishments in the United States`.
+    """
+    seen: dict[str, None] = {}
+    for name in CATEGORY.findall(markup):
+        cleaned = normalize_value(clean(name))
+        if cleaned:
+            seen.setdefault(cleaned, None)
+    return list(seen)
+
+
+@dataclass
+class Page:
+    """One ns0 page, as much of it as this ingest reads.
+
+    A tuple until there were five of them, at which point the call site stopped
+    saying which was which.
+    """
+
+    title: str
+    #: The page a redirect points at, or None for an article.
+    redirect: str | None
+    lead: str
+    fields: list[tuple[str, str]]
+    categories: list[str]
+
+
+def pages(path: Path) -> Iterator[Page]:
+    """Yield a `Page` per ns0 page.
+
+    A redirect carries no lead, no fields and no categories worth reading, so
+    all three are empty for one.
+    """
+    for title, redirect, markup in raw_pages(path):
+        if redirect:
+            yield Page(title, redirect, "", [], [])
+            continue
+        box = infobox_body(markup)
+        yield Page(title, None, lead_of(markup),
+                   infobox_fields(box) if box else [],
+                   categories_of(markup))
 
 
 def connect(path: Path, migrate: bool = False) -> sqlite3.Connection:
@@ -732,24 +1031,31 @@ def ingest(db: sqlite3.Connection, dump: Path,
                "(subject TEXT, property TEXT, ordinal INTEGER, value TEXT, "
                " kind TEXT, num REAL, "
                " PRIMARY KEY (subject, property, ordinal))")
+    db.execute("CREATE TEMP TABLE new_category "
+               "(title TEXT, name TEXT, PRIMARY KEY (title, name))")
 
-    articles = redirects = facts = 0
+    articles = redirects = facts = filings = 0
     started = time.time()
-    for title, target, lead, fields in pages(dump):
-        if target:
+    for page in pages(dump):
+        if page.redirect:
             db.execute("INSERT OR REPLACE INTO new_redirect VALUES (?, ?)",
-                       (title, target))
+                       (page.title, page.redirect))
             redirects += 1
         else:
             db.execute("INSERT OR REPLACE INTO new_article VALUES (?, ?)",
-                       (title, lead))
+                       (page.title, page.lead))
             articles += 1
-            if fields:
+            if page.fields:
                 db.executemany(
                     "INSERT OR REPLACE INTO new_fact VALUES (?, ?, 0, ?, ?, ?)",
-                    [(title, key, value, *value_kind(value))
-                     for key, value in fields])
-                facts += len(fields)
+                    [(page.title, key, value, *value_kind(value))
+                     for key, value in page.fields])
+                facts += len(page.fields)
+            if page.categories:
+                db.executemany(
+                    "INSERT OR REPLACE INTO new_category VALUES (?, ?)",
+                    [(page.title, name) for name in page.categories])
+                filings += len(page.categories)
         total = articles + redirects
         if total % 50_000 == 0:
             rate = total / (time.time() - started)
@@ -777,10 +1083,13 @@ def ingest(db: sqlite3.Connection, dump: Path,
         db.execute("DELETE FROM article WHERE source = ?", (source,))
         db.execute("DELETE FROM redirect WHERE source = ?", (source,))
         db.execute("DELETE FROM fact WHERE source = ?", (source,))
+        db.execute("DELETE FROM category WHERE source = ?", (source,))
         db.execute("INSERT INTO article (source, title, lead) "
                    "SELECT ?, title, lead FROM new_article", (source,))
         db.execute("INSERT INTO redirect (source, title, target) "
                    "SELECT ?, title, target FROM new_redirect", (source,))
+        db.execute("INSERT INTO category (source, title, name) "
+                   "SELECT ?, title, name FROM new_category", (source,))
         db.execute("DELETE FROM property WHERE source = ?", (source,))
         db.execute(
             "INSERT INTO fact (source, subject, property, ordinal, value, "
@@ -821,6 +1130,7 @@ def ingest(db: sqlite3.Connection, dump: Path,
     db.execute("DROP TABLE new_article")
     db.execute("DROP TABLE new_redirect")
     db.execute("DROP TABLE new_fact")
+    db.execute("DROP TABLE new_category")
     return articles, redirects, facts
 
 
@@ -846,6 +1156,15 @@ def stats(db: sqlite3.Connection) -> None:
                            (source,)).fetchone()[0] or 0
         print(f"  {source}: {a:,} articles, {r:,} redirects "
               f"({resolved / r:.1%} resolve), {chars / 1e6:.0f} MB of lead text")
+
+        filings, filed, cats = db.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT title), COUNT(DISTINCT name) "
+            "FROM category WHERE source = ?", (source,)).fetchone()
+        if filings:
+            # Printed beside the infobox coverage because the gap between them
+            # is the point: a category is the only containment most pages have.
+            print(f"  {' ' * len(source)}  {filings:,} category filings over "
+                  f"{filed:,} articles ({filed / a:.0%}), {cats:,} categories")
 
         f, subjects, properties = db.execute(
             "SELECT COUNT(*), COUNT(DISTINCT subject), COUNT(DISTINCT property) "

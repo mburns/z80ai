@@ -8,21 +8,19 @@ and the tag pass therefore missed.
 
 from __future__ import annotations
 
-import importlib.util
 import sqlite3
 from pathlib import Path
 
 import pytest
 
+import conftest
+
 
 @pytest.fixture(scope="module")
 def ingest(repo_root):
     """data/wikipedia/ingest.py is a script in a subdirectory, not a module."""
-    path = Path(repo_root) / "data" / "wikipedia" / "ingest.py"
-    spec = importlib.util.spec_from_file_location("wiki_ingest", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return conftest.load_script(
+        str(Path(repo_root) / "data" / "wikipedia" / "ingest.py"), "wiki_ingest")
 
 
 # --- the cleaner --------------------------------------------------------------
@@ -136,7 +134,9 @@ def test_provenance_is_recorded(ingest, tmp_path):
     meta = dict(db.execute("SELECT key, value FROM meta").fetchall())
     assert meta["simplewiki.dump"] == dump.name
     assert meta["simplewiki.articles"] == "1"
-    assert meta["simplewiki.facts"] == "3"      # name, writer, genre
+    # name, writer, genre, and premiere - the last of which is a `{{start
+    # date}}` that this ingest reads and an older one deleted.
+    assert meta["simplewiki.facts"] == "4"
     assert len(meta["simplewiki.digest"]) == 16
     assert meta["schema_version"] == str(ingest.SCHEMA_VERSION)
 
@@ -218,13 +218,68 @@ def test_layout_fields_are_not_facts(ingest, tmp_path):
     assert not props & {"image", "image_size", "caption"}
 
 
-def test_a_template_valued_field_is_dropped_rather_than_stored_raw(ingest, tmp_path):
-    """`{{start date|1602}}` cleans to nothing useful, so it is not a fact.
-    Storing the braces would put them on screen."""
+def test_a_template_valued_field_is_expanded_rather_than_dropped(ingest, tmp_path):
+    """`{{start date|1602}}` is a date, and it used to be deleted.
+
+    This test previously asserted the deletion, on the reading that the value
+    "cleans to nothing useful". That is true of the cleaner and not of the
+    value: `clean` strips every `{{...}}` so a lead survives an unclosed
+    infobox, and applied to a field it threw the fact away. Measured over the
+    corpus that rule cost 232,947 values, 8.0% of every named field.
+
+    What must still hold is the reason the old behaviour was chosen - braces
+    must never reach the screen - so both halves are asserted here.
+    """
     db, _, _ = build_db(ingest, tmp_path)
     value = db.execute("SELECT value FROM fact WHERE subject='Hamlet' "
                        "AND property='premiere'").fetchone()
-    assert value is None or "{{" not in value[0]
+    assert value is not None, "the date was dropped"
+    assert value[0] == "1602"
+    assert "{{" not in value[0]
+
+
+def test_categories_are_kept_even_though_the_lead_drops_them(ingest, tmp_path):
+    """A category is not prose, so `clean()` is right to cut it from the lead.
+
+    It is still the only place many containments are written down: `Infobox
+    U.S. state` has no country field, so Michigan says it is in the United
+    States by being filed under `1837 establishments in the United States` and
+    nowhere else.
+    """
+    markup = ("Michigan is a state. [[Category:1837 establishments in the "
+              "United States]] [[Category:Michigan| ]]")
+    assert ingest.categories_of(markup) == [
+        "1837 establishments in the United States", "Michigan"]
+    assert "Category" not in ingest.clean(markup)
+
+
+def test_a_category_is_read_however_it_was_spelled(ingest):
+    """MediaWiki does not care about the case or the spacing, so neither does
+    this - and three spellings of one category would be three rows."""
+    assert ingest.categories_of("[[category:Cities in France]]") == [
+        "Cities in France"]
+    assert ingest.categories_of("[[ Category : Cities in France ]]") == [
+        "Cities in France"]
+
+
+def test_a_repeated_category_is_filed_once(ingest):
+    """The table's primary key would reject the second, so drop it here."""
+    assert ingest.categories_of("[[Category:A]] [[Category:A]]") == ["A"]
+
+
+def test_a_sort_key_is_not_part_of_the_name(ingest):
+    """`[[Category:Kings|Henry VIII]]` files under Kings; the rest is ordering."""
+    assert ingest.categories_of("[[Category:Kings|Henry VIII]]") == ["Kings"]
+
+
+def test_a_template_with_no_rule_is_still_dropped(ingest, tmp_path):
+    """Only templates whose meaning is unambiguous are read.
+
+    Inventing a reading for the rest would put a guess in the fact table, so
+    anything absent from `VALUE_TEMPLATES` keeps the old behaviour exactly.
+    """
+    assert ingest.normalize_value(ingest.clean(ingest.unexpanded(
+        ingest.expand_templates("{{some template nobody mapped|x}}")))) == ""
 
 
 def test_facts_are_replaced_on_reingest(ingest, tmp_path):

@@ -41,10 +41,10 @@ one has no other symptom — every id in it is still some article.
 |---|---|
 | `WIKI.IDX` | 33.1 MB |
 | `WIKI.DAT` | 74.5 MB |
-| `WIKI.GRF` | 2.1 MB — 150,335 edges |
+| `WIKI.GRF` | 2.4 MB — 167,922 edges |
 | `WIKI.bin` | 95.6 KB |
 
-`data/simple_english_wikipedia.db` is **not in git** — it is 337MB of derived
+`data/simple_english_wikipedia.db` is **not in git** — it is ~500MB of derived
 data, and step 2 rebuilds it from any snapshot. The dump is not in git either.
 What *is* committed is everything needed to turn one into the other.
 
@@ -53,27 +53,30 @@ back to a snapshot without asking anyone:
 
 ```console
 $ python data/wikipedia/ingest.py --stats
-  schema_version               6
+  schema_version               7
   simplewiki.articles          283997
   simplewiki.digest            adf8cbb46aabe719
   simplewiki.dump              simplewiki-20260801-pages-articles.xml.bz2
-  simplewiki.edges             150335
-  simplewiki.facts             1945061
-  simplewiki.ingested          2026-08-24T02:33:39
+  simplewiki.edges             167922
+  simplewiki.facts             2086920
+  simplewiki.ingested          2026-08-24T21:49:30
   simplewiki.redirects         114771
   simplewiki.url               https://dumps.wikimedia.org/simplewiki/20260801/...
 
   simplewiki: 283,997 articles, 114,771 redirects (97.6% resolve), 68 MB of lead
-              1,945,061 facts over 129,725 subjects (46% of articles), 9,509 properties
-              values: text 74%, number 22%, date 4%, url 0%
-              47 properties map to a relation; biggest unmapped: name (95,626),
-              subdivision_type (40,770), years (34,988), clubs (34,323), ...
+              980,928 category filings over 272,022 articles (96%), 76,102 categories
+              2,086,920 facts over 129,732 subjects (46% of articles), 9,664 properties
+              values: text 72%, number 20%, date 7%, url 1%
+              47 properties map to a relation; biggest unmapped: name (95,698),
+              birth_date (44,872), subdivision_type (40,782), years (34,994), ...
 ```
 
-That last line is the one to read. It is the corpus telling you what it knows
-that nothing yet understands - and the biggest entries are a footballer's
-career table, which is a fair summary of what Simple English Wikipedia is
-mostly made of.
+Two things to read there. The coverage lines go together — 96% of articles file
+themselves under a category against the 46% that carry an infobox, which is why
+the graph reads both. And the last line is the corpus telling you what it knows
+that nothing yet understands; the biggest entries are a footballer's career
+table, which is a fair summary of what Simple English Wikipedia is mostly made
+of.
 
 The URL is reconstructed from the filename, since a Wikimedia dump name
 carries its wiki and its date. A dump named anything else records no URL
@@ -190,7 +193,7 @@ honestly.
 
 ## Facts, for the oracle this is not
 
-The database also carries **1,945,061 facts** pulled from infoboxes — an
+The database also carries **2,086,920 facts** pulled from infoboxes — an
 infobox is a hand-curated set of typed key/value pairs, which is to say a set
 of facts about its article. The lead throws them away as furniture; the `fact`
 table keeps them.
@@ -199,6 +202,17 @@ table keeps them.
 SELECT value FROM fact WHERE subject = 'Alexander Graham Bell'
                          AND property = 'birth_place';
 -- Edinburgh, Scotland
+```
+
+Alongside it, **980,928 filings** into 76,102 categories — what a page files
+itself under rather than what it tabulates. 95.8% of articles carry at least
+one, against the 46% that carry an infobox, which is why they are here: for a
+great many pages a category is the only place a containment is written down.
+
+```sql
+SELECT name FROM category WHERE source = 'simplewiki' AND title = 'Michigan';
+-- 1837 establishments in the United States
+-- Michigan
 ```
 
 ### What the ingest normalizes, and what it refuses to
@@ -216,11 +230,44 @@ judgement about this corpus that belongs where the judgement is made.
 | keys cleaned and shape-checked | only values went through the cleaner before |
 | `subdivision_name1..7` → `(property, ordinal)` | **27.6% of facts** were positional variants |
 | values typed `text`/`number`/`date`/`url` | 22% are numbers, which sorted lexically as text |
+| known value templates read before cleaning | `{{birth date\|1847\|3\|3}}` cleaned to nothing, and the fact went with it |
 
-That takes the vocabulary from 13,387 properties to **9,509**, and costs
+That takes the vocabulary from 13,387 properties to **9,664**, and costs
 5,103 facts — 0.26%, all of them keys with no letters in them, keys longer
 than 64 characters, or fields that only existed because a comment ran into
 the key after them.
+
+### The templates were the expensive rule
+
+`clean()` strips every `{{...}}`, contents and all, because a lead has to
+survive an infobox that ran past the window we captured. Applied to a *value*
+that is a deletion, and `templates.py` measures the bill: **301,306 values are
+written as a template and 232,947 of them were dropped — 8.0% of every named
+field.** Dates being 4% of values in an encyclopedia largely made of people is
+the fingerprint of it.
+
+So a value now gets one pass of expansion first, for templates whose meaning is
+unambiguous — dates, `{{convert}}`, `{{url}}`, the list templates, and the two
+that carry relations: `{{marriage}}` on `spouse`, and `{{flag}}` on
+`subdivision_name`. Everything else still falls to `clean()`, because inventing
+a reading is worse than dropping a field.
+
+Two rules were removed again after measuring, which is the only reason they are
+worth writing down:
+
+| | |
+|---|---|
+| `{{small}}`, `{{big}}`, `{{nobold}}` | `successor = Osman Hussein {{small\|(Acting)}}` — reading the annotation turned a title that resolved into one that did not, and cost 308 edges |
+| `{{flag}}` beside a value rather than as one | `birth_place = {{flagicon\|IRI}} Urmia` is an icon next to a place; reading it gave "IRI Urmia" and cost 155 more |
+
+A flag is read only when it is the whole value. Position is the only thing that
+says whether it is the country or a picture of one.
+
+Some of the biggest losses cannot be repaired here at all: the 15,471
+`{{france metadata wikidata}}` values hold no text, because the template
+fetches a population from Wikidata at render time. Nothing is inside them to
+expand, which makes them an argument for ingesting Wikidata rather than a rule
+this table could carry.
 
 The index split is the one that needed care. `subdivision_name2` is the second
 subdivision; `area_km2` is square kilometres, and splitting it invents a field
@@ -267,6 +314,76 @@ have an infobox, so a chain that hops onto one of the other 54% cannot
 continue. The oracle is confidently right about where someone was born and
 silent about a great deal else — and the design leans into that, reporting how
 far a walk got rather than only that it failed.
+
+### Where the chains were actually breaking
+
+That paragraph was right about the cause and wrong about the remedy, which
+`coverage.py` was written to settle. Of the birthplace climbs that failed,
+**41.7% ran out of `located_in` edges and 2.2% hit the hop limit** — so the
+graph was running out of road, not failing to recognise a country when it
+arrived at one. The 193 entities it calls countries are very nearly the 195
+there are.
+
+The places it died on were not obscure: New York, Washington, Moscow,
+Maryland, Michigan. `Infobox U.S. state` has no country field at all — the
+template implies it — so there was nothing to map and nothing to normalize.
+Michigan records that it is in the United States in exactly one place, which
+is that it is filed under `1837 establishments in the United States`.
+
+So `libgraph` reads categories too, for containment and only for containment,
+with three guards that each exist because the rule without it produced
+nonsense:
+
+| guard | what it stops |
+|---|---|
+| the target must be a place | `Bands established in 2022` parses, and this encyclopedia has an article on 2022 |
+| the subject must be a place | otherwise every band formed in California is filed inside it — 70,844 edges, of which 3,763 were about places |
+| the subject must not be a person | `Presidents of France` parses exactly like `Cities in France` |
+
+"A place" is not a judgement: it is anything already on a `located_in`,
+`born_in`, `died_in` or `capital_is` edge. An infobox always outranks a
+category, so this fills gaps and never replaces — which makes it monotonic,
+and means no chain that completed before stops completing.
+
+3,945 edges, and they are the ones that were being asked for. Taken with the
+value templates and the rank fallback:
+
+| | before | after |
+|---|---:|---:|
+| edges | 150,335 | **167,922** |
+| `born_in in_country` | 45.7% | **76.9%** |
+| — questions it answers | 19,238 | **32,518** |
+| `died_in in_country` | 48.1% | **81.0%** |
+| climbs that never reach a country | 43.8% | **23.1%** |
+
+### Measuring the coverage, rather than remembering it
+
+Every number in this section used to be measured by hand and quoted, which is
+how `libgraph.py` came to claim that `birth_place -> country` completes for
+40.7% of subjects with nothing to check it against. `coverage.py` prints them
+from whatever database is in front of it:
+
+```bash
+python data/wikipedia/coverage.py                     # the table
+python data/wikipedia/coverage.py --json > before.json
+python data/wikipedia/coverage.py --baseline before.json   # with a delta column
+```
+
+It walks with `libgraph.follow` rather than joining, so it measures the
+traversal the oracle actually ships, and it reports `startable`, `answered` and
+`rate` separately **because they can move in opposite directions.** Letting
+`libgraph.build` fall through to a lower-ranked field when the best one names
+no article is worth 6,332 edges on an unchanged corpus, and on that change
+`in_country` answered 781 more questions while its *rate* fell 1.6 points —
+because everything that makes more subjects startable adds the ones that were
+failing for a reason, and they complete at less than the existing average by
+construction. A scoreboard of rates alone would have called it a regression.
+
+It is also what caught two changes that looked right and were not. Reading
+`{{small|(Acting)}}` turned resolvable titles into unresolvable ones and cost
+308 edges; reading `{{flagicon|IRI}} Urmia` as a value gave "IRI Urmia" and
+cost 155 more. Both were measured, rejected and pinned by tests, and both
+would have shipped as improvements without a before and after.
 
 ## Redirects earn their place
 

@@ -33,9 +33,10 @@ def db():
     return conn
 
 
-def load(db, articles, facts, redirects=()):
+def load(db, articles, facts, redirects=(), categories=()):
     """`facts` are (subject, property, value) or (subject, property, ordinal,
-    value) - the ordinal defaults to 0, the way an unindexed field does."""
+    value) - the ordinal defaults to 0, the way an unindexed field does.
+    `categories` are (title, name), the way a page files itself."""
     db.executemany("INSERT INTO article (source, title, lead) "
                    "VALUES ('w', ?, '')", [(a,) for a in articles])
     db.executemany("INSERT INTO redirect VALUES ('w', ?, ?)", redirects)
@@ -43,6 +44,8 @@ def load(db, articles, facts, redirects=()):
         "INSERT OR REPLACE INTO fact (source, subject, property, ordinal, "
         "value, kind, num) VALUES ('w', ?, ?, ?, ?, 'text', NULL)",
         [(f[0], f[1], 0, f[2]) if len(f) == 3 else f for f in facts])
+    db.executemany("INSERT OR REPLACE INTO category VALUES ('w', ?, ?)",
+                   categories)
     libgraph.build(db, "w")
 
 
@@ -72,10 +75,147 @@ def test_the_most_specific_field_wins(db):
     assert edges == [("Germany",)]      # `country` outranks `subdivision_name`
 
 
+def test_a_lower_ranked_field_wins_when_the_better_one_names_no_article(db):
+    """Ranking decides between usable values, not on behalf of an unusable one.
+
+    `writer` outranks `artist` for `created_by`, and a song's writer is often a
+    list of three people that names no article while its artist names one. The
+    rank alone would drop a `created_by` answer the page plainly holds; this
+    cost 199 edges when a change to the ingest started populating fields that
+    had previously been empty.
+    """
+    load(db, ["A Broken Wing", "Martina McBride"],
+         [("A Broken Wing", "writer", "Phil Barnhart, Sam Hogin, James House"),
+          ("A Broken Wing", "artist", "Martina McBride")])
+    edges = db.execute("SELECT object FROM edge WHERE subject='A Broken Wing' "
+                       "AND relation='created_by'").fetchall()
+    assert edges == [("Martina McBride",)]
+
+
+def test_the_better_field_still_wins_when_both_resolve(db):
+    """The fallback must not become a preference for whatever resolves last."""
+    load(db, ["A Song", "A Writer", "A Singer"],
+         [("A Song", "writer", "A Writer"), ("A Song", "artist", "A Singer")])
+    edges = db.execute("SELECT object FROM edge WHERE subject='A Song' "
+                       "AND relation='created_by'").fetchall()
+    assert edges == [("A Writer",)]
+
+
 def test_a_value_naming_no_article_is_dropped(db):
     """A hop can only continue to something the corpus actually holds."""
     load(db, ["Alan Turing"], [("Alan Turing", "birth_place", "Nowhere-at-all")])
     assert db.execute("SELECT COUNT(*) FROM edge").fetchone()[0] == 0
+
+
+# --- containment a page files rather than tabulates ---------------------------
+#
+# `Infobox U.S. state` has no country field, so Michigan is in the United
+# States only by being filed under `1837 establishments in the United States`.
+# Reading those rescued 2,869 of the 4,686 distinct places a birthplace climb
+# died on, and took `born_in in_country` from 56.2% to 72.1%. The guards below
+# are each here because the rule without them produced nonsense.
+
+
+def located(db, subject):
+    row = db.execute("SELECT object FROM edge WHERE subject = ? "
+                     "AND relation = 'located_in'", (subject,)).fetchone()
+    return row[0] if row else None
+
+
+def test_a_category_supplies_containment_the_infobox_never_had(db):
+    """The finding: a place whose template has no country field at all.
+
+    Also the leading-article case, which is most of them. English writes "in
+    the United States" and Wikipedia titles the article "United States", so a
+    tail taken literally resolves to nothing and Michigan stays unplaced.
+    """
+    load(db, ["Michigan", "United States", "Detroit"],
+         [("Detroit", "birth_place", "Michigan"),      # makes Michigan a place
+          ("Detroit", "country", "United States")],
+         categories=[("Michigan", "1837 establishments in the United States")])
+    assert located(db, "Michigan") == "United States"
+
+
+def test_an_infobox_outranks_a_category(db):
+    """A page that said where it was keeps what it said. The category is the
+    weaker evidence, so this fills gaps and never replaces - which is what
+    makes it monotonic: no chain that completed before stops completing."""
+    load(db, ["Berlin", "Germany", "France"],
+         [("Berlin", "country", "Germany")],
+         categories=[("Berlin", "Cities in France")])
+    assert located(db, "Berlin") == "Germany"
+
+
+def test_a_person_is_not_contained_by_their_category(db):
+    """`Presidents of France` parses exactly like `Cities in France`."""
+    load(db, ["Charles de Gaulle", "France", "Paris"],
+         [("Charles de Gaulle", "birth_place", "Paris"),
+          ("Paris", "country", "France")],
+         categories=[("Charles de Gaulle", "Presidents of France")])
+    assert located(db, "Charles de Gaulle") is None
+
+
+def test_a_target_that_is_not_a_place_is_refused(db):
+    """"Bands established in 2022" parses, and this corpus has an article on
+    2022. Without this guard the naive rule filed things inside years."""
+    load(db, ["Some Band", "2022", "Somewhere", "A Country"],
+         [("Some Band", "birth_place", "Somewhere"),
+          ("Somewhere", "country", "A Country")],
+         categories=[("Some Band", "Bands established in 2022")])
+    assert located(db, "Some Band") is None
+
+
+def test_a_subject_that_is_not_a_place_is_refused(db):
+    """Otherwise every band formed in California is filed inside it - 70,844
+    edges, of which 3,763 were about places."""
+    load(db, ["A Band", "California", "United States"],
+         [("California", "country", "United States")],
+         categories=[("A Band", "Musical groups in California")])
+    assert located(db, "A Band") is None
+
+
+def test_the_returned_count_is_what_the_table_holds(db):
+    """The caller writes it into `meta` as the size of the graph.
+
+    Counting only the infobox edges recorded 163,977 against a table holding
+    167,922 - a provenance number that disagrees with the thing it describes,
+    which is worse than not having one.
+    """
+    load(db, ["Aarhus", "Denmark", "Copenhagen"],
+         [("Copenhagen", "birth_place", "Aarhus")],
+         categories=[("Aarhus", "Cities in Denmark")])
+    reported, _dropped = libgraph.build(db, "w")
+    held = db.execute("SELECT COUNT(*) FROM edge WHERE source = 'w'").fetchone()[0]
+    assert reported == held
+
+
+def test_a_country_is_preferred_to_a_continent(db):
+    """A climb carries on from a country and stops dead at a continent, and
+    rows arrive in primary-key order, which is alphabetical and means nothing.
+
+    Denmark is deliberately given no `located_in` of its own, so the only
+    thing that can prefer it here is that three infoboxes call it a country -
+    which means this fails if `entity_type` is not built before the categories
+    are read. Written the other way round, it passes on the alphabet.
+
+    That ordering is worth 365 edges and 821 completed chains on the real
+    corpus, and it is invisible to any measurement taken by re-running `build`
+    against a database that already has an `entity_type`: the stale rows are
+    right, so the wrong order gets the right answer. Only a fresh ingest shows
+    it, which is why this is a test and not a number in a README.
+    """
+    load(db, ["Aarhus", "Denmark", "Europe", "Copenhagen", "Berlin", "Oslo",
+              "Iceland"],
+         [("Copenhagen", "birth_place", "Aarhus"),   # makes Aarhus a place
+          ("Copenhagen", "country", "Denmark"),
+          ("Berlin", "country", "Denmark"),
+          ("Oslo", "country", "Denmark"),            # three votes: a country
+          ("Iceland", "country", "Europe")],         # one: a place, not a country
+         categories=[("Aarhus", "Cities in Denmark"),
+                     ("Aarhus", "Cities in Europe")])
+    assert libgraph.is_a(db, "w", "Denmark", "country")
+    assert not libgraph.is_a(db, "w", "Europe", "country")
+    assert located(db, "Aarhus") == "Denmark"
 
 
 def test_a_value_resolves_through_a_redirect(db):

@@ -11,6 +11,10 @@ cpm
 *.bin
 packages/
 dist/
+# The MediaWiki dump itself, which data/wikipedia/README.md tells you to fetch
+# into this directory. 338MB, and every byte of it is on dumps.wikimedia.org.
+*.xml.bz2
+
 # Built from a MediaWiki dump by data/wikipedia/ingest.py - ~110MB, and
 # reproducible from any snapshot, so it is not worth a git object. The -wal
 # and -shm sidecars are SQLite's, and appear whenever the database is opened.
