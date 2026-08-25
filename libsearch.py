@@ -64,6 +64,27 @@ MAX_QUERY_TERMS = 8
 TITLE_WEIGHT = 3
 K1, B = 1.5, 0.75
 
+#: How hard an article's alternate names push it up the ranking.
+#:
+#: BM25 rewards a short document that repeats a term, and neither of those is
+#: evidence of being the article someone meant. Measured over twenty question
+#: probes on the full corpus, every single miss was a *derived* article beating
+#: the thing it derives from - "Pierre and Marie Curie University" over Marie
+#: Curie, "Albert Einstein Square" over Albert Einstein, "Reception history of
+#: Jane Austen" over Jane Austen, "East Berlin" over Berlin. Each is a shorter
+#: page that mentions the name more often.
+#:
+#: Wikipedia's editors have already voted on which is which, by writing
+#: redirects: Napoleon has twelve alternate names and Napoleon II has three.
+#:
+#: At 1.0 the probe set goes from 50% to 85% first-place and 75% to 100%
+#: in the top three. **Not swept.** The obvious next value to try is 0.5,
+#: since one probe suggests a famous article can now outrank a relevant
+#: one - "what language is spoken in brazil" answers with English before
+#: Brazil - and the run that would have measured it was killed by memory
+#: pressure rather than telling us anything.
+FAME = 1.0
+
 WORD = re.compile(r"[a-z0-9]+")
 
 #: Dropped before indexing. BM25's idf already demotes them, but they are a
@@ -159,6 +180,12 @@ def build(titles: list[str], leads: list[str],
 
     # BM25, then quantized. The scale is set by the largest weight in the whole
     # index so the quantization is one global mapping the device need not know.
+    # How many alternate names point at each article, which is the only
+    # notability signal this corpus carries - and it is already here, because
+    # `aliases` *is* the redirect list. `--limit` has ranked by it since the
+    # first card; scoring did not, and that is the whole of the bug below.
+    fame = [FAME * math.log1p(len(aliases.get(doc, ()))) for doc in range(num_docs)]
+
     scored: dict[str, list[tuple[int, float]]] = {}
     largest = 0.0
     for term, docs in raw.items():
@@ -166,7 +193,7 @@ def build(titles: list[str], leads: list[str],
         entries = []
         for doc, tf in docs.items():
             norm = 1 - B + B * length[doc] / avg_len
-            weight = idf * tf * (K1 + 1) / (tf + K1 * norm)
+            weight = idf * tf * (K1 + 1) / (tf + K1 * norm) * (1 + fame[doc])
             largest = max(largest, weight)
             entries.append((doc, weight))
         scored[term] = entries
