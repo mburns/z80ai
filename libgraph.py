@@ -272,6 +272,33 @@ def from_categories(db: sqlite3.Connection, source: str, resolve: Resolver,
     and a category is the weaker evidence, so this fills gaps and never
     replaces. It is therefore monotonic: a chain that completed before still
     completes, by the same route.
+
+    ## And what `People from X` is not
+
+    Containment only. ``People from X`` looks like the obvious next win - 16,348
+    filings, and 6,029 of them would be a ``born_in`` edge for someone who has
+    none, which is a 14% rise on a relation the whole oracle leans on. It was
+    measured and rejected.
+
+    The corpus grades it for free: 8,972 of those people already have a
+    birthplace from an infobox, so the two can be compared directly.
+
+        names the same place                4,282   47.7%
+        names one the graph can relate       842    9.4%
+        names something else               3,848   42.9%
+
+    Some of that last group is a coarser containment the graph has not learned
+    yet - Doris Leuthard's infobox says Merenschwand and her category says
+    Aargau, and Merenschwand is in Aargau. Others are simply different places:
+    three of the first five are people the category files under *Aberdeen,
+    South Dakota* whose infobox says *Aberdeen*.
+
+    Either way the error rate is tens of percent against a source that is
+    essentially exact, and it would land on the one question this machine
+    answers confidently. `from` is not `born in`: it takes in where someone grew
+    up, worked, or is associated with, and Wikipedia's editors use it that
+    loosely. 6,029 more answers are not worth making the existing 42,288 less
+    trustworthy.
     """
     try:
         filings = db.execute(
