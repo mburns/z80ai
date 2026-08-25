@@ -1112,7 +1112,9 @@ def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
     b.ld_hl_mem_label("BESTID")
     b.ld_mem_label_hl("GW_HERE")
     b.ld_hl_nn(spec.forward_at)
-    b.ld_mem_label_hl("GW_BASE")
+    b.ld_mem_label_hl("GW_FWD")
+    b.ld_hl_nn(spec.forward_at + spec.num_edges * libgraphcard.EDGE_SIZE)
+    b.ld_mem_label_hl("GW_REV")
     b.call("GW_FOLLOW")
     b.jp_c("RP_SHOW")                # no fact: hand over the articles instead
 

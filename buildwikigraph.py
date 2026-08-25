@@ -69,9 +69,11 @@ def paths_for(phrases: list[str], relations: list[str],
     """Turn the model's phrase list into a step list per phrase.
 
     A phrase is a path written out - "BORN_IN IN_COUNTRY" - and each word is
-    either a relation or one of libgraph's climbs. An inverse (`..._of`) has no
-    step form yet, so it becomes an empty path and the program falls back to
-    search rather than walking something it cannot.
+    either a relation, one of libgraph's climbs, or a relation read backwards.
+
+    `born_in_of` is "who was born here": the same row from the other end, which
+    the card already holds sorted the other way. It costs a flag on the step's
+    relation byte, and without it a third of this vocabulary is inert.
     """
     out: list[list[tuple[int, int]]] = []
     for phrase in phrases:
@@ -87,7 +89,11 @@ def paths_for(phrases: list[str], relations: list[str],
             if word in relations:
                 steps.append((relations.index(word), libgraphcard.PLAIN))
                 continue
-            steps = []              # an inverse, or a relation with no edges
+            if word.endswith("_of") and word[:-3] in relations:
+                steps.append((relations.index(word[:-3]) | libgraphcard.INVERSE,
+                              libgraphcard.PLAIN))
+                continue
+            steps = []              # a relation this corpus has no edges for
             break
         out.append(steps)
     return out
