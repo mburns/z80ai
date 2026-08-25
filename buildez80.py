@@ -562,6 +562,158 @@ def _emit_layers_unrolled(b: EZ80Builder, model: BuildInputs) -> None:
 KERNELS = ('column', 'row', 'compact')
 
 
+def _emit_argmax(b: EZ80Builder) -> None:
+    """First-wins argmax over OUTBUF, leaving the index in RESULT.
+
+    Lifted out of build_autoreg so a program that is not a chat loop can
+    still classify - the oracle needs the phrase index and none of the
+    printing that used to follow it.
+    """
+    # First-wins argmax over OUTBUF, matching libinfer.argmax.
+    #
+    # SP walks the buffer so each POP reads a 24-bit logit and advances in one
+    # instruction; the loop ends by comparing SP against OUTEND rather than
+    # counting in B.  A byte counter is what limited this to 256 outputs while
+    # the module advertised no width limit at all, and it failed silently: a
+    # 299-entry charset assembled to `LD B,43` and argmaxed over the first 44
+    # logits.  Index and result are 24-bit for the same reason.
+    b.label('ARGMAX')
+    b.ld_mem_label_sp('SPSAV')
+    b.di()
+    b.ld_sp_label('OUTBUF')
+    b.ld_hl_nn(0)
+    b.ld_mem_label_hl('MAXI')
+    b.ld_mem_label_hl('IDX')
+    b.pop_de()  # running maximum = OUTBUF[0]
+
+    b.label('AMLP')
+    b.ld_mem_label_sp('SPTMP')
+    b.ld_hl_mem_label('SPTMP')
+    b.ld_bc_label('OUTEND')
+    b.or_a()
+    b.sbc_hl_bc()
+    b.jp_z('AMDONE')
+
+    b.ld_hl_mem_label('IDX')
+    b.inc_hl()
+    b.ld_mem_label_hl('IDX')
+
+    b.pop_hl()
+    b.ld_mem_label_hl('TMPV')
+    b.or_a()
+    b.sbc_hl_de()
+    b.jp_m('AMLP')  # below the running maximum
+    b.jp_z('AMLP')  # equal: the earlier index wins
+    b.ld_de_mem_label('TMPV')
+    b.ld_hl_mem_label('IDX')
+    b.ld_mem_label_hl('MAXI')
+    b.jp('AMLP')
+
+    b.label('AMDONE')
+    b.ld_sp_mem_label('SPSAV')
+    b.ei()
+    b.ld_hl_mem_label('MAXI')
+    b.ld_mem_label_hl('RESULT')
+    b.ret()
+
+
+def _emit_tokenizer_helpers(b: EZ80Builder, plat: libnn.Platform,
+                            position_bands: int) -> None:
+    """LOWER, BUCKET_ADD, TOKENIZE, TOK_HASH and the two hash steps.
+
+    The eZ80's own rather than libnn's, because an activation is three
+    bytes here and libnn's writes two - which is precisely what
+    ``Platform.activation_size`` documents as the boundary of what can be
+    shared. Lifted out of build_autoreg so a program that classifies
+    without being a chat loop can tokenize.
+    """
+    # === LOWER: fold A-Z to lower case, everything else untouched ============
+    b.label('LOWER')
+    libnn.emit_lower_fold(b)
+    b.ret()
+
+    # === BUCKET_ADD: (HL + 3*A) += 32 ========================================
+    b.label('BUCKET_ADD')
+    b.ld_de_nn(0)
+    b.ld_e_a()
+    b.ex_de_hl()        # HL = index, DE = base
+    b.add_hl_hl()       # index * 2
+    b.ld_bc_nn(0)
+    b.ld_c_a()
+    b.add_hl_bc()       # index * 3
+    b.add_hl_de()       # base + index * 3
+    b.ld_a_hl()
+    b.add_a_n(32)
+    b.ld_hl_a()
+    b.inc_hl()
+    b.ld_a_hl()
+    b.adc_a_n(0)
+    b.ld_hl_a()
+    b.inc_hl()
+    b.ld_a_hl()
+    b.adc_a_n(0)
+    b.ld_hl_a()
+    b.ret()
+
+    # === TOKENIZE: query text -> first 128 buckets ===========================
+    # The state machine is libnn's, and TOK_HASH below is what it calls. The
+    # trigram walk is where a divergence would be silent: two tokenizers that
+    # disagree still both produce plausible buckets, and the model would answer
+    # confidently and wrongly rather than crash.
+    libnn.emit_tokenizer(b, plat, position_bands)
+
+    b.label('TOK_DONE')
+    b.ret()
+
+    # === TOK_HASH: h = ((c1*31 + c2)*31 + c3), bucket = h & 127 ==============
+    b.label('TOK_HASH')
+    b.push_de()
+    b.ld_hl_nn(0)
+    if position_bands > 1:
+        # Seed with the trigram's position band. Both halves come from libnn:
+        # they are libinfer.position_band and BAND_SEED rendered as code, and
+        # the Z80 backends emit the same two.
+        libnn.emit_band_index(b, position_bands)
+        b.ld_l_a()
+        libnn.emit_times_seven(b, 'bc')
+        b.call('HASH_STEP2')
+        b.ld_a_mem_label('TOKC1')
+        b.call('HASH_ADD')
+    else:
+        b.ld_a_mem_label('TOKC1')
+        b.ld_l_a()
+    b.call('HASH_STEP2')
+    b.ld_a_mem_label('TOKC2')
+    b.call('HASH_ADD')
+    b.call('HASH_STEP2')
+    b.ld_a_mem_label('TOKC3')
+    b.call('HASH_ADD')
+    b.ld_a_l()
+    b.and_n(NUM_BUCKETS - 1)
+    b.ld_hl_label('INBUF')
+    b.call('BUCKET_ADD')
+    b.pop_de()
+    if position_bands > 1:
+        b.ld_a_mem_label('TOKPOS')
+        b.inc_a()
+        b.ld_mem_label_a('TOKPOS')
+    b.ret()
+
+    # HASH_STEP2: HL *= 31.  HASH_ADD: HL += A.
+    # Both scratch through BC, never DE: CTX_HASH keeps its character pointer
+    # in DE across the whole loop.
+    b.label('HASH_STEP2')
+    libnn.emit_hash_step(b, 'bc')
+    b.ret()
+
+    b.label('HASH_ADD')
+    b.ld_bc_nn(0)
+    b.ld_c_a()
+    b.add_hl_bc()
+    b.ret()
+
+
+
 def build_autoreg(model_path: str = 'command_model_autoreg.pt',
                   max_output_len: int = MAX_OUTPUT_LEN,
                   org: int = AGON_LOAD_ADDR,
@@ -752,137 +904,9 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
 
 
     # === ARGMAX ==============================================================
-    # First-wins argmax over OUTBUF, matching libinfer.argmax.
-    #
-    # SP walks the buffer so each POP reads a 24-bit logit and advances in one
-    # instruction; the loop ends by comparing SP against OUTEND rather than
-    # counting in B.  A byte counter is what limited this to 256 outputs while
-    # the module advertised no width limit at all, and it failed silently: a
-    # 299-entry charset assembled to `LD B,43` and argmaxed over the first 44
-    # logits.  Index and result are 24-bit for the same reason.
-    b.label('ARGMAX')
-    b.ld_mem_label_sp('SPSAV')
-    b.di()
-    b.ld_sp_label('OUTBUF')
-    b.ld_hl_nn(0)
-    b.ld_mem_label_hl('MAXI')
-    b.ld_mem_label_hl('IDX')
-    b.pop_de()  # running maximum = OUTBUF[0]
+    _emit_argmax(b)
 
-    b.label('AMLP')
-    b.ld_mem_label_sp('SPTMP')
-    b.ld_hl_mem_label('SPTMP')
-    b.ld_bc_label('OUTEND')
-    b.or_a()
-    b.sbc_hl_bc()
-    b.jp_z('AMDONE')
-
-    b.ld_hl_mem_label('IDX')
-    b.inc_hl()
-    b.ld_mem_label_hl('IDX')
-
-    b.pop_hl()
-    b.ld_mem_label_hl('TMPV')
-    b.or_a()
-    b.sbc_hl_de()
-    b.jp_m('AMLP')  # below the running maximum
-    b.jp_z('AMLP')  # equal: the earlier index wins
-    b.ld_de_mem_label('TMPV')
-    b.ld_hl_mem_label('IDX')
-    b.ld_mem_label_hl('MAXI')
-    b.jp('AMLP')
-
-    b.label('AMDONE')
-    b.ld_sp_mem_label('SPSAV')
-    b.ei()
-    b.ld_hl_mem_label('MAXI')
-    b.ld_mem_label_hl('RESULT')
-    b.ret()
-
-    # === LOWER: fold A-Z to lower case, everything else untouched ============
-    b.label('LOWER')
-    libnn.emit_lower_fold(b)
-    b.ret()
-
-    # === BUCKET_ADD: (HL + 3*A) += 32 ========================================
-    b.label('BUCKET_ADD')
-    b.ld_de_nn(0)
-    b.ld_e_a()
-    b.ex_de_hl()        # HL = index, DE = base
-    b.add_hl_hl()       # index * 2
-    b.ld_bc_nn(0)
-    b.ld_c_a()
-    b.add_hl_bc()       # index * 3
-    b.add_hl_de()       # base + index * 3
-    b.ld_a_hl()
-    b.add_a_n(32)
-    b.ld_hl_a()
-    b.inc_hl()
-    b.ld_a_hl()
-    b.adc_a_n(0)
-    b.ld_hl_a()
-    b.inc_hl()
-    b.ld_a_hl()
-    b.adc_a_n(0)
-    b.ld_hl_a()
-    b.ret()
-
-    # === TOKENIZE: query text -> first 128 buckets ===========================
-    # The state machine is libnn's, and TOK_HASH below is what it calls. The
-    # trigram walk is where a divergence would be silent: two tokenizers that
-    # disagree still both produce plausible buckets, and the model would answer
-    # confidently and wrongly rather than crash.
-    libnn.emit_tokenizer(b, plat, position_bands)
-
-    b.label('TOK_DONE')
-    b.ret()
-
-    # === TOK_HASH: h = ((c1*31 + c2)*31 + c3), bucket = h & 127 ==============
-    b.label('TOK_HASH')
-    b.push_de()
-    b.ld_hl_nn(0)
-    if position_bands > 1:
-        # Seed with the trigram's position band. Both halves come from libnn:
-        # they are libinfer.position_band and BAND_SEED rendered as code, and
-        # the Z80 backends emit the same two.
-        libnn.emit_band_index(b, position_bands)
-        b.ld_l_a()
-        libnn.emit_times_seven(b, 'bc')
-        b.call('HASH_STEP2')
-        b.ld_a_mem_label('TOKC1')
-        b.call('HASH_ADD')
-    else:
-        b.ld_a_mem_label('TOKC1')
-        b.ld_l_a()
-    b.call('HASH_STEP2')
-    b.ld_a_mem_label('TOKC2')
-    b.call('HASH_ADD')
-    b.call('HASH_STEP2')
-    b.ld_a_mem_label('TOKC3')
-    b.call('HASH_ADD')
-    b.ld_a_l()
-    b.and_n(NUM_BUCKETS - 1)
-    b.ld_hl_label('INBUF')
-    b.call('BUCKET_ADD')
-    b.pop_de()
-    if position_bands > 1:
-        b.ld_a_mem_label('TOKPOS')
-        b.inc_a()
-        b.ld_mem_label_a('TOKPOS')
-    b.ret()
-
-    # HASH_STEP2: HL *= 31.  HASH_ADD: HL += A.
-    # Both scratch through BC, never DE: CTX_HASH keeps its character pointer
-    # in DE across the whole loop.
-    b.label('HASH_STEP2')
-    libnn.emit_hash_step(b, 'bc')
-    b.ret()
-
-    b.label('HASH_ADD')
-    b.ld_bc_nn(0)
-    b.ld_c_a()
-    b.add_hl_bc()
-    b.ret()
+    _emit_tokenizer_helpers(b, plat, position_bands)
 
     # === CLEAR_CTX / UPDATE_CTX / ENCODE_CTX =================================
     # Identical on both machines - the context window is eight bytes wide
