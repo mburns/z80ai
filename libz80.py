@@ -47,6 +47,16 @@ class Z80Builder:
     def label(self, name: str) -> None:
         self.labels[name] = self.addr()
 
+    def equ(self, name: str, addr: int) -> None:
+        """Name an address the image does not contain.
+
+        `ds` reserves space by emitting that many zero bytes, which is fine for
+        a table worth carrying and wasteful for scratch. A buffer named this way
+        costs nothing in the file; the caller owns the address and must keep it
+        clear of both the image and anything else living above it.
+        """
+        self.labels[name] = addr
+
     def emit(self, *values: int) -> None:
         for value in values:
             self.code.append(value & 0xFF)
