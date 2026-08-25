@@ -63,10 +63,17 @@ def _amsdos(builder: Z80Builder, artifact: str) -> bytes:
 # duplicated trigram walk costs - and that walk is where a divergence would be
 # silent, since two tokenizers that disagree both produce plausible buckets.
 #
+# The four packed targets - CP/M, ZX, Next, CPC - moved again when LAYER was
+# rewritten around registers. The input pointer, the packed byte and the
+# weights-into-this-byte counter all lived in memory and were reloaded on every
+# single weight; they live in HL, C and the unrolled body now, and a byte whose
+# four codes are all zero is skipped whole. 2.04x fewer T-states for 112 bytes,
+# same arithmetic - test_kernels compares the logits value by value.
+#
 # artifact -> (module, example, sha256 of the image as written to disk)
 GOLDEN = {
     "GUESS.COM": (buildz80com, "guess",
-                  "7345258bf7e2f14acfc5a5231ecdcc2c6aa8dda4fb75022cd50ce6af16b72f81"),
+                  "f2542509bc64e854790914ba25dac3ca7c3710d4725f39871b3ba28b8f2ef1c2"),
     "GUESS-FAST.COM": (buildfastz80com, "guess",
                        "62ad3bfdccae35043b5a8949a03fe7e930d5b0a8323b3e116467765c1ac8e8aa"),
     # New: the column-major CP/M layout, 2.9x fewer instructions than the
@@ -81,7 +88,7 @@ GOLDEN = {
     # Changed when tinychat's 502 replies were collapsed onto a 21-word
     # vocabulary and then onto 11; the model is retrained on it.
     "CHAT.COM": (buildz80com, "tinychat",
-                 "853e02504b69b2999c7b2e45de422b96b028ecf6db88cc097624e94408a8cc8b"),
+                 "c83b4c8424f120fc8ab22d16858138053937204989248e2efcfa22315e9719ac"),
     "CHAT-FAST.COM": (buildfastz80com, "tinychat",
                       "5650ccaaf0c2cb13031f93e2a4aee543127cefc4bd0cafcd5d88cf8cea915f79"),
     "CHAT-COL.COM": (buildcolz80com, "tinychat",
@@ -89,7 +96,7 @@ GOLDEN = {
     "CHAT.bin": (buildez80, "tinychat",
                  "1706a1a6bdf540268fc372c4ecbebee3f033641d2049ce5299541a1e597ccb89"),
     "TALK.COM": (buildz80com, "smalltalk",
-                 "15103b7585005752a016a117a74a02e0debc1fb5a4802b00e44096f05dbbe5df"),
+                 "e76539a7e07e8f6c1fdcbdae834ed3feaa696d84a2685dabcc4f72a37be9d7dc"),
     "TALK-FAST.COM": (buildfastz80com, "smalltalk",
                       "7e800c577e211c71185fe981b37126aa4ad836c88307e9d1d0032a6d14c7ef7b"),
     "TALK-COL.COM": (buildcolz80com, "smalltalk",
@@ -145,26 +152,26 @@ GOLDEN_WRAPPED = {
     # Changed when the ZX build adopted the CP/M inner loop: same arithmetic,
     # 26% fewer instructions, 32 bytes smaller.
     "GUESS.TAP": (buildz80tap, _tap, "guess",
-                  "efb61f6020fbb08235e31d9f0a1f908855167ab48c20b112175538d535f39105"),
+                  "27088804c829840df57a98459fa4636e40d6ea7990273083cb14fe096f9e5722"),
     "CHAT.TAP": (buildz80tap, _tap, "tinychat",
-                 "dfbd3ae158a4802d313cdf61cd41f88b4f8080c6716246a6c31283476e9c34de"),
+                 "f696ee2774e0dc652fef41d0018f215f534bd626a83c9610e914e48958babc5a"),
     "TALK.TAP": (buildz80tap, _tap, "smalltalk",
-                 "d0fb21d7812f4f3db38823a37799deb87ff7040338ed6902517f6680567a9604"),
+                 "9a136b3990c44d1f060c268bee706dd3b1b4935060bda9f571ce266c9bd5ba1e"),
     # New: the Next build. Byte-for-byte the Spectrum's, plus the six bytes
     # that ask for 28MHz, so its hash moves whenever the ZX one does.
     "GUESS-NEXT.TAP": (buildnext, _tap, "guess",
-                       "122adf3499d3dd0d01bdb253b84e989e385f849968ded183c9ed611717e095d4"),
+                       "b68961cb5b1f7b9820036d267c5606446ea89c2998e376ec091e1a916b0f575b"),
     "CHAT-NEXT.TAP": (buildnext, _tap, "tinychat",
-                      "06c669dcd4746444eec2fdc01d19c5660b8d2e277876ea5597a0133ea31fca18"),
+                      "e7c23f784ce4aa60b11ebccd6a630930a22eae31b35f4c38338bd51e83258c7e"),
     "TALK-NEXT.TAP": (buildnext, _tap, "smalltalk",
-                      "737a4b526bfcbce6ecf68c2e134630e1a02e847fdd118767891e33482c66cdae"),
+                      "3359f8d5d4f1dfb1a58e3ba9f0e36458d962e4aee0b1214550244258b9123623"),
     # New: the Amstrad CPC build, inside the AMSDOS header RUN" reads.
     "GUESS-CPC.BIN": (buildcpc, _amsdos, "guess",
-                      "e443e98c98cd5503194d79816be90bd978787df7987bd067c8880f7762f977ad"),
+                      "2f9230fb96dc0aca49c5de31a7709f07fbc9b9e716f4fc40a3f9115673aadbf1"),
     "CHAT-CPC.BIN": (buildcpc, _amsdos, "tinychat",
-                     "540c5350864cf7a8df948b21d2816239222916db3d269728a0715ce256302218"),
+                     "7bc6d4750eb1b4847b2c444444eb3c191d9d53d79ed59b2125b2fa679642d42a"),
     "TALK-CPC.BIN": (buildcpc, _amsdos, "smalltalk",
-                     "ad7289e3fd54d442dfddee3acedac718b6c587f1f4918bbdb0d6989ce8bb65fc"),
+                     "2eca2aa97c2a883ba69964959a779e5aa71cd74b613b82192764c0ca09b72fe8"),
 }
 
 

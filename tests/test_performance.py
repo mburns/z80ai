@@ -30,12 +30,12 @@ import bench
 FORWARD_PASS = {
     # CP/M, and the same image on three other Z80 machines. The weight layout
     # is what differs; the engine is identical, which is why they tie.
-    "com": 2_313_383,      # packed 2-bit weights, unpacked in the inner loop
-    "fast": 256_473,       # index list per weight value: 9.0x
-    "col": 95_247,         # index list per input column: 24.3x
-    "tap": 2_313_383,      # ZX Spectrum, packed
-    "next": 2_313_383,     # the same image; the Next's win is its clock
-    "cpc": 2_313_383,      # Amstrad CPC, packed
+    "com": 1_246_304,      # packed 2-bit weights, unpacked in the inner loop
+    "fast": 256_473,       # index list per weight value: 4.9x
+    "col": 95_247,         # index list per input column: 13.1x
+    "tap": 1_246_304,      # ZX Spectrum, packed
+    "next": 1_246_304,     # the same image; the Next's win is its clock
+    "cpc": 1_246_304,      # Amstrad CPC, packed
     # eZ80. Unrolling is what the 24-bit address space buys.
     "ez80-compact": 923_194,   # one byte per weight, walked at runtime
     "ez80-row": 90_340,        # unrolled weight-major: 10.2x
@@ -46,12 +46,12 @@ FORWARD_PASS = {
 #: instruction count can stay put while the cycle count moves - swapping an
 #: instruction for a slower one of the same size does exactly that.
 TSTATES = {
-    "com": 20_698_833,
+    "com": 9_902_388,
     "fast": 1_598_895,
     "col": 758_697,
-    "tap": 20_698_833,
-    "next": 20_698_833,
-    "cpc": 20_698_833,
+    "tap": 9_902_388,
+    "next": 9_902_388,
+    "cpc": 9_902_388,
 }
 
 

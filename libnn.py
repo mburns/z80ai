@@ -48,7 +48,13 @@ from typing import Any, Literal
 # and does so quietly.
 import numpy.typing as npt
 
-from libinfer import BUCKET_WEIGHT, CONTEXT_LEN, NUM_BUCKETS, BuildInputs
+from libinfer import (
+    BUCKET_WEIGHT,
+    CONTEXT_LEN,
+    NUM_BUCKETS,
+    BuildInputs,
+    row_stride,
+)
 from libz80 import Z80Builder
 
 #: The register pair an emitter may borrow to shift-and-subtract through.
@@ -495,7 +501,7 @@ def emit_layer_dispatch(
         b.ld_ix_label(plan.in_buffer, plan.in_offset)
         b.ld_iy_label(plan.out_buffer)
         b.ld_b_n(_byte_count(plan.out_size))
-        b.ld_c_n(_byte_count(plan.in_size))
+        b.ld_c_n(row_stride(plan.in_size))
         if not plan.is_last:
             b.jp(walker)
         # The last stub falls through into the walker, which follows.
@@ -509,18 +515,64 @@ def emit_query_dispatch(b: Z80Builder, plan: LayerPlan) -> None:
     b.ld_ix_label(plan.in_buffer, plan.in_offset)
     b.ld_iy_label(plan.out_buffer)
     b.ld_b_n(_byte_count(plan.out_size))
-    b.ld_c_n(_byte_count(plan.in_size))
+    b.ld_c_n(row_stride(plan.in_size))
     b.jp("QLAYER")
+
+
+def _emit_packed_weight(b: Z80Builder, prefix: str, k: int) -> None:
+    """One weight from the shift register in C, with the input pointer in HL.
+
+    The rotate-then-mask order is the packing's, not a choice: `pack_2bit`'s
+    rotated layout puts the four codes at bits 3:2, 5:4, 7:6, 1:0, so two
+    rotations right bring each one down to 3:0 in turn and the fourth wraps the
+    byte back to where it started.
+
+    A zero weight only advances the pointer. That is the whole reason this is
+    worth unrolling: about 73% of a trained model's weights are zero, so the
+    common path never touches the activation at all.
+    """
+    b.ld_a_c()
+    b.rrca()
+    b.rrca()
+    b.ld_c_a()
+    b.and_n(0x03)
+    b.dec_a()  # code 1 is a zero weight, the common case
+    b.jr_z(f"{prefix}Z{k}")
+
+    b.ld_e_hl()
+    b.inc_hl()
+    b.ld_d_hl()
+    b.inc_hl()
+    b.call("MULADD")
+    b.jr(f"{prefix}N{k}")
+
+    b.label(f"{prefix}Z{k}")
+    b.inc_hl()
+    b.inc_hl()
+
+    b.label(f"{prefix}N{k}")
 
 
 def emit_layer(b: Z80Builder, name: str = "LAYER", prefix: str = "L",
                scale: bool = True) -> None:
     """Emit a fully-connected layer walker over 2-bit packed weights.
 
-    ``HL`` walks the weight stream, ``DE`` the biases, ``IX`` the inputs and
-    ``IY`` the outputs; ``B`` counts neurons and ``C`` weights within a neuron.
-    A packed byte is reloaded whenever the per-neuron weight counter reaches a
-    multiple of four, which is why every neuron starts on a byte boundary.
+    ``HL`` walks the inputs, ``IX`` the weight stream, ``IY`` the outputs;
+    ``C`` is the packed byte being unpacked and ``B`` counts *bytes* rather
+    than weights, which is what lets the four codes in a byte be emitted
+    straight-line with no per-weight test for when to reload.
+
+    Counting bytes is safe because ``pack_2bit`` pads every row to a whole
+    number of them, and pads with weight 0 - which encodes as the code this
+    loop skips. A neuron whose width is not a multiple of four therefore ends
+    by adding nothing, exactly as the old per-weight count did by stopping.
+
+    What used to live in memory and now lives in a register: the input pointer
+    (loaded, incremented twice and stored back on every weight), the packed
+    byte (loaded, rotated and stored back on every weight), and the
+    weights-into-this-byte counter (tested on every weight). Only ``ACC``
+    still does, because the accumulator has to be HL for ``ADD HL,DE`` and the
+    input pointer is there.
 
     Two copies get emitted. ``LAYER`` is the per-character one and scales its
     result by four on the way out; ``QLAYER`` is the once-per-query pass that
@@ -531,49 +583,47 @@ def emit_layer(b: Z80Builder, name: str = "LAYER", prefix: str = "L",
     """
     b.label(name)
     b.ld_mem_label_bc("SAVCNT")
-    b.ld_mem_label_hl("SAVW")
     b.ld_mem_label_de("SAVB")
+
+    # The input base is fixed for the layer, so park it and give IX to the
+    # weight stream - the one pointer that only moves once every four weights.
+    b.push_ix()
+    b.pop_de()
+    b.ld_mem_label_de("INBASE")
+    b.push_hl()
+    b.pop_ix()
 
     b.label(f"{prefix}NEUR")
     b.push_bc()
     b.ld_hl_nn(0)
     b.ld_mem_label_hl("ACC")
-    b.push_ix()
-    b.pop_hl()
-    b.ld_mem_label_hl("CURIN")
-    b.ld_hl_mem_label("SAVW")
+    b.ld_hl_mem_label("INBASE")
     b.ld_a_mem_label("SAVCNT")
     b.ld_b_a()
-    b.ld_c_n(0)
 
     b.label(f"{prefix}WT")
-    b.ld_a_c()
-    b.and_n(0x03)
-    b.jr_nz(f"{prefix}SAME")
-    b.ld_hl_mem_label("SAVW")
-    b.ld_a_hl()
-    b.ld_mem_label_a("PACKED")
-    b.inc_hl()
-    b.ld_mem_label_hl("SAVW")
+    b.ld_a_ixd(0)
+    b.inc_ix()
+    # Four zero weights in a row is a whole byte of 01 codes, and on a trained
+    # model 36% of bytes are exactly that - zeros cluster, so this fires far
+    # more often than 73%-per-weight independence would predict. Skipping the
+    # byte outright is four unpackings and eight pointer steps not taken.
+    b.cp_n(0x55)
+    b.jr_z(f"{prefix}SKIP")
+    b.ld_c_a()
+    for k in range(4):
+        _emit_packed_weight(b, prefix, k)
 
-    b.label(f"{prefix}SAME")
-    b.ld_a_mem_label("PACKED")
-    b.rrca()
-    b.rrca()
-    b.ld_mem_label_a("PACKED")
-    b.and_n(0x03)
-    b.ld_hl_mem_label("CURIN")
-    b.ld_e_hl()
-    b.inc_hl()
-    b.ld_d_hl()
-    b.inc_hl()
-    b.ld_mem_label_hl("CURIN")
-    # Code 1 means a zero weight, the commonest case, so let DEC A settle it
-    # and skip the call entirely.
-    b.dec_a()
-    b.call_nz("MULADD")
-    b.inc_c()
+    b.label(f"{prefix}NEXT")
     b.djnz(f"{prefix}WT")
+    b.jr(f"{prefix}WEND")
+
+    b.label(f"{prefix}SKIP")
+    b.ld_de_nn(8)
+    b.add_hl_de()
+    b.jr(f"{prefix}NEXT")
+
+    b.label(f"{prefix}WEND")
 
     # Bias, then scale down to keep the next layer inside 16 bits.
     b.ld_hl_mem_label("SAVB")
@@ -584,7 +634,6 @@ def emit_layer(b: Z80Builder, name: str = "LAYER", prefix: str = "L",
     b.ld_mem_label_hl("SAVB")
     b.ld_hl_mem_label("ACC")
     b.add_hl_de()
-    b.ld_mem_label_hl("ACC")
     if scale:
         b.sra_h()
         b.rr_l()
@@ -596,7 +645,10 @@ def emit_layer(b: Z80Builder, name: str = "LAYER", prefix: str = "L",
     b.inc_iy()
     b.inc_iy()
     b.pop_bc()
-    b.djnz(f"{prefix}NEUR")
+    # DEC B / JP rather than DJNZ: unrolling the byte put the neuron body out
+    # of a relative jump's reach.
+    b.dec_b()
+    b.jp_nz(f"{prefix}NEUR")
     b.ret()
 
 
@@ -604,13 +656,16 @@ def emit_muladd(b: Z80Builder) -> None:
     """Emit MULADD: accumulate ``weight * DE`` for a nonzero weight.
 
     Entered with ``A`` already decremented once, so it holds FFh, 1 or 2 for
-    weights of -2, +1 and -1 respectively.
+    weights of -2, +1 and -1 respectively. Reached only for those three: the
+    caller settles a zero weight itself, which is why this is not on the path
+    most weights take.
     """
     b.label("MULADD")
+    b.push_hl()  # HL is the caller's input pointer, not scratch
     b.ld_hl_mem_label("ACC")
     b.dec_a()
     b.jr_z("MA_P1")
-    b.sbc_hl_de()  # carry is clear on entry, from the AND in LSAME
+    b.sbc_hl_de()  # carry is clear on entry, from the AND in the caller
     b.dec_a()
     b.jr_z("MA_MRET")
     b.or_a()  # clear carry: the SBC above may have borrowed
@@ -618,11 +673,13 @@ def emit_muladd(b: Z80Builder) -> None:
 
     b.label("MA_MRET")
     b.ld_mem_label_hl("ACC")
+    b.pop_hl()
     b.ret()
 
     b.label("MA_P1")
     b.add_hl_de()
     b.ld_mem_label_hl("ACC")
+    b.pop_hl()
     b.ret()
 
 
@@ -1067,12 +1124,11 @@ def emit_charset_table(b: Z80Builder, charset: str) -> None:
 
 def emit_layer_variables(b: Z80Builder) -> None:
     """Emit the scratch the packed LAYER and MULADD need."""
-    for name in ("SAVCNT", "SAVW", "SAVB", "CURIN"):
+    # SAVW went with the weight pointer, which lives in IX now. WEIGHT was
+    # already dead before that - defined here and read nowhere.
+    for name in ("SAVCNT", "SAVB", "INBASE"):
         b.label(name)
         b.dw(0)
-    for name in ("PACKED", "WEIGHT"):
-        b.label(name)
-        b.db(0)
     b.label("ACC")
     b.dw(0)
 

@@ -147,7 +147,7 @@ python bench.py --model examples/guess/model.npz --target cpc com
 ## What is not done
 
 - **Only 64K is used.** A 6128 has 128K, and its second bank would hold the
-  index-list layout — roughly 9x fewer instructions per character. That needs
+  index-list layout — roughly 5x fewer instructions per character. That needs
   bank switching through `&7Fxx` in the layer loop.
 - **No `.DSK` output.** The build writes a headered binary; putting it on a
   disc image is a separate step with an external tool.
