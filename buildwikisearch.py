@@ -152,7 +152,14 @@ def build_graph(args: argparse.Namespace, stem: Path,
                                       report_io=False))
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    """`argv` is for callers that are not the command line.
+
+    A corpus with its own climbs has to register them in `libgraph.CLIMB`
+    before `paths_for` reads it, which means importing that corpus's module
+    first - see `data/silo/buildcard.py`. Passing the arguments in beats
+    assigning to `sys.argv` around a call.
+    """
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--db", type=Path, default=DB_PATH)
@@ -168,7 +175,7 @@ def main() -> None:
                         help="Phrasebook model over relation paths. With it "
                              "the card gains a .GRF and the binary answers "
                              "from the fact graph before it lists articles")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     stem = Path(args.out)
     stem.parent.mkdir(parents=True, exist_ok=True)

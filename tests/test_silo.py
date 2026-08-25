@@ -256,6 +256,62 @@ def test_the_same_seed_builds_the_same_silo(silo):
     assert [p.crew for p in again.people] == [p.crew for p in once.people]
 
 
+def test_every_phrase_the_classifier_knows_is_a_path_the_card_can_walk(silo):
+    """The one card-build failure with no symptom.
+
+    `buildwikigraph.paths_for` turns each of the classifier's labels into a
+    list of steps, and a label it cannot read becomes an **empty** row in the
+    card's path table rather than an error. The machine then classifies the
+    question correctly and answers it with silence, which is indistinguishable
+    from a corpus that has no answer.
+
+    Three of these labels are climbs, and climbs live in `libgraph.CLIMB`,
+    which `data/silo/generate.py` populates on import. A card built without
+    that import is exactly the failure above - so this is really a test that
+    importing the corpus is enough.
+    """
+    import sys
+
+    if str(REPO / "data" / "silo") not in sys.path:  # pragma: no cover
+        sys.path.insert(0, str(REPO / "data" / "silo"))
+    import relationpaths
+
+    import buildwikigraph
+    from buildwikibin import PATH_STRIDE
+
+    _, schema, db = silo
+    have = sorted({r for (r,) in db.execute(
+        "SELECT DISTINCT relation FROM edge WHERE source = ?", (schema.SOURCE,))})
+    kinds = sorted({k for (k,) in db.execute(
+        "SELECT DISTINCT kind FROM entity_type WHERE source = ?",
+        (schema.SOURCE,))})
+
+    labels = list(relationpaths.PATHS)
+    steps = buildwikigraph.paths_for(labels, have, kinds)
+    inert = [label for label, path in zip(labels, steps, strict=True) if not path]
+    assert inert == [], f"the card would answer these with silence: {inert}"
+    # One byte of length plus two per step, and the table is fixed-stride.
+    assert max(1 + 2 * len(path) for path in steps) <= PATH_STRIDE
+
+
+def test_the_climbs_are_registered_by_importing_the_corpus(silo):
+    import libgraph
+
+    generate, _, _ = silo
+    for name, step in generate.CLIMBS.items():
+        assert libgraph.CLIMB[name] == step
+
+
+def test_the_card_builder_takes_its_arguments_as_arguments(silo):
+    """`buildcard.py` calls `buildwikisearch.main(argv)` rather than setting
+    `sys.argv` around it, which only works because `main` accepts a list."""
+    import inspect
+
+    import buildwikisearch
+
+    assert "argv" in inspect.signature(buildwikisearch.main).parameters
+
+
 def test_the_corpus_tables_are_the_ones_ingest_defines(silo):
     """Shared, not copied.
 
