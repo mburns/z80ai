@@ -110,7 +110,9 @@ def harness(card, steps: list[tuple[int, int]], subject: int) -> EZ80Builder:
     b.ld_hl_nn(len(steps))
     b.ld_mem_label_hl("GW_LEFT")
     b.ld_hl_nn(card.forward_at)
-    b.ld_mem_label_hl("GW_BASE")
+    b.ld_mem_label_hl("GW_FWD")
+    b.ld_hl_nn(card.reverse_at)
+    b.ld_mem_label_hl("GW_REV")
 
     b.call("GW_FOLLOW")
     b.jp_c("NOWHERE")
@@ -302,3 +304,46 @@ def test_a_climb_that_runs_out_says_nowhere(graph):
     steps = [(rid["born_in"], libgraphcard.PLAIN), (rid["located_in"], country)]
     device, reference = both(graph, steps, doc["Hampshire"])
     assert device == reference == "NOWHERE"
+
+
+# --- inverses on the machine --------------------------------------------------
+
+
+def test_an_inverse_hop_agrees(graph):
+    """The reverse table was written from the first commit and read by nothing.
+    One flag on the step's relation byte is all it needed."""
+    _card, _path, doc, rid, _titles, _db = graph
+    steps = [(rid["born_in"] | libgraphcard.INVERSE, libgraphcard.PLAIN)]
+    device, reference = both(graph, steps, doc["Warsaw"])
+    assert device == reference == str(doc["Marie Curie"])
+
+
+def test_an_inverse_with_nothing_pointing_at_it_says_nowhere(graph):
+    _card, _path, doc, rid, _titles, _db = graph
+    steps = [(rid["born_in"] | libgraphcard.INVERSE, libgraphcard.PLAIN)]
+    device, reference = both(graph, steps, doc["Jane Austen"])
+    assert device == reference == "NOWHERE"
+
+
+def test_every_edge_walks_backwards_too(graph):
+    """The reverse table indexed wrongly would return a neighbouring subject,
+    which is a person who exists and was born somewhere else."""
+    _card, _path, doc, rid, _titles, db = graph
+    for _subject, relation, obj in db.execute(
+            "SELECT subject, relation, object FROM edge WHERE source = 'w'"):
+        steps = [(rid[relation] | libgraphcard.INVERSE, libgraphcard.PLAIN)]
+        device, reference = both(graph, steps, doc[obj])
+        assert device == reference, f"{obj} <- {relation}"
+
+
+def test_forward_and_inverse_do_not_confuse_their_tables(graph):
+    """One flag decides which megabyte is searched; pointing at the wrong one
+    finds a well-formed record belonging to a different question."""
+    _card, _path, doc, rid, _titles, _db = graph
+    forward = [(rid["born_in"], libgraphcard.PLAIN)]
+    back = [(rid["born_in"] | libgraphcard.INVERSE, libgraphcard.PLAIN)]
+
+    assert walk_on_device(graph, forward, doc["Marie Curie"]) == str(doc["Warsaw"])
+    assert walk_on_device(graph, back, doc["Warsaw"]) == str(doc["Marie Curie"])
+    # ...and each is nowhere in the other direction.
+    assert walk_on_device(graph, back, doc["Marie Curie"]) == "NOWHERE"

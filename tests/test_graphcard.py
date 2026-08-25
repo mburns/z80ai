@@ -190,3 +190,46 @@ def test_the_digest_notices_a_reordering(card):
     graph, _doc, _rid, titles = card
     swapped = [titles[1], titles[0], *titles[2:]]
     assert libgraphcard.corpus_digest(swapped) != graph.digest
+
+
+# --- inverses, which the reverse table was always there for --------------------
+
+
+def test_a_step_can_be_walked_backwards(card):
+    """"Who was born in Warsaw" is the born_in row read from the other end."""
+    graph, doc, rid, titles = card
+    steps = [(rid["born_in"] | libgraphcard.INVERSE, libgraphcard.PLAIN)]
+    answer, walked, missing = graph.follow(doc["Warsaw"], steps)
+
+    assert missing is None
+    assert titles[answer] == "Marie Curie"
+    assert walked == [doc["Warsaw"], doc["Marie Curie"]]
+
+
+def test_an_inverse_with_nothing_pointing_at_it_stops(card):
+    graph, doc, rid, _titles = card
+    steps = [(rid["born_in"] | libgraphcard.INVERSE, libgraphcard.PLAIN)]
+    answer, _walked, missing = graph.follow(doc["Jane Austen"], steps)
+    assert answer is None and missing == 0
+
+
+def test_the_direction_flag_does_not_collide_with_a_relation(card):
+    """Eleven relations against a byte, so the high bit is free - but only
+    while that stays true, which is what this asserts."""
+    graph, _doc, _rid, _titles = card
+    assert len(graph.relations) <= libgraphcard.INVERSE
+
+
+def test_forward_and_inverse_are_the_same_edge(card, db):
+    """Both directions of every edge, against the database."""
+    graph, doc, rid, _titles = card
+    for subject, relation, obj in db.execute(
+            "SELECT subject, relation, object FROM edge WHERE source = 'w'"):
+        forward = [(rid[relation], libgraphcard.PLAIN)]
+        back = [(rid[relation] | libgraphcard.INVERSE, libgraphcard.PLAIN)]
+        assert doc[obj] in graph.objects(doc[subject], rid[relation])
+        answer, _w, _m = graph.follow(doc[subject], forward)
+        assert answer is not None
+        assert doc[subject] in graph.subjects(doc[obj], rid[relation])
+        answer, _w, _m = graph.follow(doc[obj], back)
+        assert answer is not None

@@ -57,6 +57,15 @@ HEADER = struct.Struct("<6sBBIIIIIII")
 PLAIN = 0xFF
 STEP = struct.Struct("<BB")
 
+#: Set on a step's relation byte to walk the reverse table instead: "who was
+#: born in Edinburgh" is the born_in row read from the other end.
+#:
+#: The flag rides in the high bit because there are eleven relations and the
+#: byte holds 256, so direction costs nothing - and the reverse table was
+#: already being written and read by nothing at all.
+INVERSE = 0x80
+RELATION = 0x7F
+
 
 def _u24(value: int) -> bytes:
     return value.to_bytes(3, "little")
@@ -307,12 +316,20 @@ class CardGraph:
         A step whose kind is not PLAIN is a climb: repeat the relation until
         the value is of that type, checking before stepping so a value that is
         already what was asked for is returned rather than stepped past.
+
+        A step whose relation carries INVERSE walks the reverse table: "who was
+        born in Edinburgh" is the same row read from the other end. It names
+        *one* of them - 536 people were born in London - which is an answer
+        rather than a list, and listing them is a separate thing to build.
         """
         here = subject
         walked = [subject]
-        for index, (relation, kind) in enumerate(steps):
+        for index, (step, kind) in enumerate(steps):
+            relation = step & RELATION
+            hop = self.subjects if step & INVERSE else self.objects
+
             if kind == PLAIN:
-                found = self.objects(here, relation, limit=1)
+                found = hop(here, relation, limit=1)
                 if not found:
                     return None, walked, index
                 here = found[0]
@@ -323,7 +340,7 @@ class CardGraph:
             for _ in range(climb_limit):
                 if self.is_a(here, name):
                     break
-                found = self.objects(here, relation, limit=1)
+                found = hop(here, relation, limit=1)
                 if not found:
                     return None, walked, index
                 here = found[0]
