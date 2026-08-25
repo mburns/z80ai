@@ -1,0 +1,7 @@
+# Only the generator needs this. Nothing that reads the database does, so the
+# corpus travels as a .db file and the rest of the repo stays dependency-free.
+#
+# Pinned because the corpus has to be reproducible from its seed, and Faker's
+# name pools change between releases: an unpinned version would silently
+# produce a different 10,000 people from the same --seed.
+Faker==40.37.0
