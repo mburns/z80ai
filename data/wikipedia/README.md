@@ -40,9 +40,9 @@ one has no other symptom — every id in it is still some article.
 | | full corpus |
 |---|---|
 | `WIKI.IDX` | 23.1 MB |
-| `WIKI.DAT` | 74.5 MB |
+| `WIKI.DAT` | 51.7 MB |
 | `WIKI.GRF` | 2.4 MB — 167,922 edges |
-| `WIKI.bin` | 95.6 KB |
+| `WIKI.bin` | 94.0 KB |
 
 `data/simple_english_wikipedia.db` is **not in git** — it is ~500MB of derived
 data, and step 2 rebuilds it from any snapshot. The dump is not in git either.
@@ -87,9 +87,9 @@ That writes three files. Copy all three onto the card and run `WIKI`:
 
 | | |
 |---|---|
-| `WIKI.bin` | 7.4 KB — the program |
+| `WIKI.bin` | 5.6 KB — the program |
 | `WIKI.IDX` | 23.1 MB — hashed dictionary and postings |
-| `WIKI.DAT` | 74.5 MB — titles and leads |
+| `WIKI.DAT` | 51.7 MB — titles and leads, byte-pair packed |
 
 ```
 Simple English Wikipedia - 283,997 articles
@@ -258,6 +258,86 @@ back 0.47 s of reading.
 A card in the old layout is refused rather than misread — the magic went from
 `ZWIKI1` to `ZWIKI2` — because every byte in it is still a plausible posting
 and the failure would otherwise be wrong answers rather than an error.
+
+### The text is byte pairs, and the codes were already lying around
+
+With the index down to 23 MB, `WIKI.DAT` was **76% of the card** — 98.5% of it
+title and lead text, averaging 258 bytes an article. It is English prose, so it
+compresses; the question was only what a Z80 can afford to decompress.
+
+Two measurements decided the format. **0.69% of the bytes are non-ASCII, and 49
+byte values never occur in the corpus at all.** Forty-nine unused values is
+forty-nine codes available for free — no escape byte, no shift state, no
+reserved range stolen from real characters. So a byte is either itself or it
+stands for a short string, and nothing in the file has to say which.
+
+Decoding is a table lookup and a block move:
+
+    read a byte -> index PAIRTAB + 3 * byte -> length 0? emit it
+                                            -> otherwise copy `length` from BLOBBUF + offset
+
+No arithmetic, no shifts, no recursion — the pairs are learned by BPE, so a
+code can stand for a merge of merges, but the table stores every expansion
+**flattened**, so one lookup finishes the job. The delta postings above at
+least needed an add; this needs nothing.
+
+    WIKI.DAT       74,546,435 -> 51,730,093 bytes    -30.6%
+    whole card     97,690,103 -> 74,871,954          -23.4%
+    program             7,584 -> 5,777               -1,807
+
+The program got *smaller* while gaining a decoder, because the buffers moved
+out of the image — see **Memory** in `buildwikibin.py`. A `ds` reserves space by
+emitting that many zeros into the .bin, and four buffers declared that way had
+quietly added 11 KB to a file whose whole point is being small.
+
+The table is read off the card at startup rather than compiled in, which keeps
+the property the rest of the build depends on: **a rebuilt card drops in beside
+an unchanged `WIKI.bin` unless the format itself changed.** A corpus with
+different common digraphs simply ships a different table.
+
+That read is 892 bytes — the 6-byte magic, the length, a 768-byte slot table
+and a 116-byte blob — and the benchmark charges exactly that, on every query:
+
+| query | instructions | card bytes |
+|---|---|---|
+| `zilog z80` | 66,533 → 86,414 | 6,275 → 7,167 |
+| `jane austen` | 1,279,822 → 1,303,649 | 7,610 → 8,502 |
+| `mount everest` | 1,827,941 → 1,853,192 | 8,411 → 9,303 |
+| `world war` | 4,903,859 → 4,916,382 | 41,475 → 42,367 |
+| `the united states of america` | 7,577,578 → 7,600,796 | 126,202 → 127,094 |
+
+**+892 bytes every time, and between 12,523 and 25,251 instructions.** The
+bytes are flat because the table is the only extra read — the leads themselves
+got *smaller*, which is why a 30% smaller file costs nothing to read. The
+instructions vary with how much lead text the top three results unpack, and the
+worst of them is 1.4 ms; with the read, about 5 ms once per session, against
+0.41 s for the query it rides along with.
+
+22.9 MB off the card, then, for a cost that does not scale with anything. Note
+that it is the cheap query that pays most in relative terms — `zilog z80` grew
+by a third — because there is nothing else happening to hide it.
+
+### One pair the corpus offers and the format must refuse
+
+No code may stand for a pair containing a NUL. NUL ends the title and ends the
+lead, and the device counts those two to know when to stop — but it copies an
+expansion with a block move it does not inspect. A NUL inside an expansion is
+one the device never sees, so it reads on into the article that follows.
+
+This is not hypothetical, and it is not rare. Most leads end in a full stop, so
+`.\0` is one of the commonest pairs in the file, and it was duly learned: **the
+first full card built this way had exactly one bad code, 248, and every article
+whose lead ended in a period ran past its own terminator.** The card still
+printed the right answer, because printing stops at a NUL for its own reasons,
+which is precisely what made it worth pinning with a test rather than an eye.
+
+Excluding NUL when the pairs are learned is enough for every later merge too, a
+code expanding to a NUL only if a pair behind it held one. It costs 117,802
+bytes — 0.23% — and `write_text` refuses to write a table that breaks the rule
+rather than trusting that it held.
+
+`ZWDAT1` is the first magic this file has carried; before it, the text file
+began with its article count.
 
 ## Facts, for the oracle this is not
 

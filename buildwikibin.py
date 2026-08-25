@@ -28,9 +28,10 @@ whole corpus - the two whole-corpus passes were the dominant per-query cost.
 
 ## Memory
 
-The accumulator does not live in the image. `ds` emits literal zeros, so a
-284,000-byte buffer would put 284,000 zeros in the .bin; instead it sits at a
-fixed address above the program, and the build asserts the two do not overlap.
+Neither the accumulator nor the unpacking buffers live in the image. `ds`
+emits literal zeros, so a 284,000-byte buffer would put 284,000 zeros in the
+.bin; instead they sit at fixed addresses above the program, and the build
+asserts the image does not reach them.
 
 ## Firmware
 
@@ -52,7 +53,14 @@ from libez80 import AGON_LOAD_ADDR, AGON_SRAM_TOP, EZ80Builder, agon_header
 if TYPE_CHECKING:
     from libinfer import BuildInputs
 
-from libsearch import MAGIC, MAX_QUERY_TERMS, MAX_WEIGHT, NUM_BUCKETS
+from libsearch import (
+    MAGIC,
+    MAX_BLOB,
+    MAX_QUERY_TERMS,
+    MAX_WEIGHT,
+    NUM_BUCKETS,
+    TEXT_MAGIC,
+)
 
 MOS_API = 0x08
 MOS_OUTCHAR = 0x10
@@ -105,6 +113,23 @@ def accumulator_base(num_docs: int) -> int:
     return (AGON_SRAM_TOP - STACK_MARGIN - num_docs) & ~0xFF
 
 
+#: Offsets into the scratch region, which sits below the accumulator. These are
+#: buffers, not data: `ds` would put eleven thousand zeros in the .bin to
+#: reserve them, and the file is the thing the user copies onto a card.
+PACKBUF_AT = 0
+TEXTBUF_AT = PACKBUF_AT + CHUNK + 16
+#: Unpacked text is longer than what was read, by as much as the packing saved.
+#: A third off is what the corpus measures, so twice the read is room enough.
+PAIRTAB_AT = TEXTBUF_AT + 2 * CHUNK + 16
+BLOBBUF_AT = PAIRTAB_AT + 3 * 256
+SCRATCH_BYTES = BLOBBUF_AT + MAX_BLOB
+
+
+def scratch_base(num_docs: int) -> int:
+    """Where the unpacking buffers sit: directly below the accumulator."""
+    return (accumulator_base(num_docs) - SCRATCH_BYTES) & ~0xFF
+
+
 def build(num_docs: int, index_name: str = "WIKI.IDX",
           text_name: str = "WIKI.DAT",
           org: int = AGON_LOAD_ADDR,
@@ -138,6 +163,12 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     b.ld_mem_label_a("DATH")
 
     b.call("CHECKMAGIC")
+    b.or_a()
+    b.jp_nz("BADCARD")
+
+    # Also checks WIKI.DAT's own magic, since the text is packed and a card
+    # written before it was would print the pair table as an article.
+    b.call("LOADPAIRS")
     b.or_a()
     b.jp_nz("BADCARD")
 
@@ -414,9 +445,10 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
         _emit_classifier_data(b, oracle)
 
     top = b.org + len(b.code)
-    assert top <= acc_base, (
-        f"the image reaches {top:06X}h but the accumulator starts at "
-        f"{acc_base:06X}h; the corpus is too large to score in SRAM")
+    scratch = scratch_base(num_docs)
+    assert top <= scratch, (
+        f"the image reaches {top:06X}h but the unpacking buffers start at "
+        f"{scratch:06X}h; the corpus is too large to score in SRAM")
     b.accumulator = acc_base
     b.num_docs = num_docs
     return b
@@ -965,10 +997,12 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
     # Split out of SHOW_ONE because an oracle wants the title of an article it
     # walked to, which is not one of the three the search scored.
     b.label("READ_ARTICLE")
-    # The offset table sits after a 4-byte count: 4 + 4 * id.
+    # The offset table sits after the pair table, whose size depends on the
+    # corpus - so the base is read from the card at startup rather than built
+    # in. A binary that knew it would need rebuilding whenever the text did.
     b.add_hl_hl()
     b.add_hl_hl()
-    b.ld_de_nn(4)
+    b.ld_de_mem_label("DATBASE")
     b.add_hl_de()
     b.ld_mem_label_hl("SEEKOFF")
     b.xor_a()
@@ -991,9 +1025,144 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
     b.call("SEEK")
     b.ld_a_mem_label("DATH")
     b.ld_c_a()
-    b.ld_hl_label("TEXTBUF")
+    b.ld_hl_label("PACKBUF")
     b.ld_de_nn(CHUNK)
     b.call("READ")
+    # Fall through: what came off the card is packed, and everything
+    # downstream wants a title and a lead it can print.
+
+    # UNPACK: PACKBUF -> TEXTBUF, stopping once the lead's NUL has been
+    # written. A byte with a zero length in the table stands for itself;
+    # anything else is a block move out of the expansion blob. No shifts, no
+    # escape, no recursion - the codes are byte values the corpus never uses,
+    # so a literal can never be mistaken for one.
+    b.label("UNPACK")
+    b.ld_ix_label("PACKBUF")
+    b.ld_iy_label("TEXTBUF")
+    b.ld_a_n(2)
+    b.ld_mem_label_a("NULSEEN")      # a title and a lead
+
+    b.label("UP_ONE")
+    b.ld_a_ixd(0)
+    b.inc_ix()
+
+    # PAIRTAB + 3 * A: the offset and length this byte stands for.
+    b.ld_hl_nn(0)
+    b.ld_l_a()
+    b.push_hl()
+    b.pop_de()
+    b.add_hl_hl()
+    b.add_hl_de()                    # 3 * A
+    b.ld_de_label("PAIRTAB")
+    b.add_hl_de()
+    b.push_hl()
+    b.pop_bc()                       # BC -> this byte's slot
+
+    b.ld_hl_nn(0)
+    b.ld_l_a()                       # keep the byte itself
+    b.push_hl()
+    b.push_bc()
+    b.pop_hl()
+    b.ld_de_nn(2)
+    b.add_hl_de()
+    b.ld_a_hl()                      # the length
+    b.or_a()
+    b.jr_nz("UP_PAIR")
+
+    # A literal. Copy it, and stop once the second NUL has gone out.
+    b.pop_hl()
+    b.ld_a_l()
+    b.ld_iyd_a(0)
+    b.inc_iy()
+    b.or_a()
+    b.jr_nz("UP_ONE")
+    b.ld_a_mem_label("NULSEEN")
+    b.dec_a()
+    b.ld_mem_label_a("NULSEEN")
+    b.or_a()
+    b.jr_nz("UP_ONE")
+    b.ret()
+
+    b.label("UP_PAIR")
+    b.pop_hl()                       # discard the byte; the table has it now
+    # The length has to wait on the stack rather than go straight into C: BC
+    # still holds the slot pointer, and C is its low byte.
+    b.push_af()
+    b.push_bc()
+    b.pop_hl()
+    b.ld_de_nn(0)
+    b.ld_e_hl()
+    b.inc_hl()
+    b.ld_d_hl()                      # DE = offset into the blob
+    b.ld_hl_label("BLOBBUF")
+    b.add_hl_de()
+    b.pop_af()
+    b.ld_c_a()                       # C = length, and it is never zero here
+
+    b.label("UP_COPY")
+    b.ld_a_hl()
+    b.ld_iyd_a(0)
+    b.inc_iy()
+    b.inc_hl()
+    b.dec_c()
+    b.jr_nz("UP_COPY")
+    b.jr("UP_ONE")
+
+    # LOADPAIRS: the expansion table off the card, once, into RAM. Also settles
+    # where the offset table starts, which is the only thing about WIKI.DAT
+    # whose position depends on the corpus.
+    b.label("LOADPAIRS")
+    b.ld_hl_nn(0)
+    b.ld_mem_label_hl("SEEKOFF")
+    b.xor_a()
+    b.ld_mem_label_a("SEEKOFF", 3)
+    b.ld_a_mem_label("DATH")
+    b.ld_c_a()
+    b.call("SEEK")
+    b.ld_a_mem_label("DATH")
+    b.ld_c_a()
+    b.ld_hl_label("IOBUF")
+    b.ld_de_nn(len(TEXT_MAGIC) + 2)
+    b.call("READ")
+
+    b.ld_hl_label("IOBUF")
+    b.ld_de_label("DATMAGIC")
+    b.ld_b_n(len(TEXT_MAGIC))
+    b.label("LP_CMP")
+    b.ld_a_hl()
+    b.ld_c_a()
+    b.ld_a_de()
+    b.sub_c()
+    b.ret_nz()                       # A is nonzero: a card in the old layout
+    b.inc_hl()
+    b.inc_de()
+    b.djnz("LP_CMP")
+
+    b.ld_hl_nn(0)
+    b.ld_a_mem_label("IOBUF", len(TEXT_MAGIC))
+    b.ld_l_a()
+    b.ld_a_mem_label("IOBUF", len(TEXT_MAGIC) + 1)
+    b.ld_h_a()
+    b.ld_mem_label_hl("BLOBLEN")
+
+    b.ld_a_mem_label("DATH")
+    b.ld_c_a()
+    b.ld_hl_label("PAIRTAB")
+    b.ld_de_nn(3 * 256)
+    b.call("READ")
+    b.ld_a_mem_label("DATH")
+    b.ld_c_a()
+    b.ld_hl_label("BLOBBUF")
+    b.ld_de_mem_label("BLOBLEN")
+    b.call("READ")
+
+    # Where the offsets begin: the header, the table, the blob, and the
+    # document count that follows them.
+    b.ld_hl_mem_label("BLOBLEN")
+    b.ld_de_nn(len(TEXT_MAGIC) + 2 + 3 * 256 + 4)
+    b.add_hl_de()
+    b.ld_mem_label_hl("DATBASE")
+    b.xor_a()
     b.ret()
 
 
@@ -1354,9 +1523,11 @@ def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, num_pages: int,
     b.db(0)
     b.label("MAGICSTR")
     b.ascii(MAGIC.decode())
+    b.label("DATMAGIC")
+    b.ascii(TEXT_MAGIC.decode())
 
     for name in ("IDXH", "DATH", "INPLEN", "TOKPOS", "TOKLEN", "NSCORED",
-                 "SHOWN", "HCNT"):
+                 "SHOWN", "HCNT", "NULSEEN"):
         b.label(name)
         b.db(0)
     b.label("BESTSC")
@@ -1366,7 +1537,7 @@ def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, num_pages: int,
     # is how many bytes of the current block held whole postings - see
     # ST_STREAM for why the second is not simply the block size.
     for name in ("SEEKOFF", "HTMP", "HTMP2", "NPOST", "NTHIS", "NLEFT",
-                 "RUNDOC", "CONSUMED",
+                 "RUNDOC", "CONSUMED", "DATBASE", "BLOBLEN",
                  "SCANID", "PGLEFT", "PACC"):
         b.label(name)
         b.d24(0)
@@ -1380,8 +1551,15 @@ def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, num_pages: int,
     b.ds(MAX_INPUT_LEN + 1)
     b.label("IOBUF")
     b.ds(CHUNK + 16)
-    b.label("TEXTBUF")
-    b.ds(CHUNK + 16)
+    # The four unpacking buffers live above the program rather than in it, so
+    # the .bin does not carry eleven thousand zeros to reserve them. PAIRTAB is
+    # the expansion table, read off the card at startup rather than built in, so
+    # a card rebuilt from a different corpus still runs on this binary.
+    scratch = scratch_base(num_docs)
+    b.equ("PACKBUF", scratch + PACKBUF_AT)
+    b.equ("TEXTBUF", scratch + TEXTBUF_AT)
+    b.equ("PAIRTAB", scratch + PAIRTAB_AT)
+    b.equ("BLOBBUF", scratch + BLOBBUF_AT)
 
     # One flag per 256-article page: small enough to live in the image
     # (1,110 bytes for the full corpus), where a `ds` costs real zeros.

@@ -169,6 +169,88 @@ def test_the_text_file_round_trips(reference):
         assert reference.article(doc) == (title, lead)
 
 
+# --- byte-pair packed text ------------------------------------------------------
+#
+# 49 byte values never occur in the corpus, so a code needs no escape and no
+# shift state: a byte is either itself or it stands for a string. The table
+# stores expansions flattened, so a merge of merges is still one lookup.
+
+
+def packable(times: int = 40) -> str:
+    """Text with digraphs common enough to clear MIN_PAIR_USES."""
+    return " ".join("the theory of the thermometer is there" for _ in range(times))
+
+
+def test_packing_learns_pairs_and_gives_the_text_back():
+    text = packable().encode()
+    merges = libsearch.learn_pairs(text, libsearch.free_codes(text))
+    assert merges, "text this repetitive must yield merges"
+    packed = libsearch.pack_text(text, merges)
+    assert len(packed) < len(text)
+    assert libsearch.unpack_text(packed, libsearch.pair_table(merges)) == text
+
+
+def test_a_code_never_collides_with_a_byte_the_text_uses():
+    text = packable().encode()
+    merges = libsearch.learn_pairs(text, libsearch.free_codes(text))
+    used = set(text)
+    assert not used & {code for _pair, code in merges}
+
+
+def test_no_code_may_hide_a_terminator():
+    """The device counts the two NULs to know where the lead ends, and copies a
+    code's expansion with a block move it does not inspect. A NUL inside an
+    expansion is one the device never sees, so it reads on into the next
+    article - which the real corpus did do, via `.\\x00`, most leads ending in a
+    full stop."""
+    text = (b"the article ends here.\x00Next article.\x00" * 200)
+    merges = libsearch.learn_pairs(text, libsearch.free_codes(text))
+    assert merges
+    for code, expansion in libsearch.pair_table(merges).items():
+        assert b"\x00" not in expansion, (code, expansion)
+
+
+def test_text_with_no_free_bytes_is_stored_as_it_is():
+    """Every byte value occurring leaves nothing to encode with. The packer has
+    to notice rather than reuse a byte that means something."""
+    text = bytes(range(256)) * 4
+    merges = libsearch.learn_pairs(text, libsearch.free_codes(text))
+    assert merges == []
+    assert libsearch.pack_text(text, merges) == text
+
+
+def test_the_device_unpacks_a_corpus_that_actually_has_pairs(tmp_path):
+    """The bug this exists for: `UNPACK` held its slot pointer in BC and wrote
+    the byte through `ld_c_a`, which is C. It printed `leArArtA300` for
+    `Article 300`. Every small-corpus test passed, because a corpus that small
+    learns no pairs and so never expands anything."""
+    titles = [f"Article {n}" for n in range(300)]
+    leads = [f"This is the article about the theory of the thing numbered {n}, "
+             f"and there is theoretically nothing else in it." for n in range(300)]
+    index = libsearch.build(titles, leads, {})
+
+    idx, dat = tmp_path / "WIKI.IDX", tmp_path / "WIKI.DAT"
+    libsearch.write_index(index, idx)
+    libsearch.write_text(index, dat)
+
+    with dat.open("rb") as fh:
+        fh.seek(len(libsearch.TEXT_MAGIC))
+        assert int.from_bytes(fh.read(2), "little") > 0, "no pairs, so no test"
+
+    builder = buildwikibin.build(index.num_docs)
+    host = AgonHost(stdin=["theory", "!"], files={
+        "WIKI.IDX": idx.read_bytes(), "WIKI.DAT": dat.read_bytes()})
+    printed = host.run(builder.build(), max_cycles=2_000_000_000)
+
+    reference = libsearch.CardSearch(idx, dat)
+    try:
+        assert reference.article(0) == (titles[0], leads[0])
+    finally:
+        reference.close()
+    assert "Article " in printed
+    assert "theoretically nothing else in it." in printed
+
+
 # --- the device against the reference -----------------------------------------
 
 
@@ -325,6 +407,18 @@ def test_the_accumulator_clears_the_image():
 def test_a_corpus_too_large_to_score_fails_at_build_time():
     with pytest.raises(AssertionError, match="too large to score"):
         buildwikibin.build(600_000)
+
+
+def test_the_unpacking_buffers_cost_the_image_nothing():
+    """They were declared with `ds` first, which put 11,040 zeros in the .bin
+    and grew it from 7.4KB to 16.4KB. Nothing failed - the card simply got
+    bigger - so the property is pinned rather than left to the next reader."""
+    builder = buildwikibin.build(283_997)
+    scratch = buildwikibin.scratch_base(283_997)
+    assert builder.org + len(builder.code) <= scratch
+    for name in ("PACKBUF", "TEXTBUF", "PAIRTAB", "BLOBBUF"):
+        assert builder.labels[name] >= scratch
+    assert scratch + buildwikibin.SCRATCH_BYTES <= builder.accumulator
 
 
 # --- notability, which decides which article someone meant --------------------
