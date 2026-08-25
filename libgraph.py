@@ -347,7 +347,12 @@ def build(db: sqlite3.Connection, source: str,
         for relation, options in relations.items():
             for _rank, _ordinal, value in sorted(options):
                 target = resolve(value)
-                if target is not None:
+                # A thing is not inside itself. `Los Angeles located_in Los
+                # Angeles` stopped 486 climbs where they stood, because the
+                # type test fires before the step - so "what country was X
+                # born in" answered Los Angeles. Falling through to the next
+                # candidate keeps whatever the page said second.
+                if target is not None and target != subject:
                     rows.append((source, subject, relation, target))
                     break
             else:
@@ -424,7 +429,24 @@ def types(db: sqlite3.Connection, source: str,
             target = resolve(value)
             if target:
                 counts[(kind, target)] = counts.get((kind, target), 0) + 1
-    return sorted(k for k, n in counts.items() if n >= TYPE_FLOOR)
+    # Three infoboxes calling a thing a country is a low bar for a corpus this
+    # size: California, Chicago and Los Angeles all clear it, and a climb that
+    # reaches one stops and answers it. So a claim is dropped when the same
+    # graph contradicts it - and the contradiction that counts is being inside
+    # *another country*, not being inside anything at all. France records that
+    # it is in Europe and is still a country; California records that it is in
+    # the United States and is not.
+    #
+    # Six entities, and 1,294 of 19,238 answered climbs: before this, "what
+    # country was X born in" answered Chicago 428 times and California 312.
+    claimed = {k[1] for k, n in counts.items()
+               if n >= TYPE_FLOOR and k[0] == "country"}
+    within = dict(db.execute(
+        "SELECT subject, object FROM edge WHERE source = ? AND relation = ?",
+        (source, "located_in")))
+    demoted = {e for e in claimed if within.get(e) in claimed}
+    return sorted(k for k, n in counts.items()
+                  if n >= TYPE_FLOOR and k[1] not in demoted)
 
 
 def is_a(db: sqlite3.Connection, source: str, entity: str, kind: str) -> bool:
