@@ -8,6 +8,11 @@ python data/lint.py my-data.txt --strict     # exits non-zero if anything is fla
 
 Vendored source data lives in [clinc150/](clinc150/).
 
+Two corpora here are not training data at all. [wikipedia/](wikipedia/) turns a
+dump into a searchable card, and [silo/](silo/) invents 10,000 people so the
+graph walk can be measured against answers that are known rather than looked
+up — which is the one thing Simple English Wikipedia cannot provide.
+
 ## Check the data before you train it
 
 `data/lint.py` reports what a dataset will do to a 2-bit model. It takes a
