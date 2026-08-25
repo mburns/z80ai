@@ -301,13 +301,23 @@ The pieces, and where they stand — `oracle.py` puts them together:
 |---|---|---|
 | "bell" → the article | the search index here | works |
 | "where was … born" → `born_in` | the phrasebook classifier | **93.8% macro**, 9 relations |
-| "what country was … born in" → a path | the same classifier | **51.6%** on unseen phrasings |
+| "what country was … born in" → a path | the same classifier | **~50%** on unseen phrasings |
 | `(subject, property, ordinal)` → value | this table's primary key | a lookup |
 
 The relation number is from [SimpleQuestions](https://github.com/askplatypus/wikidata-simplequestions)
 mapped to Wikidata — real human-written questions. The path number is over
 phrasings this repo wrote and then withheld from training, which is why it is
 so much lower and why it is the one to believe.
+
+It has no decimal place on purpose. Over five seeds the same measurement runs
+43.1% to 56.2% on its 320 held-out questions — a spread of 13 points, on a set
+where four more right in one class moves the figure by one and a quarter. Two
+different values of it were quoted in this repository for months, 51.6% here
+and 43.8% in `oracle.py`, and the interesting part is that neither was wrong:
+both are ordinary draws from that spread, and 51.6% reproduces to the decimal
+at seed 0. A number quoted more precisely than it can be measured invites
+exactly that kind of disagreement, and resolving it by picking a side would
+have been the wrong repair.
 
 **What stops it being better is coverage, not accuracy.** Only 46% of articles
 have an infobox, so a chain that hops onto one of the other 54% cannot

@@ -118,6 +118,26 @@ MAX_EXAMPLES = 1200
 #:     unweighted              40.3%      one-hop macro 92.4%
 #:     class-weighted          64.7%      one-hop macro 90.3%
 #:
+#: ## How much of that is the seed
+#:
+#: More than is comfortable, and it is worth knowing before any of the numbers
+#: on this page are read as precise. Held-out chain accuracy over five seeds,
+#: same data, same flags, `--seed N --split-seed N`:
+#:
+#:     50.3%  43.1%  56.2%  48.4%  52.5%      mean 50.1%, spread 13.1 points
+#:
+#: 320 questions over four classes, so one class getting four more right moves
+#: the figure a point and a quarter. Every documented value of this metric in
+#: the repository - 43.8% in `oracle.py`, 51.6% in `liboracle.py` - sits inside
+#: that spread, and 51.6% reproduces to the decimal at seed 0 on the corpus it
+#: was taken from. They were never in conflict; they were one number quoted to
+#: a precision it does not have.
+#:
+#: So read these as one-decimal figures at seed 0 and compare them only with
+#: each other. A change worth believing has to move the mean of several seeds,
+#: which is also why the comparisons below - all single-seed - say which
+#: repairs lose and not by how much.
+#:
 #: Three other repairs were tried and are not used, each rejected by
 #: measurement rather than by taste:
 #:

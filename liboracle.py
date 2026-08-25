@@ -5,7 +5,7 @@ Three parts, each measured separately and each doing only what it wins at:
 
     which entity        the BM25 search index          works on names
     which relation      the phrasebook classifier      93.8% macro, 9 relations
-    which path          the same classifier            51.6% on unseen phrasings
+    which path          the same classifier            ~50% on unseen phrasings
     the answer          a walk over libgraph edges     a lookup
 
 The two classifier numbers come from the same model and are not comparable.
@@ -13,6 +13,11 @@ The first is over crowdsourced questions; the second is over multi-hop
 phrasings this repo wrote, scored only on phrasings withheld from training.
 `data/questions/relations.py` explains why the second is the honest one and why
 it is so much lower.
+
+The second carries no decimal place on purpose. Over five seeds it runs 43.1%
+to 56.2% on its 320 held-out questions - the figure this file used to give,
+51.6%, is one draw from that and reproduces exactly at seed 0. So is the 43.8%
+that another module used to give. They were never in disagreement.
 
 Nothing here reads prose. Extracting an answer from a paragraph is
 comprehension and out of reach on this hardware; a fact table is a lookup, and
