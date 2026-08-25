@@ -9,13 +9,19 @@ pip install -r data/silo/requirements.txt
 python data/silo/generate.py           # data/silo.db, ~3 seconds
 python data/silo/generate.py --stats
 python data/silo/questions.py          # what can be worked out, and by what
+python data/silo/buildcard.py          # the Agon card, classifier and all
+python data/silo/benchcard.py          # what it costs, in the emulator
 ```
 
 The corpus tables are the ones `data/wikipedia/ingest.py` writes, and the
 `source` column says `silo`, so everything downstream reads it unchanged:
-`libgraph` walks it, `oracle.py` answers from it, `buildwikisearch.py` would
-turn it into a card. `schema.py` adds six tables and eleven views on top of
-that and explains why it is a separate database file.
+`libgraph` walks it, `oracle.py` answers from it, `buildwikisearch.py` turns it
+into a card. `schema.py` adds six tables and eleven views on top of that and
+explains why it is a separate database file.
+
+If you only read one section, read [where a question's time actually
+goes](#where-a-questions-time-actually-goes): on the real card the graph walk
+is 1.9% of a query and the classifier is 78%.
 
 ## Why bother inventing a corpus
 
@@ -216,6 +222,111 @@ over the corpus's history, so a flat has several successive households. The
 `housemate` and `neighbour` views test that the tenancies overlapped; the graph
 sidesteps the question by only knowing about now.
 
+## On the machine
+
+```bash
+python data/silo/buildcard.py        # dist/SILO.{bin,IDX,DAT,GRF}, ~2 min
+python data/silo/benchcard.py        # runs it in the emulator, ~2 min
+```
+
+| | |
+|---|---:|
+| `SILO.bin` | 96.2 KB — program, path table and classifier |
+| `SILO.IDX` | 4.9 MB — 1,525 terms, 323,732 postings |
+| `SILO.DAT` | 3.5 MB — titles and leads |
+| `SILO.GRF` | 1.6 MB — 105,404 edges over 16 relations |
+| accumulator | 13 KB resident, one byte per article |
+
+All 20 phrases the classifier knows are paths the card can walk.
+
+### Where a question's time actually goes
+
+`benchcard.py` asks the same question of people at different pedigree depths, so
+the only thing varying is the number of hops, and compares against a card built
+without `--relations` — one that searches and neither classifies nor walks:
+
+| | share of a query |
+|---|---:|
+| the classifier — one forward pass, 85,760 two-bit weights | **78.1%** |
+| the search — BM25 over 13,072 articles | 21.9% |
+| the graph walk — four hops | 1.9% |
+
+**The graph is the cheap part, by a factor of forty.** What the card pays for is
+deciding which question it was asked, not answering it. That is the opposite of
+where the effort has gone in this repository, and it is the useful thing to know
+before optimising anything.
+
+A hop moves about **178 bytes** off the card: a binary search over 105,404
+fixed-width records is 17 probes of 7 bytes, which is what the measurement
+recovers. In instructions a hop is around 3,600 — a slope over five hop counts,
+and smaller than the spread of any single query, so it is quoted as *under 1% of
+a question* rather than as a constant. Quoting such a number to four digits is
+the mistake this repository already made once.
+
+### The hop limit, on the actual machine
+
+```
+  hops   instructions      +/-  card bytes    +/-  answered
+     1        752,372   17,509       2,996    430     20/20
+     2        753,648   20,539       3,394  1,316     19/20
+     3        758,356   15,628       3,391    280     20/20
+     4        767,983   10,531       3,845    978     19/20
+     5        763,128   10,173       3,659    251     20/20
+     6        775,518   18,872       7,520  1,289      2/20  <- past the hop limit
+```
+
+Generation 6 needs a seventh hop and `CLIMB_LIMIT` allows six. On the eZ80 that
+is not an error message: the walk returns nothing, the program falls back to
+listing articles, and the card bytes double because a fallback reads article
+text and a graph answer does not. The two that answered are the collisions
+below.
+
+### Two stages that are not the graph
+
+**Entity lookup: 88.6% first, 98.0% in the top three** over 500 people. Only
+*first* is usable — the walk follows the top hit and nothing else. Wikipedia's
+equivalent probe scores 85% first, so this is comparable, and it is harder than
+it looks: Faker draws from a few hundred first names and a few hundred
+surnames, so **1,292 of the 10,000 share a first and last name with somebody
+else** and differ only by a middle initial — one search term, one letter.
+
+That is exactly how the two generation-6 "answers" happened. `Amanda M. Wilson`
+and `Amanda X. Wilson` both resolved to the same document and both answered
+`Kyle I. Wilson.` at byte-identical cost. The graph was right; it was right
+about the wrong person, and nothing on the screen says so.
+
+**The classifier is where the accuracy goes.** Three numbers, and the first one
+means nothing:
+
+| | |
+|---|---:|
+| a `--val-frac` split over queries | 96.8% |
+| **phrasings it was never trained on** | **44.5%** |
+| questions it *was* trained on | 95.8% |
+| phrasings that answer the same way whatever the name | **124/240** |
+
+The first is the trap `data/README.md` warns about, measured: these questions
+are templated, so a held-out "who is X's father" still has "who is Y's father"
+in the training half. Holding out whole *phrasings* instead costs 52 points.
+
+The last row is the one worth staring at. For **half the phrasings, changing
+only the subject's name changes the classification** — the encoder hashes the
+whole question into 128 trigram buckets and a name is most of a short question,
+so who you ask about is most of what is asked. `who is alexander e wong's
+father` routes to the grandfather path; `who is corey w wong's father` routes
+correctly. Same question, different person, different answer.
+
+### A dense graph never says "I don't know"
+
+Wikipedia's oracle falls back to listing articles when the graph has no edge,
+and 54% of its articles carry no infobox, so it falls back often and visibly.
+This corpus has no gaps. Every walk the classifier asks for completes, so a
+misrouted question produces a fluent, confident, wrong answer with no symptom
+at all — and the one failure the machine *can* report is the hop limit.
+
+Completeness takes away the machine's ability to say it does not know. That is
+worth having measured before wishing a corpus were denser.
+
 ## What SQLite is doing
 
 Not decoration — each of these earns its place:
@@ -259,6 +370,17 @@ python data/silo/generate.py --seed 7  --people 2000    # same shape, smaller
 Generation sizes scale with `--people`, so a small corpus is the same shape as
 the full one rather than a prefix of it — a prefix would be all founders and
 would answer no kinship question at all.
+
+The card is six files in this directory, in the order they run:
+
+| | |
+|---|---|
+| `schema.py` | the database — tables, views, and what is not a table |
+| `generate.py` | the simulation, and the writer |
+| `questions.py` | what a graph walk can reach, against ground truth |
+| `relationpaths.py` | templated questions, labelled with the path they mean |
+| `buildcard.py` | classifier and card — the one place that knows the order |
+| `benchcard.py` | the emulator, and what a hop costs |
 
 `tests/test_silo.py` builds a 600-person corpus and checks that it is coherent
 (nobody is their own ancestor, no parent died before their child was born,
