@@ -26,6 +26,7 @@ import argparse
 import sqlite3
 from pathlib import Path
 
+import buildwikibin
 import libsearch
 
 DB_PATH = Path(__file__).resolve().parent / "data" / "simple_english_wikipedia.db"
@@ -84,6 +85,73 @@ def load_corpus(db_path: Path, source: str,
     return titles, leads, aliases
 
 
+
+def build_graph(args: argparse.Namespace, stem: Path,
+                titles: list[str],
+                num_docs: int) -> buildwikibin.OracleSpec:
+    """Write the .GRF beside the index, and describe it to the binary.
+
+    Built from the same `titles` the index was, which is the only way the ids
+    can mean the same articles. The digest in the header lets the program say
+    so at startup; this asserts it here as well, because a card that is wrong
+    at build time is cheaper to notice than one that is wrong on the machine.
+    """
+    import buildwikigraph
+    import libgraphcard
+    import libinfer
+
+    model = libinfer.Model.load(str(args.relations))
+    if model.phrases is None:
+        raise SystemExit(f"{args.relations} is not a phrasebook model; train "
+                         f"one with classify.py on data/questions/relations.py")
+
+    db = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
+    doc = {t: i for i, t in enumerate(titles)}
+    relations = sorted({r for (r,) in db.execute(
+        "SELECT DISTINCT relation FROM edge WHERE source = ?", (args.source,))})
+    rid = {name: i for i, name in enumerate(relations)}
+
+    edges, outside = [], 0
+    for subject, relation, obj in db.execute(
+            "SELECT subject, relation, object FROM edge WHERE source = ?",
+            (args.source,)):
+        left, right = doc.get(subject), doc.get(obj)
+        if left is None or right is None:
+            outside += 1
+            continue
+        edges.append((left, rid[relation], right))
+
+    types: dict[str, list[int]] = {}
+    for kind, entity in db.execute(
+            "SELECT kind, entity FROM entity_type WHERE source = ?",
+            (args.source,)):
+        if (hit := doc.get(entity)) is not None:
+            types.setdefault(kind, []).append(hit)
+    db.close()
+
+    paths = buildwikigraph.paths_for(model.phrases, relations, sorted(types))
+    graph = libgraphcard.build(titles, edges, relations, types, paths)
+    grf_path = stem.with_suffix(".GRF")
+    stats = libgraphcard.write(graph, grf_path)
+
+    print(f"\n{grf_path}  {stats['bytes'] / 1e6:>8.1f} MB   "
+          f"{stats['edges']:,} edges over {len(relations)} relations "
+          f"({outside:,} outside this build)")
+    print(f"{' ' * len(str(grf_path))}  {sum(1 for p in paths if p)} of "
+          f"{len(paths)} phrases are a path this can walk")
+
+    assert graph.digest == libgraphcard.corpus_digest(titles)
+    return buildwikibin.OracleSpec(
+        graph_name=grf_path.name.upper(), forward_at=stats["forward_at"],
+        num_edges=stats["edges"],
+        types_at=libgraphcard.CardGraph(grf_path)._types_at
+        - 8 * len(graph.types),
+        num_types=len(graph.types), num_docs=num_docs, digest=graph.digest,
+        paths=paths,
+        model=libinfer.load_for_build(str(args.relations),
+                                      report_io=False))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -96,6 +164,10 @@ def main() -> None:
                              "first. For a test card, not a shipped one")
     parser.add_argument("--no-binary", action="store_true",
                         help="Write the card files only")
+    parser.add_argument("--relations", type=Path,
+                        help="Phrasebook model over relation paths. With it "
+                             "the card gains a .GRF and the binary answers "
+                             "from the fact graph before it lists articles")
     args = parser.parse_args()
 
     stem = Path(args.out)
@@ -126,18 +198,24 @@ def main() -> None:
     if args.no_binary:
         return
 
-    import buildwikibin
+    # The graph is built here rather than by a second command, because its ids
+    # are positions in *this* article list. Two commands means two --limit
+    # values to keep in step, and a mismatch answers fluently and wrongly.
+    spec = None
+    if args.relations:
+        spec = build_graph(args, stem, titles, index.num_docs)
 
     bin_path = stem.with_suffix(".bin")
     builder = buildwikibin.build(index.num_docs,
-                                 idx_path.name.upper(), dat_path.name.upper())
+                                 idx_path.name.upper(), dat_path.name.upper(),
+                                 oracle=spec)
     builder.save(str(bin_path))
     size = len(builder.code)
     print(f"{bin_path}  {size / 1024:>8.1f} KB   "
           f"(reads {idx_path.name.upper()} and {dat_path.name.upper()} by name)")
-    print("\nCopy all three onto the card. The binary carries no corpus, so "
-          "rebuilding\nthe database and re-running this replaces the card "
-          "without touching it.")
+    print(f"\nCopy all {'four' if spec else 'three'} onto the card. The binary "
+          f"carries no corpus, so rebuilding\nthe database and re-running this "
+          f"replaces the card without touching it.")
 
 
 if __name__ == "__main__":

@@ -107,10 +107,29 @@ Wikipedia has a redirect for, and you get the article:
 ? zx spectrum        ->  ZX Spectrum
 ```
 
-**It is not an oracle.** "Who wrote hamlet" returns *Hamlet*, not
-*Shakespeare* — that is a search engine working correctly, and extracting the
-answer from the article is comprehension, which is out of reach here. Measured
-on thirteen probe queries, the right article is in the top three eleven times.
+**It is a search engine, and — given `--relations` — an oracle as well.**
+Measured on thirteen probe queries, the right article is in the top three
+eleven times.
+
+"Who wrote hamlet" used to return *Hamlet*, and this paragraph used to explain
+that this was a search engine working correctly: extracting the answer from the
+article is comprehension, which is out of reach here. That is still true. What
+changed is that the answer no longer has to come from the article.
+
+```
+? who wrote hamlet                     ->  William Shakespeare.
+? where was alexander graham bell born ->  Edinburgh.
+? what country is warsaw in            ->  Poland.
+```
+
+Those come off `WIKI.GRF`, a card file holding the same fact graph `libgraph`
+walks, in a layout a machine with no arithmetic beyond addition can read: a hop
+is a binary search over fixed-width records. Comprehension is still out of
+reach; a comparison and a seek are not. Each of those questions moved between
+2,857 and 11,857 bytes off the card.
+
+When the graph has no answer the program lists articles, which is what it did
+before, so nothing is lost by asking.
 
 The trigram encoder the language models use scores **2 of 13** on the same
 probes and returns *Bures Hamlet* for "who wrote hamlet". It compresses a

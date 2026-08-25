@@ -1153,24 +1153,41 @@ def _emit_classifier(b: EZ80Builder, spec: OracleSpec) -> None:
     # documents as the boundary of what these two machines can share.
     buildez80._emit_tokenizer_helpers(b, plat, libinfer.FLAT)
 
+    # The compact kernel, not the column one. Column unrolls a block per
+    # input and runs ~24x faster, and on a resident model that is the right
+    # trade; here it is 269KB of threaded code against 236KB of room once the
+    # accumulator has taken its byte per article. Compact keeps the weights as
+    # a data blob and interprets them, so the model costs 21KB rather than a
+    # quarter of a megabyte - and a classifier runs once per question, beside
+    # a search that has already gone to the card several times.
     b.label("INFER")
-    b.call("SCAN_IN")
-    b.jp("LAYER1")
+    b.ld_hl_label("BIASES")
+    b.ld_mem_label_hl("BIASP")
+    for i in range(model.num_layers):
+        in_buf, out_buf = buildez80.layer_buffers(i, model.num_layers)
+        b.label(f"LAYER{i + 1}")
+        b.ld_hl_label(in_buf)
+        b.ld_mem_label_hl("INBASE")
+        b.ld_ix_label(out_buf)
+        b.ld_bc_label(f"WTS{i + 1}")
+        b.ld_a_n(0 if i == model.num_layers - 1 else 1)
+        b.ld_mem_label_a("RELUF")
+        b.call("LAYER")
+    b.ret()
 
     buildez80._emit_argmax(b)
     buildgraphwalk.emit_walk(
         b, spec.num_edges, spec.types_at, spec.num_types,
         handle_label="GRFH", buffer_label="IOBUF", seekoff_label="SEEKOFF")
 
-    # After every routine that uses JR: from here the code is far too long for
-    # a relative jump to reach across, which is why buildez80 orders it so too.
-    buildez80._emit_column_epilogue(b)
-    buildez80._emit_input_scan(b, "SCAN_IN", range(libinfer.NUM_BUCKETS), "LEPI1")
-    buildez80._emit_layers_column(b, model, phrasebook=True)
+    # After every routine that uses JR: from here the code is too long for a
+    # relative jump to reach across, which is why buildez80 orders it so too.
+    buildez80._emit_layer_compact(b)
 
 
 def _emit_classifier_data(b: EZ80Builder, spec: OracleSpec) -> None:
     """Buffers the borrowed emitters address by name."""
+    import buildez80
     import buildgraphwalk
     import libinfer
 
@@ -1200,18 +1217,23 @@ def _emit_classifier_data(b: EZ80Builder, spec: OracleSpec) -> None:
     assert b.labels["CTXBUF"] == b.labels["INBUF"] + libinfer.NUM_BUCKETS * 3
 
     hidden = layer_sizes[1:-1] or [layer_sizes[-1]]
+    # The compact kernel pops one activation past the last weight, so every
+    # buffer it walks carries three bytes of slack.
+    b.ds(3)
     b.label("BUF_A")
-    b.ds(max(hidden) * 3)
+    b.ds(max(hidden) * 3 + 3)
     b.label("BUF_B")
-    b.ds(max(hidden) * 3)
+    b.ds(max(hidden) * 3 + 3)
     b.label("OUTBUF")
     b.ds(model.output_size * 3)
     b.label("OUTEND")
     b.ds(3)
-    b.label("ACC")
-    b.ds24(max(layer_sizes[1:]))
-    b.label("COLLIST")
-    b.ds24(max(layer_sizes[:-1]) + 1)
+
+    b.label("BIASES")
+    b.blob(b"".join(buildez80.encode_biases(bias) for bias in model.biases()))
+    for i, weights in enumerate(model.weights(), start=1):
+        b.label(f"WTS{i}")
+        b.blob(buildez80.encode_weights(weights))
 
     # The paths table: one fixed-width row per phrase, so the index is three
     # doublings rather than a multiply. A phrase whose path this cannot walk -
