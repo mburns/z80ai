@@ -226,6 +226,18 @@ CATEGORY_TAIL = re.compile(r"^.+?\s+(?:in|of)\s+(?P<place>.+)$", re.IGNORECASE)
 #: `Cities in France` and means something else entirely.
 PERSONAL = ("birth_date", "birth_place", "death_date", "death_place")
 
+#: The categories Wikipedia files every person under, and almost nothing else:
+#: `1935 births`, `2016 deaths`, `Living people`. An infobox is optional and a
+#: birth year is not, which is why this reaches people ``PERSONAL`` misses.
+PERSON_CATEGORY = re.compile(r"^(?:\d{1,4}s? (?:births|deaths)|Living people)$",
+                             re.IGNORECASE)
+
+#: Relations whose subject must be a person for the question to mean anything.
+#: Asking where Microsoft was born is not a gap in the graph; it is a question
+#: with no answer, and counting it as a miss understates every chain that ends
+#: in one. See ``coverage.py``, which reports those separately.
+NEEDS_PERSON = frozenset({"born_in", "died_in", "spouse_of"})
+
 #: `in the United States` names an article called "United States". English puts
 #: the article in the category name and Wikipedia leaves it out of the title,
 #: so the tail is tried both ways.
@@ -563,6 +575,31 @@ def types(db: sqlite3.Connection, source: str,
                   if n >= TYPE_FLOOR and k[1] not in demoted)
 
 
+def people(db: sqlite3.Connection, source: str) -> set[str]:
+    """Everything the corpus says is a person.
+
+    Two sources, because neither alone is enough. An infobox with a birth date
+    is decisive but only 45.7% of articles carry any infobox; the birth-year
+    categories are near-universal for people and cost nothing, the ingest
+    already having read them.
+
+    This exists to tell "we have no birthplace for this person" apart from
+    "this is a band". 692 of the 1,558 creators blocking `created_by born_in`
+    are companies and groups - Microsoft, ABBA, Capcom - and they account for
+    3,318 of the 5,462 works the chain cannot finish.
+    """
+    found = {s for (s,) in db.execute(
+        "SELECT DISTINCT subject FROM fact WHERE source = ? AND property IN "
+        f"({','.join('?' * len(PERSONAL))})", (source, *PERSONAL))}
+    try:
+        rows = db.execute("SELECT title, name FROM category WHERE source = ?",
+                          (source,))
+    except sqlite3.OperationalError:
+        return found           # a database written before schema 7 has none
+    found.update(title for title, name in rows if PERSON_CATEGORY.match(name))
+    return found
+
+
 def is_a(db: sqlite3.Connection, source: str, entity: str, kind: str) -> bool:
     return db.execute(
         "SELECT 1 FROM entity_type WHERE source = ? AND kind = ? AND entity = ?",
@@ -587,6 +624,16 @@ class Answer:
     @property
     def complete(self) -> bool:
         return self.value is not None
+
+    @property
+    def at(self) -> str | None:
+        """The entity the walk had reached when it stopped.
+
+        Which is what says whether the missing edge is a gap or a category
+        error: `missing` alone cannot tell "no birthplace recorded for this
+        author" from "asked a software company where it was born".
+        """
+        return self.path[-1] if self.path else None
 
 
 def follow(db: sqlite3.Connection, source: str, subject: str,

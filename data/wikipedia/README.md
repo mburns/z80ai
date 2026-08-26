@@ -552,6 +552,48 @@ value templates and the rank fallback:
 | `died_in in_country` | 48.1% | **81.0%** |
 | climbs that never reach a country | 43.8% | **23.1%** |
 
+### The one chain that looked broken was the scoreboard
+
+`created_by born_in` sat at **51.7%** while every comparable chain was near
+77%, which made it the obvious next thing to fix. It was not a coverage
+problem, and two plausible repairs died on measurement before the real cause
+turned up.
+
+**Mapping `nationality` would have made it worse.** It is the largest unmapped
+property that looks like a relation — 10,936 uses, and `coverage.py` scores
+86.5% of its values as naming an article. But only 19 of the blocked creators
+carry one, and the values are demonyms: `American` *does* name an article, just
+not the United States. That column checks a title exists, not that it is the
+right kind of thing, and it flatters every demonym-shaped property the same
+way.
+
+**The creators are not people.** Of the 1,558 creators with an article and no
+birthplace, 692 are companies and groups accounting for 3,318 of the works the
+chain cannot finish. The biggest single blockers are Microsoft, Apple Inc.,
+Google, U2, The Beatles and Capcom. A band has no birthplace to be missing —
+the chain was being marked down for declining to say where ABBA was born.
+
+So a walk that stops at `born_in`, `died_in` or `spouse_of` on something the
+corpus does not call a person is now counted as **moot** rather than as a miss,
+and `rate` is over what is left:
+
+| | before | after |
+|---|---:|---:|
+| `created_by born_in` | 51.7% | **74.3%** |
+| — walks with no possible answer | counted as misses | **3,370** |
+| — stalls that are real gaps | 5,346 | **1,976** |
+
+Nothing about the graph changed and no answer changed: the oracle already
+declined these and fell back to listing articles. The only thing that was wrong
+was the number, and it was wrong in the direction that invites work on the
+wrong problem.
+
+Who counts as a person comes from birth and death dates in the infobox, plus
+the `1935 births` / `Living people` categories Wikipedia files people under
+almost without exception — 78,594 of them. That tail is kept deliberately
+tight; `Deaths from cancer` is not a birth-year category and the articles in it
+are diseases.
+
 ### Measuring the coverage, rather than remembering it
 
 Every number in this section used to be measured by hand and quoted, which is
