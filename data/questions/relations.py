@@ -108,15 +108,56 @@ MAX_EXAMPLES = 1200
 #: became `created_by`, `died_in in_country` became `died_in`. It recognised
 #: the relation and lost the instruction to keep going.
 #:
-#: The cause was not the templates. Sweeping the number of training phrasings
-#: from one to six moved the score 20.3% -> 39.4%, so writing more of them
-#: would have bought a few points at best. The cause was the class prior: four
-#: chain classes bringing 240 examples each against 1,200 for every one-hop
-#: class, so dropping the second hop was simply the better bet. Weighting the
-#: loss by inverse class frequency - `classify.py --balance` - fixes it:
+#: One cause was the class prior: four chain classes bringing 240 examples each
+#: against 1,200 for every one-hop class, so dropping the second hop was simply
+#: the better bet. Weighting the loss by inverse class frequency -
+#: `classify.py --balance` - fixes that much:
 #:
 #:     unweighted              40.3%      one-hop macro 92.4%
 #:     class-weighted          64.7%      one-hop macro 90.3%
+#:
+#: ## The other cause was that five phrasings is not many
+#:
+#: This note used to continue "sweeping the number of training phrasings from
+#: one to six moved the score 20.3% -> 39.4%, so writing more of them would
+#: have bought a few points at best". Nineteen points over five wordings is not
+#: a few points, and that sentence was reading a steep curve as a flat one.
+#:
+#: Eight more per path were written to settle it. The held-out three are the
+#: last three of each tuple and did not change, so every row below is scored
+#: against the same 480 questions, and `--chain-phrasings 5` reproduces what
+#: this file did before. Three seeds:
+#:
+#:     phrasings   chain rows   held out   one-hop macro
+#:         1           2,539       35.8%
+#:         2           2,699       51.0%
+#:         3           2,859       51.8%
+#:         5           3,179       59.2%       92.1%     <- what shipped
+#:         8           3,659       78.3%
+#:        13           4,459       84.0%       90.8%     <- now
+#:
+#: **59.2% to 84.0% for eight wordings a path.** It costs 1.3 points of one-hop
+#: macro, which is a trade rather than a free win, and a cheap one by the bar
+#: the rejected repairs above set - bands cost 7.6 points for a loss.
+#:
+#: Do not compare 59.2% with the 50.1% five-seed figure below: that held out
+#: two phrasings and this holds out three, so the two are different questions.
+#: The comparison that means anything is within this table.
+#:
+#: ## Volume matters here, and on `data/silo/` it did not
+#:
+#: The same curve on the silo showed grammar buying everything and row count
+#: buying nothing - 7,200 rows over three phrasings scored what 2,400 did. That
+#: does not transfer:
+#:
+#:     13 phrasings, 40 per template   2,080 chain rows   84.0%   one-hop 90.8%
+#:     13 phrasings, 15 per template     780 chain rows   68.8%   one-hop 91.5%
+#:
+#: Same grammar, a third of the rows, sixteen points worse. So "more sentences,
+#: not more examples" is a fact about a corpus where every class is templated
+#: and every class has room, not a fact about the encoder. Here four templated
+#: classes are competing with thirteen crowdsourced ones and thinning them out
+#: costs real accuracy.
 #:
 #: ## How much of that is the seed
 #:
@@ -170,8 +211,10 @@ MAX_EXAMPLES = 1200
 #: three-seed spreads that do not overlap. It also makes the classifier *more*
 #: sensitive to which entity is being asked about, not less.
 #:
-#: So chain questions work about as well as one coin flip. That is enough to be
-#: interesting on a machine like this and not enough to trust.
+#: Chain questions used to work about as well as one coin flip. They do not any
+#: more, and the reason is embarrassing: nobody had written enough ways to ask
+#: them. Every repair listed above was to the model or the encoder, and the
+#: thing that moved the number twenty-five points was more sentences.
 #:
 #: Entity names are drawn from the corpus rather than invented, so the parts of
 #: the question that carry the rare words are real even where the frame is not.
@@ -182,6 +225,16 @@ CHAINS: dict[str, tuple[str, ...]] = {
         "what nation was {s} born in",
         "{s} was born in which country",
         "what country is {s} originally from",
+        # --- added after the phrasing curve; see the note above ---
+        "which country does {s} hail from",
+        "name the country of birth of {s}",
+        "the birth of {s} happened in which country",
+        "under which country was {s} born",
+        "tell me the nation {s} was born into",
+        "{s} entered the world in what country",
+        "what is the country of origin of {s}",
+        "{s} first drew breath in which country",
+        # --- held out, and unchanged so the evaluation set is the same ---
         "in what country was {s} born",
         "which country did {s} come from",
         "what country was {s} a native of",
@@ -192,6 +245,16 @@ CHAINS: dict[str, tuple[str, ...]] = {
         "what nation did {s} die in",
         "{s} died in which country",
         "in what country did {s} die",
+        # --- added ---
+        "name the country where {s} died",
+        "{s} passed away in which country",
+        "in which nation did {s} end their life",
+        "tell me the country of death of {s}",
+        "which country holds the place {s} died",
+        "the death of {s} took place in what country",
+        "{s} breathed their last in which country",
+        "what country did {s} die within",
+        # --- held out ---
         "what country was {s} in when they died",
         "which country did {s} pass away in",
         "what country did {s} spend their last days in",
@@ -202,6 +265,16 @@ CHAINS: dict[str, tuple[str, ...]] = {
         "what nation contains {s}",
         "{s} belongs to which country",
         "in what country would i find {s}",
+        # --- added ---
+        "name the country {s} sits in",
+        "{s} is found in which nation",
+        "which country has {s} inside it",
+        "tell me what country holds {s}",
+        "under which country does {s} fall",
+        "{s} lies within which country",
+        "what country does {s} form part of",
+        "which nation is {s} situated in",
+        # --- held out ---
         "what larger country is {s} within",
         "which country does {s} sit in",
         "what country is {s} located in",
@@ -212,6 +285,16 @@ CHAINS: dict[str, tuple[str, ...]] = {
         "what place was the author of {s} born in",
         "who made {s} and where were they born",
         "the person behind {s} was born where",
+        # --- added ---
+        "name the birthplace of whoever wrote {s}",
+        "the author of {s} was born in what place",
+        "which town produced the maker of {s}",
+        "tell me where the creator of {s} started out",
+        "what place did the writer behind {s} come from",
+        "whoever composed {s} was born where",
+        "where did the mind behind {s} originate",
+        "the one who made {s} was born in which place",
+        # --- held out ---
         "where was the maker of {s} born",
         "birthplace of whoever created {s}",
         "where did the author of {s} come from",
@@ -276,14 +359,26 @@ def subjects(db_path: Path, source: str, relation: str,
 
 
 def chains(db_path: Path, source: str, per_template: int,
-           hold_out: int = 0) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+           hold_out: int = 0, phrasings: int | None = None,
+           ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """Generated multi-hop questions, split by *template* rather than by row.
 
     Holding out whole phrasings is the only split that says anything: a random
     split leaves every template represented in training, so the score measures
-    memorisation of eight frames. Returns (train, held-out).
+    memorisation of a handful of frames. Returns (train, held-out).
+
+    ``phrasings`` keeps only that many of the wordings that were not held out.
+    The held-out three are the last three of each tuple and have not changed,
+    so every point on the curve is scored against the same questions, and
+    ``phrasings=5`` reproduces what this file did before more were written.
     """
     rng = random.Random(0)
+    # The held-out half draws from its own stream. Sharing one would make the
+    # entity names in the evaluation set depend on how many *training*
+    # phrasings were kept - every point on the curve would be scored against
+    # slightly different questions, which is the one thing the curve must not
+    # do. The phrasings were already fixed; this fixes the names too.
+    held_rng = random.Random(1)
     train: list[tuple[str, str]] = []
     unseen: list[tuple[str, str]] = []
     for path, templates in CHAINS.items():
@@ -295,12 +390,14 @@ def chains(db_path: Path, source: str, per_template: int,
         if not names:
             continue
         kept, held = templates[:len(templates) - hold_out], templates[len(templates) - hold_out:]
-        for group, sink in ((kept, train), (held, unseen)):
+        if phrasings is not None:
+            kept = kept[:phrasings]
+        for group, sink, draw in ((kept, train, rng), (held, unseen, held_rng)):
             for template in group:
-                for name in rng.sample(names, min(per_template, len(names))):
+                for name in draw.sample(names, min(per_template, len(names))):
                     sink.append((template.format(s=name.lower()), path))
     rng.shuffle(train)
-    rng.shuffle(unseen)
+    held_rng.shuffle(unseen)
     return train, unseen
 
 
@@ -318,6 +415,9 @@ def main() -> None:
                         help="Chain questions per template (0 for none)")
     parser.add_argument("--held-out-templates", type=int, default=0, metavar="N",
                         help="Reserve N chain phrasings per path, unseen in training")
+    parser.add_argument("--chain-phrasings", type=int, metavar="K",
+                        help="Train on only K of the wordings that were not "
+                             "held out, for the phrasing curve")
     parser.add_argument("--emit", choices=("train", "held-out"), default="train",
                         help="'held-out' emits only the reserved phrasings, to "
                              "score generalisation rather than recall")
@@ -331,7 +431,8 @@ def main() -> None:
 
     if args.chains:
         train, unseen = chains(args.db, args.source, args.chains,
-                               hold_out=args.held_out_templates)
+                               hold_out=args.held_out_templates,
+                               phrasings=args.chain_phrasings)
         # The held-out set is chain questions only: it exists to answer "does
         # a phrasing we never wrote still route to the right path", and mixing
         # the one-hop classes back in would dilute that into a general score.
