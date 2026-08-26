@@ -17,15 +17,16 @@ Three parts, each doing only what it measurably wins at:
 It is wrong often, in two different ways, and both are worth knowing about.
 
 A two-hop question has to survive the classifier recognising that it *is* two
-hops (about 50% on phrasings the model never saw) and then a graph that can
+hops (84.0% on phrasings the model never saw) and then a graph that can
 actually complete the walk (77%, since the graph learned to read value
-templates and categories). Those compound. This is not a machine that answers
-chained questions reliably; it is a machine that sometimes does, and can tell
-you when it did.
+templates and categories). Those compound, so two thirds of chained questions
+get through - and the machine can still tell you when one did not.
 
-"About 50%" is deliberately vague: over five seeds the same measurement ranges
-from 43.1% to 56.2% on its 320 held-out questions, so a decimal place here
-would be reporting the seed. `data/questions/relations.py` has the numbers.
+That first number was about 50% for a long time, and what moved it was not a
+better model. Eight more ways of asking each question, per path, took it from
+59.2% to 84.0% over three seeds. Every other repair tried had been to the
+encoder or the architecture. `data/questions/relations.py` has the curve, and
+the 1.3 points of one-hop macro it cost.
 
 What it does with the failures is the point. A broken walk reports what it
 *did* learn, so the machine says "Edinburgh. The archive does not record what

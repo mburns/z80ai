@@ -120,3 +120,51 @@ def test_a_missing_corpus_yields_no_chains_rather_than_inventing_them(tmp_path):
 def test_generation_is_reproducible(db):
     assert relations.chains(db, "simplewiki", 5, hold_out=2) == \
         relations.chains(db, "simplewiki", 5, hold_out=2)
+
+
+#: The three wordings per path that the phrasing curve is scored against. They
+#: are the *last* three of each tuple, because `chains` holds out from the end,
+#: so appending a new phrasing silently changes what every measurement in
+#: `relations.py` was taken against. New ones go before these.
+HELD_OUT_TAILS = {
+    "born_in in_country": ("in what country was {s} born",
+                           "which country did {s} come from",
+                           "what country was {s} a native of"),
+    "died_in in_country": ("what country was {s} in when they died",
+                           "which country did {s} pass away in",
+                           "what country did {s} spend their last days in"),
+    "in_country": ("what larger country is {s} within",
+                   "which country does {s} sit in",
+                   "what country is {s} located in"),
+    "created_by born_in": ("where was the maker of {s} born",
+                           "birthplace of whoever created {s}",
+                           "where did the author of {s} come from"),
+}
+
+
+def test_the_held_out_phrasings_are_still_the_ones_the_curve_was_scored_on():
+    """`chains` holds out from the end of each tuple, so a phrasing appended
+    after these would quietly replace the evaluation set and make the numbers
+    in `relations.py` measurements of something else. Add new ones above."""
+    for path, tail in HELD_OUT_TAILS.items():
+        assert relations.CHAINS[path][-3:] == tail, path
+
+
+def test_chain_phrasings_trims_the_training_half_and_not_the_other(db):
+    """`--chain-phrasings K` is what draws the curve, so it has to leave the
+    held-out set **byte for byte** alone - not merely the same phrasings, the
+    same questions. It did not at first: both halves drew entity names from one
+    random stream, so keeping fewer training phrasings changed which names the
+    evaluation half got, and every point on the curve was scored against
+    something slightly different.
+    """
+    paths = len(relations.CHAINS)
+    five, held_five = relations.chains(db, "simplewiki", 2, hold_out=3,
+                                       phrasings=5)
+    all_, held_all = relations.chains(db, "simplewiki", 2, hold_out=3)
+
+    assert held_five == held_all
+    assert len(held_all) == 3 * 2 * paths
+    # K templates kept, per_template questions each, across every path.
+    assert len(five) == 5 * 2 * paths
+    assert len(all_) == (len(next(iter(relations.CHAINS.values()))) - 3) * 2 * paths
