@@ -307,6 +307,7 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     b.label("NEXT_TOKEN")
     b.xor_a()
     b.ld_mem_label_a("TOKLEN")
+    b.ld_mem_label_a("NTGLUED")
 
     b.label("NT_SKIP")               # skip anything that is not a letter/digit
     b.ld_a_mem_label("TOKPOS")
@@ -346,7 +347,36 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     b.call("TOK_ADVANCE")
     b.jr("NT_TAKE")
 
+    # A single character is an initial, not a word, so it is glued to the run
+    # after it: `amanda m wilson` yields `amanda` and `mwilson`. Without this
+    # the two Amanda Wilsons are not merely hard to tell apart, they are the
+    # *same query* - the index never saw a one-character term either, because
+    # `libsearch.tokenize` drops them.
+    #
+    # `a` and `i` are exempt because they are words. Gluing one eats the word
+    # after it, and `what is a black hole` becomes `ablack hole`. Those are the
+    # only two single-character stopwords, which `tests/test_wikisearch.py`
+    # pins so this pair cannot quietly stop matching the list.
+    #
+    # NTGLUED makes it a one-shot: without it, a query ending in a lone
+    # initial would come back here with TOKLEN still 1 and loop forever.
     b.label("NT_DONE")
+    b.ld_a_mem_label("TOKLEN")
+    b.cp_n(1)
+    b.jr_nz("NT_RET")
+    b.ld_a_mem_label("NTGLUED")
+    b.or_a()
+    b.jr_nz("NT_RET")
+    b.ld_a_mem_label("TOKBUF")
+    b.cp_n(ord("a"))
+    b.jr_z("NT_RET")
+    b.cp_n(ord("i"))
+    b.jr_z("NT_RET")
+    b.ld_a_n(1)
+    b.ld_mem_label_a("NTGLUED")
+    b.jr("NT_SKIP")
+
+    b.label("NT_RET")
     b.ld_a_mem_label("TOKLEN")
     b.ret()
 
@@ -1527,7 +1557,7 @@ def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, num_pages: int,
     b.ascii(TEXT_MAGIC.decode())
 
     for name in ("IDXH", "DATH", "INPLEN", "TOKPOS", "TOKLEN", "NSCORED",
-                 "SHOWN", "HCNT", "NULSEEN"):
+                 "SHOWN", "HCNT", "NULSEEN", "NTGLUED"):
         b.label(name)
         b.db(0)
     b.label("BESTSC")

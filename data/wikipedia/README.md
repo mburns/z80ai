@@ -142,6 +142,16 @@ because a person reads all of them; an oracle walks only the first, and its
 mistakes have no symptom — the graph answers correctly about the wrong subject
 and what comes back is fluent and wrong.
 
+An initial is glued to the name after it — `amanda m wilson` is indexed and
+queried as `amanda mwilson` — because a single character was dropped at both
+ends, which made two people who differ only by a middle initial into the *same
+query* rather than two similar ones. That is worth nothing here, where nobody
+is searched for by initial, and the probes are unchanged by it. It is worth
+88.6% → 100% on [`data/silo/`](../silo/), where the population is closed and
+thousands of people share a first and last name. The cost is 3% more postings;
+`a` and `i` are exempt because they are words, and gluing one ate `black` out
+of "what is a black hole".
+
 "Who wrote hamlet" used to return *Hamlet*, and this paragraph used to explain
 that this was a search engine working correctly: extracting the answer from the
 article is comprehension, which is out of reach here. That is still true. What

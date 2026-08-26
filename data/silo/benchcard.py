@@ -34,6 +34,7 @@ that reason, and left out of the fit.
 from __future__ import annotations
 
 import argparse
+import collections
 import random
 import sqlite3
 import statistics
@@ -99,18 +100,26 @@ def entity_lookup(stem: Path, db: sqlite3.Connection, sample: int,
     it is a sample rather than a list.
 
     The last number is why this is worth measuring here at all. Faker draws
-    from a few hundred first names and a few hundred surnames, so a corpus of
-    10,000 people has many who differ only by a middle initial - and a single
-    letter is a poor search term. This is the corpus being harder than
-    Wikipedia at the one stage Wikipedia is good at, which is not a flaw to be
-    tuned away: it is what a real registry of a closed population looks like.
+    from a few hundred first names and a few hundred surnames, so thousands of
+    these 10,000 differ from somebody only by a middle initial. That was not a
+    weak signal, it was *no* signal: `libsearch.tokenize` dropped single
+    characters at both ends, so two such people were the same query and the
+    tie-break picked between them. It glues an initial to the name after it
+    now, which took this from 88.6% to 100%.
+
+    A closed population of relatives is where that shows up and an encyclopedia
+    is not, which is the argument for having a second corpus at all.
     """
     import libsearch
 
     card = libsearch.CardSearch(stem.with_suffix(".IDX"), stem.with_suffix(".DAT"))
     people = [r for (r,) in db.execute(
         "SELECT name FROM person WHERE source = ? ORDER BY name", (SOURCE,))]
-    shared = len(people) - len({" ".join(n.split()[::2]) for n in people})
+    # People who share a first and last name with somebody, which is not the
+    # same as the count of *excess* names - this reported the latter and
+    # described it as the former, understating the problem by half.
+    bare = collections.Counter(" ".join(n.split()[::2]) for n in people)
+    shared = sum(n for n in bare.values() if n > 1)
 
     rng = random.Random(seed)
     first = top3 = missing = 0
@@ -186,9 +195,11 @@ def main() -> None:
           f"can use; the walk only follows the top hit")
     print(f"  in the top 3 {(first + top3) / total:>6.1%}")
     print(f"  not found    {missing / total:>6.1%}")
-    print(f"  {shared:,} of the 10,000 share a first and last name with "
-          f"somebody else,\n  and differ only by a middle initial - which is "
-          f"one search term of one letter.")
+    print(f"  {shared:,} people share a first and last name with somebody else "
+          f"and differ\n  only by a middle initial. A single character used to "
+          f"be dropped at both ends,\n  so those were not similar queries - "
+          f"they were the same one. `libsearch.tokenize`\n  glues an initial to "
+          f"the name after it now, which is what the rows above measure.")
 
     import libgraph
     import libgraphcard
