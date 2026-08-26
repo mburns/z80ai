@@ -165,6 +165,41 @@ def test_asking_a_band_where_it_was_born_is_not_a_miss(db):
     assert scored["stopped_at"] == {}        # the band is not a broken hop
 
 
+def test_a_stopped_walk_says_what_kind_of_thing_it_stopped_on(db):
+    """`stopped_at` says which hop had no edge; this says what it had no edge
+    *from*. That is the difference between coverage that is missing and
+    coverage that could never exist, and it was worked out by hand once."""
+    subjects = coverage.head_subjects(db, "w", "born_in")
+    scored = coverage.score_path(db, "w", ["born_in", "in_country"], subjects,
+                                 libgraph.people(db, "w"))
+    # Carol, via London: a place, but nothing in the corpus places it.
+    assert scored["stopped_on"] == {"a place nothing places": 1}
+
+
+def test_the_kinds_tell_a_missing_edge_from_an_impossible_one(db):
+    """The two shapes side by side. Erin stops on a person with no birthplace,
+    which is a gap worth filing; a walk stopping on a band is moot and never
+    reaches this tally at all."""
+    db.execute("INSERT INTO article (source, title, lead) "
+               "VALUES ('w', 'Erin', '')")
+    db.execute("INSERT INTO category (source, title, name) "
+               "VALUES ('w', 'Erin', '1950 births')")
+    db.execute("INSERT INTO article (source, title, lead) "
+               "VALUES ('w', 'Sonic Boom', '')")
+    db.execute("INSERT INTO article (source, title, lead) "
+               "VALUES ('w', 'Song', '')")
+    db.execute("INSERT INTO article (source, title, lead) "
+               "VALUES ('w', 'Poem', '')")
+    db.executemany("INSERT OR REPLACE INTO edge VALUES ('w', ?, ?, ?)",
+                   [("Poem", "created_by", "Erin"),
+                    ("Song", "created_by", "Sonic Boom")])
+
+    scored = coverage.score_path(db, "w", ["created_by", "born_in"],
+                                 ["Poem", "Song"], libgraph.people(db, "w"))
+    assert scored["moot"] == 1                       # Song, via the band
+    assert scored["stopped_on"] == {"a person": 1}   # Poem, via Erin
+
+
 def test_a_person_without_a_birthplace_is_still_a_miss(db):
     """The correction must not swallow the thing worth fixing. Dave is a person
     - the corpus files him under a birth year - and the graph simply has no
