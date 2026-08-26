@@ -432,3 +432,246 @@ def test_the_database_is_readable_without_the_ingest_module(ingest, tmp_path):
     _, db_path, _ = build_db(ingest, tmp_path)
     plain = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     assert plain.execute("SELECT title FROM article").fetchone()[0] == "Hamlet"
+
+
+# --- titles -------------------------------------------------------------------
+
+
+def test_a_title_is_unescaped_once_not_to_a_fixed_point(ingest):
+    """`clean()` loops because some markup is escaped twice; a title must not.
+
+    An article whose name literally contains `&lt;` is written `&amp;lt;` by
+    the dump. One pass gives the name back; a second gives `<` and invents a
+    title nobody wrote.
+    """
+    assert ingest.unescape_title("Dungeons &amp; Dragons") == "Dungeons & Dragons"
+    assert ingest.unescape_title("&quot;Weird Al&quot; Yankovic") == \
+        '"Weird Al" Yankovic'
+    assert ingest.unescape_title("Escaping &amp;lt; in HTML") == \
+        "Escaping &lt; in HTML"
+
+
+def test_only_the_entities_xml_produces_are_decoded_in_a_title(ingest):
+    """`clean()` also maps `&ndash;` and `&nbsp;`, which an XML escaper never
+    writes - so a title containing that text keeps it."""
+    assert ingest.unescape_title("Fun &ndash; Games") == "Fun &ndash; Games"
+
+
+def test_an_ampersand_title_survives_the_whole_ingest(ingest, tmp_path):
+    dump = DUMP.replace("<title>Hamlet</title>", "<title>AT&amp;T</title>", 1)
+    dump = dump.replace('<redirect title="Hamlet" />',
+                        '<redirect title="AT&amp;T" />', 1)
+    db, _, _ = build_db(ingest, tmp_path, dump_text=dump)
+    assert db.execute("SELECT title FROM article").fetchone()[0] == "AT&T"
+    # The target has to be decoded with the title or the redirect stops
+    # resolving, which is 114,771 alternate names riding on it.
+    assert db.execute("SELECT target FROM redirect").fetchone()[0] == "AT&T"
+    assert db.execute(
+        "SELECT COUNT(*) FROM redirect r JOIN article a "
+        "ON a.source = r.source AND a.title = r.target").fetchone()[0] == 1
+
+
+def test_a_fact_subject_is_the_decoded_title(ingest, tmp_path):
+    """`fact`, `category` and `derived` all key on the title, so a half-fixed
+    corpus would be worse than an unfixed one."""
+    dump = DUMP.replace("<title>Hamlet</title>", "<title>AT&amp;T</title>", 1)
+    dump = dump.replace("by [[William Shakespeare]].",
+                        "by [[William Shakespeare]].\n[[Category:Companies]]", 1)
+    db, _, _ = build_db(ingest, tmp_path, dump_text=dump)
+    assert db.execute("SELECT DISTINCT subject FROM fact").fetchone()[0] == "AT&T"
+    assert db.execute("SELECT DISTINCT title FROM category").fetchone()[0] == "AT&T"
+
+
+# --- sitelinks ----------------------------------------------------------------
+#
+# The titles here match DUMP above, because the whole point of the table is
+# that the two dumps describe the same pages.
+
+PAGE_SQL = """-- MySQL dump 10.13
+CREATE TABLE `page` (
+  `page_id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `page_namespace` int(11) NOT NULL DEFAULT 0,
+  `page_title` varbinary(255) NOT NULL DEFAULT '',
+  `page_is_redirect` tinyint(3) unsigned NOT NULL DEFAULT 0,
+  `page_len` int(10) unsigned NOT NULL,
+  `page_lang` varbinary(35) DEFAULT NULL,
+  PRIMARY KEY (`page_id`),
+  UNIQUE KEY `page_name_title` (`page_namespace`,`page_title`)
+) ENGINE=InnoDB DEFAULT CHARSET=binary;
+INSERT INTO `page` VALUES (1,0,'Hamlet',0,4210,NULL),\
+(2,0,'Bill_Shakespeare',1,32,NULL),(3,1,'Hamlet',0,88,NULL),\
+(4,0,'Paris_(song)',0,900,''),(5,0,'Ain\\'t_Misbehavin\\'',0,700,NULL);
+"""
+
+PROPS_SQL = """-- MySQL dump 10.13
+CREATE TABLE `page_props` (
+  `pp_page` int(11) NOT NULL DEFAULT 0,
+  `pp_propname` varbinary(60) NOT NULL DEFAULT '',
+  `pp_value` blob NOT NULL,
+  `pp_sortkey` float DEFAULT NULL,
+  PRIMARY KEY (`pp_page`,`pp_propname`)
+) ENGINE=InnoDB DEFAULT CHARSET=binary;
+INSERT INTO `page_props` VALUES (1,'defaultsort','Hamlet',NULL),\
+(1,'wikibase_item','Q41567',NULL),(2,'wikibase_item','Q2',NULL),\
+(3,'wikibase_item','Q3',NULL),(4,'wikibase_item','Q1049864',NULL),\
+(5,'wikibase_item','Q4700',NULL);
+"""
+
+
+def sitelink_dumps(tmp_path, date="20260801"):
+    page = tmp_path / f"simplewiki-{date}-page.sql"
+    props = tmp_path / f"simplewiki-{date}-page_props.sql"
+    page.write_text(PAGE_SQL)
+    props.write_text(PROPS_SQL)
+    return page, props
+
+
+def test_columns_come_from_the_dump_not_from_a_position(ingest, tmp_path):
+    """MediaWiki adds and drops columns between releases; `page_restrictions`
+    was removed outright. Reading the order out of the CREATE TABLE is what
+    keeps that from becoming a silent mis-parse."""
+    page, props = sitelink_dumps(tmp_path)
+    assert ingest.sql_columns(page)[:4] == [
+        "page_id", "page_namespace", "page_title", "page_is_redirect"]
+    assert ingest.sql_columns(props) == [
+        "pp_page", "pp_propname", "pp_value", "pp_sortkey"]
+
+
+def test_a_missing_column_is_refused_by_name(ingest, tmp_path):
+    page, _ = sitelink_dumps(tmp_path)
+    with pytest.raises(SystemExit, match="page_restrictions"):
+        list(ingest.sql_rows(page, "page_id", "page_restrictions"))
+
+
+def test_values_inside_a_string_are_not_separators(ingest):
+    """Every one of these is a real article title, and each would end the row
+    early if the scanner trusted punctuation."""
+    rows = list(ingest.sql_values(
+        r"(1,'Paris (song)',NULL),(2,'Ain\'t Misbehavin\'',''),"
+        r"(3,'Cooking, Baking',NULL)"))
+    assert rows == [
+        ["1", "Paris (song)", None],
+        ["2", "Ain't Misbehavin'", ""],
+        ["3", "Cooking, Baking", None],
+    ]
+
+
+def test_a_quoted_empty_string_is_not_null(ingest):
+    """`page_lang` is '' for most pages and NULL for some, and STRICT will not
+    accept one where the other belongs."""
+    assert list(ingest.sql_values("(1,'',NULL)")) == [["1", "", None]]
+
+
+def test_only_articles_get_a_sitelink(ingest, tmp_path):
+    """A redirect and a Talk page both carry a wikibase_item and neither is an
+    article, so neither belongs in a table keyed by article title."""
+    page, props = sitelink_dumps(tmp_path)
+    found = dict(ingest.sitelinks(page, props))
+    assert found == {
+        "Hamlet": 41567,
+        "Paris (song)": 1049864,
+        "Ain't Misbehavin'": 4700,
+    }
+
+
+def test_titles_arrive_with_spaces_like_every_other_table(ingest, tmp_path):
+    """The SQL table stores underscores and the XML dump does not; the join is
+    against the XML's spelling."""
+    page, props = sitelink_dumps(tmp_path)
+    assert "Paris (song)" in dict(ingest.sitelinks(page, props))
+
+
+def test_two_snapshots_cannot_be_mixed(ingest, tmp_path):
+    """Page ids are stable enough that this mostly works, which is what makes
+    it worth refusing: it fails only on pages deleted and recreated in
+    between, and there is nothing to see when it does."""
+    page, _ = sitelink_dumps(tmp_path, date="20260801")
+    _, props = sitelink_dumps(tmp_path, date="20260401")
+    with pytest.raises(SystemExit, match=r"20260801.*20260401"):
+        list(ingest.sitelinks(page, props))
+
+
+def test_sitelinks_join_the_articles_they_name(ingest, tmp_path):
+    db, _, _ = build_db(ingest, tmp_path)
+    page, props = sitelink_dumps(tmp_path)
+    written, joined = ingest.ingest_sitelinks(db, page, props, "simplewiki")
+    assert written == 3
+    # Only Hamlet is in DUMP; the other two are here to exercise the parser.
+    assert joined == 1
+    assert db.execute(
+        "SELECT s.qid FROM sitelink s JOIN article a "
+        "ON a.source = s.source AND a.title = s.title").fetchone()[0] == 41567
+
+
+def test_a_qid_can_be_looked_up_as_well_as_a_title(ingest, tmp_path):
+    """Reading a Wikidata dump means arriving with a Q-id and asking which
+    article it is, which is the direction nothing else here indexes."""
+    db, _, _ = build_db(ingest, tmp_path)
+    page, props = sitelink_dumps(tmp_path)
+    ingest.ingest_sitelinks(db, page, props, "simplewiki")
+    assert db.execute("SELECT title FROM sitelink WHERE source = ? AND qid = ?",
+                      ("simplewiki", 41567)).fetchone()[0] == "Hamlet"
+    plan = db.execute(
+        "EXPLAIN QUERY PLAN SELECT title FROM sitelink "
+        "WHERE source = 'simplewiki' AND qid = 41567").fetchall()
+    assert any("sitelink_qid" in str(row) for row in plan), plan
+
+
+def test_sitelinks_are_replaced_rather_than_merged(ingest, tmp_path):
+    """A dump is a complete snapshot, so a page that stopped having a Q-id has
+    to stop having one here."""
+    db, _, _ = build_db(ingest, tmp_path)
+    page, props = sitelink_dumps(tmp_path)
+    ingest.ingest_sitelinks(db, page, props, "simplewiki")
+
+    thinner = tmp_path / "simplewiki-20260801-page_props.sql"
+    thinner.write_text(PROPS_SQL.replace("(4,'wikibase_item','Q1049864',NULL),", ""))
+    written, _ = ingest.ingest_sitelinks(db, page, thinner, "simplewiki")
+    assert written == 2
+    assert db.execute("SELECT COUNT(*) FROM sitelink "
+                      "WHERE title = 'Paris (song)'").fetchone()[0] == 0
+
+
+def test_sitelink_provenance_names_the_dump_it_came_from(ingest, tmp_path):
+    db, _, _ = build_db(ingest, tmp_path)
+    page, props = sitelink_dumps(tmp_path)
+    ingest.ingest_sitelinks(db, page, props, "simplewiki")
+    meta = dict(db.execute("SELECT key, value FROM meta").fetchall())
+    assert meta["simplewiki.sitelinks"] == "3"
+    assert meta["simplewiki.sitelinks.dump"] == "simplewiki-20260801-page_props.sql"
+    assert meta["simplewiki.sitelinks.url"] == (
+        "https://dumps.wikimedia.org/simplewiki/20260801/"
+        "simplewiki-20260801-page_props.sql")
+
+
+def test_an_escaped_title_joins_because_it_is_decoded_on_the_way_in(
+        ingest, tmp_path):
+    """`page.sql.gz` says `AT&T` and the XML dump says `AT&amp;T`.
+
+    The corpus used to store the escaped form, so 724 articles were called
+    `AT&amp;T` on the card and none of them joined. The fix is in `raw_pages`
+    rather than here: escaping the *sitelink* to match would have taken the
+    reported coverage to 100% and left the encyclopedia calling it AT&amp;T.
+    """
+    dump = DUMP.replace("<title>Hamlet</title>", "<title>AT&amp;T</title>", 1)
+    db, _, _ = build_db(ingest, tmp_path, dump_text=dump)
+    props = tmp_path / "simplewiki-20260801-page_props.sql"
+    page = tmp_path / "simplewiki-20260801-page.sql"
+    page.write_text(PAGE_SQL.replace("'Hamlet',0,4210", "'AT&T',0,4210", 1))
+    props.write_text(PROPS_SQL)
+
+    assert db.execute("SELECT title FROM article").fetchone()[0] == "AT&T"
+    written, joined = ingest.ingest_sitelinks(db, page, props, "simplewiki")
+    assert written == 3
+    assert joined == 1
+
+
+def test_a_gzipped_dump_reads_the_same(ingest, tmp_path):
+    """The real files are only ever distributed gzipped."""
+    import gzip
+
+    page = tmp_path / "simplewiki-20260801-page.sql.gz"
+    props = tmp_path / "simplewiki-20260801-page_props.sql.gz"
+    page.write_bytes(gzip.compress(PAGE_SQL.encode()))
+    props.write_bytes(gzip.compress(PROPS_SQL.encode()))
+    assert dict(ingest.sitelinks(page, props))["Hamlet"] == 41567

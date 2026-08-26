@@ -15,7 +15,7 @@ rather than merging into them - which is what makes re-running it a sync, and
 what makes deletions propagate. The swap happens in one transaction, so an
 interrupted run leaves the previous corpus intact.
 
-Five tables carry the corpus, and a sixth carries what was read out of prose
+Six tables carry the corpus, and a seventh carries what was read out of prose
 rather than out of a table:
 
   article   what the machine can answer with. Title plus the opening sentences,
@@ -24,6 +24,12 @@ rather than out of a table:
   redirect  alternate names, pointing at a title. Wikipedia's editors have
             written ~115,000 of these, and they are the reason `jane austin`
             finds Jane Austen - the index does no fuzzy matching of its own.
+  sitelink  the Wikidata entity each article is about, as an integer Q-id.
+            Not in the XML dump - it comes from `page.sql.gz` and
+            `page_props.sql.gz` - and the reason it is worth a second download
+            is that it is the *only* exact key between this corpus and
+            Wikidata. Matching on the title instead is right 43.5% of the time
+            and confidently wrong 2.2% of the time; see the README.
   fact      what an infobox said, as (subject, property, ordinal) -> value,
             with the value's type worked out on the way in.
   property  the vocabulary those facts are written in, counted, and marked
@@ -43,7 +49,7 @@ rather than out of a table:
 ## Normalizing, and where it stops
 
 An infobox is hand-typed by thousands of people, so what arrives is a
-folksonomy: 13,387 distinct property names, 3,740 of them used exactly once and
+folksonomy: 19,117 distinct property names as typed, 5,266 of them used once and
 most of those parse artifacts rather than vocabulary. Cleaning it is worth
 doing and worth bounding, so this normalizes **form** and leaves **meaning** to
 libgraph:
@@ -65,6 +71,7 @@ from __future__ import annotations
 
 import argparse
 import bz2
+import gzip
 import hashlib
 import re
 import sqlite3
@@ -73,15 +80,19 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import libgraph
 
 DB_PATH = Path(__file__).resolve().parent.parent / "simple_english_wikipedia.db"
-#: Bumped whenever the table definitions change. The database is derived data,
-#: so a mismatch is resolved by re-ingesting rather than by migrating.
-SCHEMA_VERSION = 8
+#: Bumped whenever the table definitions change, or when what is stored in them
+#: changes meaning - version 10 decodes the XML escaping in titles, so a
+#: database written by 9 holds 724 articles called `AT&amp;T` and every table
+#: keyed on a title agrees with it. The database is derived data, so either
+#: kind of mismatch is resolved by re-ingesting rather than by migrating.
+SCHEMA_VERSION = 10
 
 #: Characters of lead text kept per article. A 40x24 Agon screen holds about
 #: 960, so this is a third of one - enough to say what a thing is.
@@ -143,10 +154,10 @@ def _schema() -> str:
       ``(subject, property, ordinal) -> value`` - so that costs no separate
       index. ``ordinal`` is there because a template spells a list as
       ``subdivision_name1``, ``subdivision_name2``: 4,064 property names and
-      27.6% of all facts were positional variants of some other property,
+      25.0% of all facts were positional variants of some other property,
       which made one field look like seven unrelated ones.
 
-    - ``property`` is the vocabulary, counted. 13,387 distinct properties is a
+    - ``property`` is the vocabulary, counted. 13,268 distinct properties is a
       folksonomy nobody wrote down, and the query worth running against it -
       *what is used often and mapped to nothing* - is the one that found
       ``subdivision_name`` and took chaining from 1.7% to 40.7%. A partial
@@ -199,6 +210,23 @@ CREATE TABLE IF NOT EXISTS redirect (
 ) {STRICT}WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS redirect_target ON redirect (source, target);
+
+-- Which Wikidata entity an article is about. Stored as the integer rather than
+-- the `Q…` string: the prefix is a constant, and the whole point of the column
+-- is to be joined against, so it should be as narrow as a key can be.
+--
+-- `sitelink_qid` is not a nicety. Reading a Wikidata dump means arriving with a
+-- Q-id and asking which article it is, which is the opposite direction from
+-- everything else here.
+CREATE TABLE IF NOT EXISTS sitelink (
+    source TEXT NOT NULL,
+    title  TEXT NOT NULL,
+    qid    INTEGER NOT NULL,
+    PRIMARY KEY (source, title),
+    CHECK (qid > 0)
+) {STRICT}WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS sitelink_qid ON sitelink (source, qid);
 
 CREATE TABLE IF NOT EXISTS category (
     source TEXT NOT NULL,
@@ -278,6 +306,30 @@ HEADING = re.compile(r"^=+.*?=+$", re.MULTILINE)
 TABLE = re.compile(r"\{\|.*?\|\}", re.DOTALL)
 ENTITY = {"&quot;": '"', "&amp;": "&", "&lt;": "<", "&gt;": ">", "&nbsp;": " ",
           "&#39;": "'", "&ndash;": "-", "&mdash;": "-"}
+
+#: The five entities an XML escaper produces, and nothing else. `clean()`
+#: decodes a much wider set repeatedly, because it is undoing whatever
+#: *editors* typed into the markup; this is undoing what the *dump format*
+#: did on the way out, which is a smaller and exactly specified job.
+XML_ENTITY = re.compile(r"&(?:amp|lt|gt|quot|apos|#39);")
+XML_ENTITY_TEXT = {"&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"',
+                   "&apos;": "'", "&#39;": "'"}
+
+
+def unescape_title(title: str) -> str:
+    """Undo the dump's XML escaping of a title, exactly once.
+
+    `<title>Dungeons &amp; Dragons</title>` is an article called
+    `Dungeons & Dragons`, and storing the escaped form means the card prints
+    `AT&amp;T` and searches for it under that name. 724 articles were.
+
+    Once, and in a single left-to-right pass, because that is what XML means
+    and a second pass would be wrong: a title containing the literal text
+    `&lt;` arrives as `&amp;lt;`, and one pass gives `&lt;` where a fixed point
+    would give `<`. That is also why this cannot reuse `clean()`, which loops
+    to a fixed point on purpose - some markup in this dump is escaped twice.
+    """
+    return XML_ENTITY.sub(lambda m: XML_ENTITY_TEXT[m.group()], title)
 
 #: Bracketed forms that are furniture rather than prose.
 DROPPED_PREFIXES = ("file:", "image:", "category:")
@@ -658,7 +710,7 @@ PROPERTY_OK = re.compile(r"^(?=.*[^\W\d_])\w{1,64}$", re.UNICODE)
 #: A trailing index on a repeated field. Templates spell a list as
 #: `subdivision_name1`, `subdivision_name2` and so on, which makes seven
 #: properties out of one and hides the fact that they are the same field. This
-#: is 4,064 of the properties and **27.6% of all facts**, so collapsing them is
+#: is 3,929 of the properties and **25.0% of all facts**, so collapsing them is
 #: the single biggest thing that can be done to the shape of this data.
 #: `[^\W\d]` rather than `[a-z_]`: the base has to end in a letter, and now
 #: that German template keys survive, some of those letters are not ASCII.
@@ -830,10 +882,10 @@ def split_fields(body: str) -> list[str]:
 def infobox_fields(body: str, title: str = "") -> list[tuple[str, str]]:
     """Top-level ``| key = value`` pairs, cleaned but not yet re-indexed.
 
-    A field whose value is the article's own title is dropped: 91,504 of them,
-    4.7% of every fact, and not one says anything. `name = Televisa` on the
-    page called Televisa is the commonest by far at 69,160, with
-    `official_name`, `fullname`, `subject_name` and `title` behind it.
+    A field whose value is the article's own title is dropped: 91,687 of them,
+    4.4% of every fact, and not one says anything. `name = Televisa` on the
+    page called Televisa is the commonest by far at 69,259, with
+    `official_name`, `fullname`, `subject_name` and `municipality_name` behind it.
 
     It is the same emptiness as `Los Angeles located_in Los Angeles`, which
     libgraph drops at the edge; this drops it a step earlier, where it is a
@@ -900,10 +952,14 @@ def raw_pages(path: Path) -> Iterator[tuple[str, str | None, str]]:
             # one element per line, but nothing in the format promises that,
             # and skipping the rest of a line after the first match makes the
             # parser silently yield nothing on a dump that packs them.
+            # Both are unescaped here, at the one place a title enters this
+            # program: `article`, `redirect`, `category` and `fact` all key on
+            # what this yields, and a redirect target has to be decoded with
+            # the title it points at or it stops resolving.
             if title is None:
                 m = TITLE.search(line)
                 if m:
-                    title = m.group(1)
+                    title = unescape_title(m.group(1))
             if ns is None:
                 m = NS.search(line)
                 if m:
@@ -911,7 +967,7 @@ def raw_pages(path: Path) -> Iterator[tuple[str, str | None, str]]:
             if redirect is None:
                 m = REDIRECT.search(line)
                 if m:
-                    redirect = m.group(1)
+                    redirect = unescape_title(m.group(1))
 
             if not in_text:
                 m = TEXT_OPEN.search(line)
@@ -988,6 +1044,182 @@ def pages(path: Path) -> Iterator[Page]:
         yield Page(title, None, lead_of(markup),
                    infobox_fields(box, title) if box else [],
                    categories_of(markup))
+
+
+# --- sitelinks ----------------------------------------------------------------
+#
+# The XML dump says what an article contains and never says what it is *about*.
+# That identity lives in `page_props`, as `wikibase_item`, and it is the only
+# exact key between this corpus and Wikidata - the English label is not one,
+# because 91.6M Wikidata entities share 83.5M labels and `Paris` is 236 of them.
+#
+# Two dumps rather than one, because MediaWiki normalizes: `page_props` keys
+# `wikibase_item` by page id, and only `page` knows which title a page id is.
+
+#: `CREATE TABLE` in a MediaWiki SQL dump, for reading the column order out of
+#: the file rather than hard-coding it. MediaWiki adds and removes columns
+#: between releases - `page_restrictions` was dropped from `page` - so a
+#: position that is right today is a silent mis-parse two dumps from now.
+SQL_CREATE = re.compile(r"CREATE TABLE `\w+` \((.*?)\n\)", re.DOTALL)
+SQL_COLUMN = re.compile(r"^\s*`(\w+)`")
+
+#: mysqldump writes these as escapes; everything else after a backslash is the
+#: character itself.
+SQL_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "0": "\0", "Z": "\x1a"}
+
+
+def _sql_open(path: Path) -> TextIO:
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
+    return open(path, encoding="utf-8", errors="replace")
+
+
+def sql_columns(path: Path) -> list[str]:
+    """The dump's column names, in the order its rows are written."""
+    with _sql_open(path) as fh:
+        head = fh.read(1 << 18)
+    body = SQL_CREATE.search(head)
+    if not body:
+        raise SystemExit(f"{path.name} has no CREATE TABLE - is it a table dump?")
+    return [m.group(1) for line in body.group(1).split("\n")
+            if (m := SQL_COLUMN.match(line))]
+
+
+def sql_values(payload: str) -> Iterator[list[str | None]]:
+    """Split one ``VALUES`` payload into rows.
+
+    Hand-scanned rather than split on punctuation: the values contain commas,
+    parentheses and escaped quotes inside string literals, and every one of
+    those is a title somebody has written. `Paris (song)` is a real article.
+
+    A quoted empty string and an unquoted NULL are different things and are
+    kept different, which is why the quoting is tracked rather than the text
+    compared to ``'NULL'`` afterwards.
+    """
+    i, n = 0, len(payload)
+    while (i := payload.find("(", i)) >= 0:
+        i += 1
+        row: list[str | None] = []
+        field: list[str] = []
+        quoted = in_string = False
+        while i < n:
+            ch = payload[i]
+            if in_string:
+                if ch == "\\":
+                    field.append(SQL_ESCAPES.get(payload[i + 1], payload[i + 1]))
+                    i += 2
+                elif ch == "'":
+                    in_string = False
+                    i += 1
+                else:
+                    field.append(ch)
+                    i += 1
+            elif ch == "'":
+                in_string = quoted = True
+                i += 1
+            elif ch in ",)":
+                text = "".join(field)
+                row.append(text if quoted else None if text == "NULL" else text)
+                field, quoted = [], False
+                i += 1
+                if ch == ")":
+                    break
+            else:
+                field.append(ch)
+                i += 1
+        yield row
+
+
+def sql_rows(path: Path, *wanted: str) -> Iterator[tuple[str | None, ...]]:
+    """Yield the named columns of every row, in the order asked for."""
+    names = sql_columns(path)
+    if missing := [w for w in wanted if w not in names]:
+        raise SystemExit(
+            f"{path.name} has no column {', '.join(missing)}. It has: "
+            f"{', '.join(names)}")
+    picks = [names.index(w) for w in wanted]
+    width = len(names)
+    with _sql_open(path) as fh:
+        for line in fh:
+            if not line.startswith("INSERT INTO"):
+                continue
+            for row in sql_values(line[line.index("VALUES") + 6:]):
+                # A short row is this parser being wrong, not the dump being
+                # unusual, and skipping it would lose articles quietly.
+                if len(row) != width:
+                    raise SystemExit(
+                        f"{path.name}: parsed {len(row)} values for a row of "
+                        f"{width} columns: {row!r}")
+                yield tuple(row[p] for p in picks)
+
+
+def sitelinks(page_dump: Path, props_dump: Path) -> Iterator[tuple[str, int]]:
+    """(title, Q-id) for every ns0 article that names a Wikidata entity.
+
+    Redirects are skipped. A redirect is an alternate name for a page that has
+    its own row, so where one carries a Q-id at all it is the same entity
+    twice, and `redirect` already records the relationship better.
+    """
+    if (a := DUMP_NAME.match(page_dump.name)) and \
+            (b := DUMP_NAME.match(props_dump.name)) and a["date"] != b["date"]:
+        # Page ids are stable enough that mixing snapshots mostly works, which
+        # is exactly what makes it worth refusing: it fails on the pages that
+        # were deleted and recreated between the two, and nowhere else.
+        raise SystemExit(
+            f"{page_dump.name} is from {a['date']} and {props_dump.name} is "
+            f"from {b['date']}; a page id only means the same thing within one "
+            f"snapshot")
+
+    titles: dict[str, str] = {}
+    for page_id, ns, title, is_redirect in sql_rows(
+            page_dump, "page_id", "page_namespace", "page_title",
+            "page_is_redirect"):
+        if ns != "0" or is_redirect != "0" or page_id is None or title is None:
+            continue
+        # Stored with underscores in the table and with spaces everywhere else,
+        # including in the XML dump's <title>.
+        titles[page_id] = title.replace("_", " ")
+
+    for page_id, prop, value in sql_rows(
+            props_dump, "pp_page", "pp_propname", "pp_value"):
+        if prop != "wikibase_item" or not value or page_id is None:
+            continue
+        if (title := titles.get(page_id)) is not None:
+            yield title, int(value.removeprefix("Q"))
+
+
+def ingest_sitelinks(db: sqlite3.Connection, page_dump: Path, props_dump: Path,
+                     source: str) -> tuple[int, int]:
+    """Replace ``source``'s sitelinks. Returns (written, joined to an article).
+
+    The second number is the one to read. A sitelink that names no article in
+    this database is a row that can never be used, and a pile of them means the
+    two dumps are from different snapshots of the same wiki.
+    """
+    # Materialized before the transaction opens rather than streamed into it:
+    # the parse is the slow half, and there is no reason to hold a write lock
+    # across it. 284,000 pairs is about 40MB.
+    rows = [(source, title, qid) for title, qid in sitelinks(page_dump, props_dump)]
+
+    with db:
+        db.execute("DELETE FROM sitelink WHERE source = ?", (source,))
+        db.executemany("INSERT OR REPLACE INTO sitelink VALUES (?, ?, ?)", rows)
+        joined, = db.execute(
+            "SELECT COUNT(*) FROM sitelink s JOIN article a "
+            "ON a.source = s.source AND a.title = s.title "
+            "WHERE s.source = ?", (source,)).fetchone()
+        provenance = [
+            (f"{source}.sitelinks", str(len(rows))),
+            (f"{source}.sitelinks.dump", props_dump.name),
+            (f"{source}.sitelinks.digest", file_digest(props_dump)),
+            (f"{source}.sitelinks.ingested", time.strftime("%Y-%m-%dT%H:%M:%S")),
+        ]
+        if url := dump_url(props_dump.name):
+            provenance.insert(2, (f"{source}.sitelinks.url", url))
+        for key, value in provenance:
+            db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
+
+    return len(rows), joined
 
 
 def connect(path: Path, migrate: bool = False) -> sqlite3.Connection:
@@ -1134,7 +1366,7 @@ def ingest(db: sqlite3.Connection, dump: Path,
             "                  kind, num) "
             "SELECT ?, subject, property, ordinal, value, kind, num "
             "FROM new_fact", (source,))
-        # The vocabulary, recorded rather than inferred. 13,387 properties is a
+        # The vocabulary, recorded rather than inferred. 13,268 properties is a
         # folksonomy nobody wrote down, and the query that matters -
         # "what is used a lot and mapped to nothing" - is the one that found
         # `subdivision_name` and took chaining from 1.7% to 40.7%. Leaving it
@@ -1195,6 +1427,33 @@ def stats(db: sqlite3.Connection) -> None:
         print(f"  {source}: {a:,} articles, {r:,} redirects "
               f"({resolved / r:.1%} resolve), {chars / 1e6:.0f} MB of lead text")
 
+        linked, joined = db.execute(
+            "SELECT COUNT(*), COUNT(a.title) FROM sitelink s "
+            "LEFT JOIN article a ON a.source = s.source AND a.title = s.title "
+            "WHERE s.source = ?", (source,)).fetchone()
+        if linked:
+            # Orphans are the staleness alarm. The sitelink dump and the XML
+            # dump are separate downloads on the same cadence, and nothing else
+            # here would notice one being a snapshot behind the other.
+            orphans = linked - joined
+            note = f", {orphans:,} name no article" if orphans else ""
+            # One decimal place, not none: the gap this number exists to show
+            # is a few hundred rows in 284,000, and `.0%` rounds every one of
+            # them away and prints 100%.
+            print(f"  {' ' * len(source)}  {joined:,} sitelinks "
+                  f"({joined / a:.1%} of articles){note}")
+            article_dump = db.execute(
+                "SELECT value FROM meta WHERE key = ?", (f"{source}.dump",)
+            ).fetchone()
+            link_dump = db.execute(
+                "SELECT value FROM meta WHERE key = ?",
+                (f"{source}.sitelinks.dump",)).fetchone()
+            dates = [m["date"] for row in (article_dump, link_dump)
+                     if row and (m := DUMP_NAME.match(row[0]))]
+            if len(dates) == 2 and dates[0] != dates[1]:
+                print(f"  {' ' * len(source)}  WARNING: articles are from "
+                      f"{dates[0]} and sitelinks from {dates[1]}")
+
         filings, filed, cats = db.execute(
             "SELECT COUNT(*), COUNT(DISTINCT title), COUNT(DISTINCT name) "
             "FROM category WHERE source = ?", (source,)).fetchone()
@@ -1242,6 +1501,26 @@ def stats(db: sqlite3.Connection) -> None:
                   + ", ".join(f"{p} ({n:,})" for p, n in unmapped))
 
 
+def _sitelink_pass(db: sqlite3.Connection, dumps: list[Path],
+                   source: str) -> None:
+    """Ingest the sitelinks and say what joined, because the count is the test.
+
+    A sitelink dump from the wrong snapshot parses perfectly and writes rows
+    that match nothing, so the only thing that says it worked is how many of
+    them found an article.
+    """
+    page_dump, props_dump = dumps
+    print(f"\nreading sitelinks from {props_dump.name}")
+    written, joined = ingest_sitelinks(db, page_dump, props_dump, source)
+    articles, = db.execute("SELECT COUNT(*) FROM article WHERE source = ?",
+                           (source,)).fetchone()
+    print(f"{written:,} sitelinks, {joined:,} of them joined to an article"
+          + (f" ({joined / articles:.1%} of the corpus)" if articles else ""))
+    if written and joined / max(written, 1) < 0.9:
+        print("  that is low enough to mean the two dumps disagree; check "
+              "they are the same snapshot")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1250,21 +1529,37 @@ def main() -> None:
     parser.add_argument("--db", type=Path, default=DB_PATH)
     parser.add_argument("--source", default="simplewiki",
                         help="Corpus name, so several can share one database")
+    parser.add_argument("--sitelinks", nargs=2, type=Path,
+                        metavar=("PAGE.SQL.GZ", "PAGE_PROPS.SQL.GZ"),
+                        help="Wikidata Q-ids for each article, from the same "
+                             "snapshot as the XML dump. Runs on its own "
+                             "against an existing database.")
     parser.add_argument("--stats", action="store_true",
                         help="Report what the database holds and exit")
     args = parser.parse_args()
 
     db = connect(args.db, migrate=bool(args.dump) and not args.stats)
-    if args.stats or not args.dump:
+    if args.stats or not (args.dump or args.sitelinks):
         stats(db)
         return
 
-    if not args.dump.exists():
-        raise SystemExit(f"no such dump: {args.dump}")
+    for path in [args.dump, *(args.sitelinks or ())]:
+        if path and not path.exists():
+            raise SystemExit(f"no such dump: {path}")
+
+    if not args.dump:
+        _sitelink_pass(db, args.sitelinks, args.source)
+        db.commit()
+        print()
+        stats(db)
+        return
 
     print(f"ingesting {args.dump.name} as '{args.source}' into {args.db}")
     articles, redirects, facts = ingest(db, args.dump, args.source)
     print(f"\n{articles:,} articles, {redirects:,} redirects, {facts:,} facts")
+
+    if args.sitelinks:
+        _sitelink_pass(db, args.sitelinks, args.source)
 
     # The walkable graph, built from the facts: property synonyms collapsed
     # onto canonical relations and values resolved to article titles. Derived

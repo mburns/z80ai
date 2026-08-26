@@ -16,6 +16,14 @@ curl -O https://dumps.wikimedia.org/simplewiki/20260801/simplewiki-20260801-page
 # 2. Into the database (~5 minutes). Nothing else needs the dump afterwards.
 python data/wikipedia/ingest.py simplewiki-20260801-pages-articles.xml.bz2
 
+#    Optionally, the Wikidata id of each article (~40MB, ~15 seconds). Not
+#    needed for a card; needed for anything that wants to join this corpus to
+#    Wikidata. Same date as the XML dump, or it is refused.
+curl -O https://dumps.wikimedia.org/simplewiki/20260801/simplewiki-20260801-page.sql.gz
+curl -O https://dumps.wikimedia.org/simplewiki/20260801/simplewiki-20260801-page_props.sql.gz
+python data/wikipedia/ingest.py --sitelinks \
+       simplewiki-20260801-page.sql.gz simplewiki-20260801-page_props.sql.gz
+
 # 3. Into a card (~4 minutes). Add --limit 20000 for a small one that builds
 #    in seconds, ranked by how many redirects point at each article.
 python buildwikisearch.py --out dist/WIKI
@@ -69,22 +77,25 @@ back to a snapshot without asking anyone:
 
 ```console
 $ python data/wikipedia/ingest.py --stats
-  schema_version               8
+  schema_version               10
   simplewiki.articles          283997
   simplewiki.digest            adf8cbb46aabe719
   simplewiki.dump              simplewiki-20260801-pages-articles.xml.bz2
   simplewiki.edges             181453
-  simplewiki.facts             2086920
-  simplewiki.ingested          2026-08-24T21:49:30
+  simplewiki.facts             1995246
+  simplewiki.ingested          2026-08-26T02:01:54
   simplewiki.redirects         114771
+  simplewiki.sitelinks         283865
+  simplewiki.sitelinks.dump    simplewiki-20260801-page_props.sql.gz
   simplewiki.url               https://dumps.wikimedia.org/simplewiki/20260801/...
 
   simplewiki: 283,997 articles, 114,771 redirects (97.6% resolve), 68 MB of lead
+              283,861 sitelinks (100.0% of articles), 4 name no article
               980,928 category filings over 272,022 articles (96%), 76,102 categories
-              2,086,920 facts over 129,732 subjects (46% of articles), 9,664 properties
-              values: text 72%, number 20%, date 7%, url 1%
-              47 properties map to a relation; biggest unmapped: name (95,698),
-              birth_date (44,872), subdivision_type (40,782), years (34,994), ...
+              1,995,246 facts over 129,504 subjects (46% of articles), 9,633 properties
+              values: text 70%, number 21%, date 7%, url 1%
+              47 properties map to a relation; biggest unmapped: birth_date (44,871),
+              subdivision_type (40,782), years (34,994), clubs (34,323), ...
 ```
 
 Two things to read there. The coverage lines go together — 96% of articles file
@@ -420,7 +431,7 @@ began with its article count.
 
 ## Facts, for the oracle this is not
 
-The database also carries **2,086,920 facts** pulled from infoboxes — an
+The database also carries **1,995,246 facts** pulled from infoboxes — an
 infobox is a hand-curated set of typed key/value pairs, which is to say a set
 of facts about its article. The lead throws them away as furniture; the `fact`
 table keeps them.
@@ -445,7 +456,7 @@ SELECT name FROM category WHERE source = 'simplewiki' AND title = 'Michigan';
 ### What the ingest normalizes, and what it refuses to
 
 An infobox is hand-typed by thousands of people, so what arrives is a
-folksonomy: before any cleaning, 13,387 distinct property names, 3,740 of them
+folksonomy: before any cleaning, 19,117 distinct property names as typed, 5,266 of them
 used exactly once. The ingest normalizes **form** and leaves **meaning** to
 `libgraph`, and the line matters — form is mechanical and decidable from the
 data, while *"`subdivision_name` and `country` are the same question"* is a
@@ -455,12 +466,12 @@ judgement about this corpus that belongs where the judgement is made.
 |---|---|
 | comments stripped before splitting | a comment between two pipes ran into the next key |
 | keys cleaned and shape-checked | only values went through the cleaner before |
-| `subdivision_name1..7` → `(property, ordinal)` | **27.6% of facts** were positional variants |
+| `subdivision_name1..7` → `(property, ordinal)` | **25.0% of facts** were positional variants |
 | values typed `text`/`number`/`date`/`url` | 22% are numbers, which sorted lexically as text |
 | known value templates read before cleaning | `{{birth date\|1847\|3\|3}}` cleaned to nothing, and the fact went with it |
 
-That takes the vocabulary from 13,387 properties to **9,664**, and costs
-5,103 facts — 0.26%, all of them keys with no letters in them, keys longer
+That takes the vocabulary to 13,268 names and then to **9,633**, and costs
+3,500 facts — 0.18%, all of them keys with no letters in them, keys longer
 than 64 characters, or fields that only existed because a comment ran into
 the key after them.
 
@@ -922,6 +933,128 @@ It is also what caught two changes that looked right and were not. Reading
 308 edges; reading `{{flagicon|IRI}} Urmia` as a value gave "IRI Urmia" and
 cost 155 more. Both were measured, rejected and pinned by tests, and both
 would have shipped as improvements without a before and after.
+
+## The sitelink is the only exact key to Wikidata
+
+Everything above reads facts out of an encyclopedia written for people, and the
+ceiling on it is coverage: 46% of articles carry an infobox, the other 54% say
+what they say in prose or in a category or not at all. Wikidata has the same
+facts as a table, which makes "join this corpus to Wikidata" the obvious next
+move and the identity of each article the thing that decides whether it works.
+
+**The XML dump does not carry that identity.** It says what an article
+contains and never says what it is *about*. `page_props` does, as
+`wikibase_item`, keyed by page id — so it takes `page.sql.gz` too, to say which
+title a page id is. Both are small next to the 340MB of markup:
+
+```console
+$ python data/wikipedia/ingest.py --sitelinks \
+      simplewiki-20260801-page.sql.gz simplewiki-20260801-page_props.sql.gz
+
+reading sitelinks from simplewiki-20260801-page_props.sql.gz
+283,865 sitelinks, 283,861 of them joined to an article (100.0% of the corpus)
+```
+
+That is what it printed on the first run, and **the 728 that joined to nothing
+were an ampersand.** Finding them is the only reason the orphan count is
+printed at all.
+
+### The titles were escaped, and nothing else could have said so
+
+`page.sql.gz` says `Dungeons & Dragons`. The XML dump says
+`Dungeons &amp; Dragons`, because that is what XML does to an ampersand, and
+`article` stored what the XML said. `clean()` resolves entities in the *lead* —
+to a fixed point, with a comment about `&amp;amp;` — and a title never went
+through it, so **726 articles were called `AT&amp;T` and
+`&quot;Weird Al&quot; Yankovic`** in the database, on the card and in every
+table keyed on a title.
+
+The fix is one call in `raw_pages`, at the single place a title enters the
+program, and it decodes **once** rather than to a fixed point. That difference
+is the whole reason it cannot reuse `clean()`: an article whose name literally
+contains `&lt;` arrives written `&amp;lt;`, and a second pass would turn it
+into `<` and invent a title nobody wrote. Only the five entities an XML escaper
+emits are decoded, so a title containing the text `&ndash;` keeps it.
+
+The redirect target is decoded with it. It has to be — 114,771 alternate names
+resolve by matching a target against a title, and fixing one side alone would
+have broken every redirect pointing at one of those 726 pages.
+
+| | before | after |
+|---|---:|---:|
+| titles holding `&amp;` or `&quot;` | 726 | **0** |
+| sitelinks joined to an article | 283,137 | **283,861** |
+| sitelinks naming no article | 728 | **4** |
+| edges, tabulated only | 167,868 | **168,306** |
+| facts | 1,995,435 | **1,995,246** |
+
+Both sides of the edge row are a plain `ingest.py` run, before the derived
+birthplaces of step 2a are written — which is why it is 167,868 and not the
+181,453 above. Comparing a tabulated-only build against one that had 2a run on
+it would have credited this change with 13,585 edges somebody else wrote.
+
+**Two of those rows are not the sitelinks.** The graph gained 438 edges,
+because a fact's *value* was already decoded by `clean()` and could never match
+the escaped title it named — `Lilo & Stitch` as a value had no article called
+`Lilo & Stitch` to resolve to. And 189 facts went away, all of them from
+`name` (153), `title` (22) and the other fields that repeat the article's own
+name: the rule that drops a fact saying a thing is called what it is called
+could not fire while the two spellings differed. Both numbers moved because
+the same mismatch was costing them, which is the argument that this was one bug
+and not three.
+
+`SCHEMA_VERSION` goes to 10 for it. The table definitions are unchanged, but a
+database written by 9 holds different strings under the same column, and a
+version that only tracks columns would let a stale corpus pass for a current
+one.
+
+**Four orphans survive**, and they are honest: `Amaury Vassili`,
+`Honey Come Back (song)` and two more exist in `page.sql.gz` and not in the XML
+dump, which is skew between two jobs of the same day's dump. 136 articles still
+have no sitelink and never will — `Czechia`, `Kingdom of Prussia`, pages with
+no Wikidata item.
+
+Escaping the sitelink titles to match the broken ones would have made the
+coverage read 100% on the first run, and left the encyclopedia calling it
+AT&amp;T with nothing anywhere to say otherwise.
+
+**Matching on the title instead does not work**, and it is worth being precise
+about how it fails, because it does not fail loudly. Against the same corpus,
+a casefolded exact match of the article title to the English Wikidata label:
+
+| | titles | |
+|---|---:|---:|
+| unambiguously right | 123,445 | 43.5% |
+| no match at all | 84,545 | 29.8% |
+| ambiguous, right one somewhere in the pile | 69,443 | 24.5% |
+| unique and wrong | 2,806 | 1.0% |
+| ambiguous and all wrong | 3,550 | 1.3% |
+
+91.6M Wikidata entities share 83.5M labels. `Paris` is 236 of them, `Hamlet`
+184, `California` 171; even `Barack Obama` is 4. The 29.8% that match nothing
+are recoverable — the label just differs from the title, as it does for
+`Chinese language` against `Chinese`. **The 2.3% that match one wrong thing are
+not.** `creative commons` resolves to Q114734814 rather than Q43449 and there
+is no signal anywhere that it went wrong; the fact arrives, reads fluently, and
+is about something else. That is the same failure as answering "California" to
+*what country*, arriving from a new direction.
+
+So the join is a table with a key in it, not a heuristic. `sitelink` is
+`(source, title) -> qid`, indexed both ways — the reverse index is the one that
+matters, because reading a Wikidata dump means arriving with a Q-id and asking
+which article it is.
+
+**Two guards, both for silent failures.** Mixing snapshots is refused outright:
+page ids are stable enough between dumps that it mostly works, and it fails
+only on the pages deleted and recreated in between, which is precisely the kind
+of error nothing would notice. And `--stats` reports how many sitelinks name no
+article, because a stale pair of dumps parses perfectly and writes rows that
+match nothing — which is the guard that caught the ampersands above, on its
+first run against a real corpus. It prints a decimal place for the same reason:
+`.0%` rounds 99.7% to 100% and the whole point of the number is the remainder.
+
+Nothing downstream reads the table yet — no card file changed and no answer
+changed. It is the key, not the facts.
 
 ## Redirects earn their place
 
