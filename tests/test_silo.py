@@ -237,9 +237,15 @@ def test_the_climb_reaches_a_founder_until_the_hop_limit_stops_it(silo):
         answer = libgraph.follow(db, schema.SOURCE, row["name"],
                                  ["founding_father"])
         reached.setdefault(row["generation"], set()).add(answer.complete)
-    for generation in range(1, libgraph.CLIMB_LIMIT):
+    # A limit of n examines n values and so permits n - 1 hops: the type is
+    # tested at the top of the loop, and the value the last hop reached is
+    # never tested. Generation g is exactly g hops from its founder, so the
+    # deepest that answers is CLIMB_LIMIT - 1. This read `range(1, CLIMB_LIMIT)`
+    # and was right for a reason nobody had written down.
+    deepest = libgraph.CLIMB_LIMIT - 1
+    for generation in range(1, deepest + 1):
         assert reached[generation] == {True}, generation
-    assert reached[libgraph.CLIMB_LIMIT] == {False}
+    assert reached[deepest + 1] == {False}
 
 
 def test_the_generator_stops_long_before_the_card_does(silo):

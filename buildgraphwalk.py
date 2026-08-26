@@ -39,7 +39,7 @@ would call 0x010000 zero, so the test is `SBC HL,DE` against zero instead.
 from __future__ import annotations
 
 from libez80 import EZ80Builder
-from libgraphcard import EDGE_SIZE, INVERSE, PLAIN, RELATION
+from libgraphcard import CLIMB_LIMIT, EDGE_SIZE, INVERSE, PLAIN, RELATION
 
 #: Every walk cell is 24-bit, which is a word on this machine.
 CELLS = (
@@ -57,9 +57,6 @@ CELLS = (
     "GW_REV",       # and of the reverse one
 )
 
-#: Matches libgraphcard.CLIMB_LIMIT. A containment hierarchy is shallow, and a
-#: cycle in the data - two places each inside the other - must still terminate.
-CLIMB_LIMIT = 6
 
 
 def emit_cells(b: EZ80Builder) -> None:
@@ -105,13 +102,22 @@ def _seek_read(b: EZ80Builder, handle_label: str, buffer_label: str,
 
 
 def emit_walk(b: EZ80Builder, num_edges: int, types_at: int, num_types: int,
-              handle_label: str, buffer_label: str, seekoff_label: str) -> None:
+              handle_label: str, buffer_label: str, seekoff_label: str,
+              climb_limit: int = CLIMB_LIMIT) -> None:
     """Emit the walk routines.
 
     ``types_at`` is the card offset of the type table, whose entries are an
     offset and a count; the id lists follow it. Reading a type's span off the
     card costs one extra seek per climb and keeps this self-contained.
+
+    ``climb_limit`` is an immediate in `GW_CLIMBTO`, so a card built with a
+    deeper one is the same size as a card built with a shallower one - the
+    number is loaded, not unrolled. What it costs is probes, and only on the
+    climbs that actually go further.
     """
+    if climb_limit < 1:
+        raise ValueError(f"a climb of {climb_limit} steps cannot check "
+                         "anything; the type test happens before the first hop")
     types_body_at = types_at + 8 * num_types
 
     # --- GW_MUL7: HL = HL * EDGE_SIZE -----------------------------------------
@@ -311,7 +317,7 @@ def emit_walk(b: EZ80Builder, num_edges: int, types_at: int, num_types: int,
     # for is returned rather than stepped past - which is the point, and a
     # quarter of the birthplaces in this corpus.
     b.label("GW_CLIMBTO")
-    b.ld_hl_nn(CLIMB_LIMIT)
+    b.ld_hl_nn(climb_limit)
     b.ld_mem_label_hl("GW_CLIMB")
     b.label("GW_CLIMB_LP")
     b.call("GW_ISA")

@@ -97,6 +97,8 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import libgraphcard
+
 #: Canonical relation -> the infobox fields that mean it, most specific first.
 #: A subject keeps the best-ranked field it has, so a page carrying both
 #: ``country`` and ``subdivision_name`` contributes one edge rather than two
@@ -148,10 +150,10 @@ CLIMB: dict[str, tuple[str, str]] = {
     "in_country": ("located_in", "country"),
 }
 
-#: How many times a climb may step before giving up. Containment hierarchies
-#: are shallow, and a cycle in the data - two places each inside the other -
-#: would otherwise not terminate.
-CLIMB_LIMIT = 6
+#: How many times a climb may step before giving up. Defined in `libgraphcard`
+#: and re-exported here, because the SQL walk, the card reference and the eZ80
+#: routine have to agree and used to hold three separate literals.
+CLIMB_LIMIT = libgraphcard.CLIMB_LIMIT
 
 #: An entity has to be named a country by this many independent infoboxes for
 #: the corpus to be taken at its word. At 3 that is 193 claims, which `demote`

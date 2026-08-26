@@ -23,8 +23,12 @@ spread is printed beside it rather than hidden.
 
 ## The sixth generation is not a data point
 
-`libgraph.CLIMB_LIMIT` is 6 and counts hops rather than nodes, so generation 6
-needs one more than it is allowed. On the machine that is not an error message:
+`libgraphcard.CLIMB_LIMIT` is 6 and counts the values a climb may *examine*,
+which is one more than the hops it may take - both walkers test the type at the
+top of the loop, so the value the last hop reached is never tested. Generation
+6 needs six hops and six examinations buy five, so it falls exactly one short.
+Build with `--climb-limit 7` and it answers. On the machine that is not an
+error message:
 the walk returns nothing, the program falls back to listing articles, and the
 cost jumps - not because the climb was long, but because a fallback reads
 article text and a graph answer does not. It is reported on its own line for

@@ -188,6 +188,11 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=REPO / "dist")
     ap.add_argument("--stem", default="SILO")
     ap.add_argument("--held-out", type=int, default=HELD_OUT)
+    ap.add_argument("--climb-limit", type=int, default=None,
+                    help="Values a climb may examine before giving up, which "
+                         "is one more than the hops it may take. Seven "
+                         "generations live here, so 7 is what answers "
+                         "generation 6 and 6 is what this card shipped with")
     ap.add_argument("--limit", type=int, default=None,
                     help="Index only this many articles. Must match every "
                          "build of one card - a document id is a position in "
@@ -233,6 +238,8 @@ def main() -> None:
             "--out", str(args.out / args.stem), "--relations", str(model)]
     if args.limit:
         argv += ["--limit", str(args.limit)]
+    if args.climb_limit is not None:
+        argv += ["--climb-limit", str(args.climb_limit)]
     buildwikisearch.main(argv)
 
     print(f"\n  python benchwiki.py --card {args.out / args.stem}")

@@ -66,11 +66,12 @@ property of the graph and not of the question. This corpus adds three:
     in_silo           located_in, until a silo
     founding_father   father_is, until a founder
 
-The last one runs into `CLIMB_LIMIT`, which is 6 and counts hops rather than
-nodes. Seven generations live here, so generation 5 reaches its founder on the
-sixth hop and generation 6 falls exactly one short. That is not a bug to be
-worked around; it is what the limit costs, on a corpus where the true answer is
-known for all 10,000.
+The last one runs into `CLIMB_LIMIT`, which is 6 and counts the values a climb
+may *examine* - one more than the hops it may take. Generation g is exactly g
+hops from its founder, so a limit of 6 buys generations 1 to 5 and generation 6
+falls one short. That is not a bug to be worked around; it is what the limit
+costs, on a corpus where the true answer is known for all 10,000 - and
+`buildcard.py --climb-limit 7` is what buys the seventh.
 """
 
 from __future__ import annotations

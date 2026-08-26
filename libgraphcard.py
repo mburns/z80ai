@@ -57,6 +57,23 @@ HEADER = struct.Struct("<6sBBIIIIIII")
 PLAIN = 0xFF
 STEP = struct.Struct("<BB")
 
+#: How many times a climb may step before giving up, and the *default* for a
+#: card rather than a property of one: `buildwikisearch --climb-limit` picks
+#: the number a given card is built with, and the walk routine carries it as an
+#: immediate.
+#:
+#: It lives here because three walkers have to agree about it - `libgraph` in
+#: SQL, `CardGraph.follow` reading the card, and the eZ80 routine
+#: `buildgraphwalk` emits - and until it did, all three held their own literal
+#: `6` with a comment in one of them pointing at a constant that did not exist.
+#:
+#: Six is a containment depth. It is *not* a pedigree depth: a climb counts
+#: hops rather than nodes, so a corpus seven generations deep needs seven, and
+#: `data/silo/` has spent its whole life reporting generation 6 as unanswerable
+#: for that reason. What bounds it at all is a cycle - two places each inside
+#: the other - which must terminate whatever the data says.
+CLIMB_LIMIT = 6
+
 #: Set on a step's relation byte to walk the reverse table instead: "who was
 #: born in Edinburgh" is the born_in row read from the other end.
 #:
@@ -310,7 +327,8 @@ class CardGraph:
         return False
 
     def follow(self, subject: int, steps: list[tuple[int, int]],
-               climb_limit: int = 6) -> tuple[int | None, list[int], int | None]:
+               climb_limit: int = CLIMB_LIMIT,
+               ) -> tuple[int | None, list[int], int | None]:
         """Walk `steps`, returning (answer, path, the step that had no edge).
 
         A step whose kind is not PLAIN is a climb: repeat the relation until
