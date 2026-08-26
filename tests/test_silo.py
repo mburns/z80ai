@@ -242,6 +242,36 @@ def test_the_climb_reaches_a_founder_until_the_hop_limit_stops_it(silo):
     assert reached[libgraph.CLIMB_LIMIT] == {False}
 
 
+def test_the_generator_stops_long_before_the_card_does(silo):
+    """Issue #62 assumed the card was what limited this corpus. It is not.
+
+    A search card scores 502,016 articles (`buildwikibin.max_docs`), and the
+    generator refuses somewhere near 37,558 people - about 55,000 articles, a
+    ninth of that. Two separate walls stand in front of the card, and neither
+    of them is in the card:
+
+    the calendar, at 37,559, because the seventh cohort is born in year 220
+    and `NOW` is 220; and the dwellings, at around 57,500, because 144 levels
+    of 24 bearings by 3 rings is 10,368 homes and no more.
+
+    Pinned as an inequality rather than as the two numbers, which move with the
+    seed. What must not change quietly is which side of the card they are on -
+    if a generator change ever put them past it, `buildwikibin`'s assertion
+    would start firing from `data/silo/buildcard.py` with no warning here.
+    """
+    generate, _schema, _db = silo
+    import buildwikibin
+
+    ceiling = buildwikibin.max_docs(
+        buildwikibin.fixed_bytes(1, len(buildwikibin.build(1).code)))
+    dwellings = generate.LEVELS * _schema.BEARINGS * len(_schema.RINGS)
+    assert dwellings == 10_368
+    assert dwellings < ceiling
+
+    with pytest.raises(SystemExit, match="archive is dated"):
+        generate.populate(Random(18), 18, 37_559)
+
+
 def test_the_same_seed_builds_the_same_silo(silo):
     """Faker is seeded, so a corpus is reproducible from its number alone.
 

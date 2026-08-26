@@ -103,7 +103,7 @@ That writes three files. Copy all three onto the card and run `WIKI`:
 
 | | |
 |---|---|
-| `WIKI.bin` | 5.6 KB — the program |
+| `WIKI.bin` | 5.7 KB — the program |
 | `WIKI.IDX` | 23.3 MB — hashed dictionary and postings |
 | `WIKI.DAT` | 51.7 MB — titles and leads, byte-pair packed |
 
@@ -241,7 +241,26 @@ encyclopedia — resident, no sharding, no routing.
 | | |
 |---|---|
 | accumulator | 277 KB in SRAM, plus a 1,110-byte page table in the image |
-| program | 7,584 bytes |
+| program | 5,817 bytes, of which 1,110 is that page table |
+| the most it could be | **502,016 articles**, and this card is 57% of it |
+
+That last row was a guess until it was measured. `buildwikisearch.py` warned
+above 380 KB of accumulator "because that leaves under 130 KB of Agon SRAM for
+the program", and the program is 4.7 KB — the allowance had been sized against
+the *oracle* binary, which carries a classifier. `buildwikibin.build` takes an
+article count and no corpus, so the real boundary costs milliseconds to find,
+and it is 29% higher than the warning nobody had ever hit.
+
+A page of 256 articles costs 257 bytes rather than 256, and that is the part an
+estimate drops: both bases round down to a 256-byte boundary, so the buffers
+below the accumulator fall by a whole page for each page of articles added,
+while the page table in the image rises by one byte for the same page.
+`max_docs` solves that; `tests/test_wikisearch.py` bisects `build` to check it,
+because two implementations are the only way to notice.
+
+The trade it prices is what an oracle card costs in articles. Every byte of
+image is a byte the accumulator cannot have, so the silo's two classifier
+widths — 94.4 KB and 38.9 KB — were also a choice between 55,000 articles.
 
 The two passes over the accumulator — clearing it and scanning it for the best
 three — used to dominate every query at 284,000 bytes apiece, whatever the
