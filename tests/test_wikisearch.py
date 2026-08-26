@@ -13,9 +13,16 @@ the failure modes are the loud kind.
 
 from __future__ import annotations
 
+import sqlite3
+import sys
+from pathlib import Path
+
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent
+                       / "data" / "wikipedia"))
 import buildwikibin
+import ingest
 import libsearch
 from libhost import AgonHost
 
@@ -287,6 +294,56 @@ def test_a_query_matching_nothing_says_so(card):
     assert "Nothing on the card matches" in printed
 
 
+# --- fame ---------------------------------------------------------------------
+
+
+def test_fame_is_the_value_that_was_swept():
+    """A toy corpus cannot pin this, and pretending otherwise would be worse
+    than not trying.
+
+    `FAME` boosts an article by how many alternate names point at it. Its
+    damage - a famous page outranking the article somebody asked for by name -
+    needs a corpus with enough famous pages to swamp a ranking, and it scales
+    with corpus size: 77.7% of articles found by their own title at 40,000
+    articles, 53.3% at 120,000, 47.8% at 283,997. On the eight documents in
+    this file the difference between 0.25 and 1.0 is under a point.
+
+    So this pins the number and points at the measurement, which lives in
+    `tools/probe_entities.py --sample N` and needs the real database. What it
+    catches is somebody changing the constant without re-running that.
+    """
+    assert libsearch.FAME == 0.25
+
+
+def test_the_corpus_probe_sets_are_built_from_what_the_card_indexes(tmp_path):
+    """The twenty hand-written probes could not choose between four values of
+    FAME - 5% of resolution each, and assembled from the symptoms of the one
+    bug FAME repairs. These come out of the corpus instead."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import probe_entities
+
+    db_path = tmp_path / "corpus.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(ingest._schema())
+    conn.executemany("INSERT INTO article (source, title, lead) "
+                     "VALUES ('simplewiki', ?, '')",
+                     [(t,) for t, _ in CORPUS])
+    conn.executemany("INSERT INTO redirect (source, title, target) "
+                     "VALUES ('simplewiki', ?, ?)",
+                     [("Graham Bell", "Alexander Graham Bell"),
+                      ("Nowhere", "An Article That Does Not Exist")])
+    conn.commit()
+    conn.close()
+
+    by_title, by_redirect = probe_entities.corpus_probes(
+        db_path, "simplewiki", sample=100, seed=0)
+    assert len(by_title) == len(CORPUS)
+    assert all(query == wanted for query, wanted in by_title)
+    # A redirect pointing outside the corpus is not a probe: it has no right
+    # answer, and counting it would make every card look worse than it is.
+    assert by_redirect == [("Graham Bell", "Alexander Graham Bell")]
+
+
 # --- initials -----------------------------------------------------------------
 
 
@@ -474,6 +531,88 @@ def test_the_unpacking_buffers_cost_the_image_nothing():
     for name in ("PACKBUF", "TEXTBUF", "PAIRTAB", "BLOBBUF"):
         assert builder.labels[name] >= scratch
     assert scratch + buildwikibin.SCRATCH_BYTES <= builder.accumulator
+
+
+# --- the ceiling, which used to be a guess ------------------------------------
+#
+# `buildwikisearch` warned above "380KB of accumulator" on the grounds that the
+# program wanted the other 130KB. The program is 4.7KB, so the guess was low by
+# 113,000 articles, and it had never been tested because nothing had built a
+# card anywhere near it. `build` takes a count and no corpus, so the real
+# boundary costs milliseconds to find.
+
+
+def _bisect_the_ceiling() -> int:
+    """The largest corpus `build` will emit for, found by asking it."""
+    low, high = 1, 1_000_000
+    while low < high:
+        mid = (low + high + 1) // 2
+        try:
+            buildwikibin.build(mid)
+            low = mid
+        except AssertionError:
+            high = mid - 1
+    return low
+
+
+def test_the_search_card_tops_out_where_it_tops_out():
+    """The number itself, so that a change to the program's size shows up here
+    as a diff rather than as a card that quietly stopped fitting."""
+    assert _bisect_the_ceiling() == 502_016
+
+
+def test_max_docs_agrees_with_building_until_it_breaks():
+    """`max_docs` solves the inequality and the bisection runs the emitter, so
+    the two are independent. Dropping the page table's byte per 256 articles
+    from the solve moves the answer by about 2,000 and nothing else notices."""
+    ceiling = _bisect_the_ceiling()
+    image = len(buildwikibin.build(ceiling).code)
+    assert buildwikibin.max_docs(
+        buildwikibin.fixed_bytes(ceiling, image)) == ceiling
+
+
+def test_one_more_article_than_fits_is_refused():
+    ceiling = _bisect_the_ceiling()
+    buildwikibin.build(ceiling)
+    with pytest.raises(AssertionError, match="too large to score"):
+        buildwikibin.build(ceiling + 1)
+
+
+def test_the_refusal_says_what_would_have_fitted():
+    """A build that fails at 600,000 is not actionable; one that names the
+    limit is, and the limit depends on the image rather than being a constant
+    somebody has to look up."""
+    with pytest.raises(AssertionError, match="limit of 502,016"):
+        buildwikibin.build(600_000)
+
+
+def test_the_headroom_runs_out_at_the_ceiling_and_not_before():
+    ceiling = _bisect_the_ceiling()
+    assert buildwikibin.headroom(
+        ceiling, len(buildwikibin.build(ceiling).code)) >= 0
+    assert buildwikibin.headroom(ceiling + 1, len(
+        buildwikibin.build(ceiling).code) + 1) < 0
+
+
+def test_a_page_of_articles_costs_the_image_a_byte_and_the_gap_257():
+    """Both bases round down to 256, so the accumulator and the buffers below
+    it move a whole page at a time while the image grows by one byte. That is
+    why an article costs 257/256 bytes and not one."""
+    page = buildwikibin.num_pages(1) * 256
+    assert buildwikibin.scratch_base(0) - buildwikibin.scratch_base(page) == 256
+    assert (len(buildwikibin.build(100_000 + page).code)
+            - len(buildwikibin.build(100_000).code)) == 1
+    assert buildwikibin.max_docs(0) - buildwikibin.max_docs(257) == 256
+
+
+def test_the_classifier_is_paid_for_in_articles():
+    """An oracle card carries its model in the image, and every byte of it is
+    an article the accumulator cannot have. The silo's two classifier widths
+    were 94.4KB and 38.9KB, which is 55,000 articles between them."""
+    search = buildwikibin.fixed_bytes(1, len(buildwikibin.build(1).code))
+    plain = buildwikibin.max_docs(search)
+    with_model = buildwikibin.max_docs(search + 55_000)
+    assert plain - with_model == pytest.approx(55_000, abs=256)
 
 
 # --- notability, which decides which article someone meant --------------------

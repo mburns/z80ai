@@ -103,7 +103,7 @@ That writes three files. Copy all three onto the card and run `WIKI`:
 
 | | |
 |---|---|
-| `WIKI.bin` | 5.6 KB — the program |
+| `WIKI.bin` | 5.7 KB — the program |
 | `WIKI.IDX` | 23.3 MB — hashed dictionary and postings |
 | `WIKI.DAT` | 51.7 MB — titles and leads, byte-pair packed |
 
@@ -158,6 +158,40 @@ because a person reads all of them; an oracle walks only the first, and its
 mistakes have no symptom — the graph answers correctly about the wrong subject
 and what comes back is fluent and wrong.
 
+### Twenty probes were not enough to notice
+
+They still read 85%. What they could not see is that **less than half of all
+articles were found first by their own exact title** — 47.8%, on the shipped
+card, for months.
+
+`libsearch.FAME` boosts an article by how many redirects point at it, and was
+set to 1.0 by a measurement over those same twenty probes, with a note saying
+it had never been swept. Swept now, on the whole corpus, against probe sets
+built from the corpus itself — `--sample N`, every article asked for by its own
+name and every redirect asked for by itself:
+
+| FAME | by title | by redirect | the twenty |
+|---:|---:|---:|---:|
+| 0.0 | 93.9% | 88.1% | 11/20 |
+| **0.25** | 87.8% | **91.7%** | 17/20 |
+| 0.5 | 73.3% | 89.7% | 17/20 |
+| 1.0 *(was)* | **47.8%** | 85.1% | 17/20 |
+
+0.25 beats the old value by forty points by title, by six on redirects — a set
+biased *toward* fame, since redirect count is what the knob scores — and ties
+it on the twenty. It dominates, so there is no trade to weigh, and it is now
+the default.
+
+The useful half of this is not the number. **The twenty probes were assembled
+from the misses of one particular failure** — a derived article beating the
+thing it derives from — so they are blind by construction to any failure its
+repair introduces, and they approved of one that broke half the corpus. A probe
+set built from a bug's symptoms will endorse any fix for that bug.
+
+It also got worse as the corpus grew: 77.7% by title at 40,000 articles, 53.3%
+at 120,000, 47.8% at 283,997. A card built with `--limit` was hurt least, which
+is exactly backwards from where anyone would notice.
+
 An initial is glued to the name after it — `amanda m wilson` is indexed and
 queried as `amanda mwilson` — because a single character was dropped at both
 ends, which made two people who differ only by a middle initial into the *same
@@ -207,7 +241,26 @@ encyclopedia — resident, no sharding, no routing.
 | | |
 |---|---|
 | accumulator | 277 KB in SRAM, plus a 1,110-byte page table in the image |
-| program | 7,584 bytes |
+| program | 5,817 bytes, of which 1,110 is that page table |
+| the most it could be | **502,016 articles**, and this card is 57% of it |
+
+That last row was a guess until it was measured. `buildwikisearch.py` warned
+above 380 KB of accumulator "because that leaves under 130 KB of Agon SRAM for
+the program", and the program is 4.7 KB — the allowance had been sized against
+the *oracle* binary, which carries a classifier. `buildwikibin.build` takes an
+article count and no corpus, so the real boundary costs milliseconds to find,
+and it is 29% higher than the warning nobody had ever hit.
+
+A page of 256 articles costs 257 bytes rather than 256, and that is the part an
+estimate drops: both bases round down to a 256-byte boundary, so the buffers
+below the accumulator fall by a whole page for each page of articles added,
+while the page table in the image rises by one byte for the same page.
+`max_docs` solves that; `tests/test_wikisearch.py` bisects `build` to check it,
+because two implementations are the only way to notice.
+
+The trade it prices is what an oracle card costs in articles. Every byte of
+image is a byte the accumulator cannot have, so the silo's two classifier
+widths — 94.4 KB and 38.9 KB — were also a choice between 55,000 articles.
 
 The two passes over the accumulator — clearing it and scanning it for the best
 three — used to dominate every query at 284,000 bytes apiece, whatever the

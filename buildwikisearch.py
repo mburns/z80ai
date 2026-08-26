@@ -152,6 +152,22 @@ def build_graph(args: argparse.Namespace, stem: Path,
                                       report_io=False))
 
 
+def report_ceiling(num_docs: int, image_bytes: int, what: str) -> None:
+    """Say how much of the machine this corpus has used up.
+
+    The accumulator is one byte an article and the page table one byte per
+    256 of them, so a corpus spends the free gap from both ends at once.
+    `buildwikibin.max_docs` knows where they meet, and the figure that used
+    to be here was a guess at the program's size that came out sixteen times
+    too large.
+    """
+    limit = buildwikibin.max_docs(buildwikibin.fixed_bytes(num_docs,
+                                                           image_bytes))
+    spare = buildwikibin.headroom(num_docs, image_bytes)
+    print(f"  {num_docs:,} of the {limit:,} articles {what} can score in "
+          f"SRAM ({num_docs / limit:.0%}), {spare:,} bytes spare")
+
+
 def main(argv: list[str] | None = None) -> None:
     """`argv` is for callers that are not the command line.
 
@@ -198,9 +214,15 @@ def main(argv: list[str] | None = None) -> None:
     accumulator = index.num_docs
     print(f"\naccumulator {accumulator / 1024:.0f} KB resident "
           f"(one byte per article)")
-    if accumulator > 380 * 1024:
-        print("  WARNING: that leaves under 130KB of Agon SRAM for the "
-              "program. Use --limit, or shard the corpus.")
+    # Emitting the search program costs milliseconds and no files, and it is
+    # the only thing that knows how much room the corpus has left. If it does
+    # not fit, its own assertion says so better than a threshold could.
+    try:
+        report_ceiling(index.num_docs,
+                       len(buildwikibin.build(index.num_docs).code),
+                       "a search card")
+    except AssertionError as exc:
+        print(f"  WARNING: {exc}.\n  Use --limit, or shard the corpus.")
 
     if args.no_binary:
         return
@@ -220,6 +242,7 @@ def main(argv: list[str] | None = None) -> None:
     size = len(builder.code)
     print(f"{bin_path}  {size / 1024:>8.1f} KB   "
           f"(reads {idx_path.name.upper()} and {dat_path.name.upper()} by name)")
+    report_ceiling(index.num_docs, size, "this image")
     print(f"\nCopy all {'four' if spec else 'three'} onto the card. The binary "
           f"carries no corpus, so rebuilding\nthe database and re-running this "
           f"replaces the card without touching it.")

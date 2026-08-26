@@ -130,6 +130,50 @@ def scratch_base(num_docs: int) -> int:
     return (accumulator_base(num_docs) - SCRATCH_BYTES) & ~0xFF
 
 
+def num_pages(num_docs: int) -> int:
+    """Page-flag bytes, one per 256 articles.
+
+    These are `ds` in the image rather than scratch, so a corpus grows the
+    program as well as the accumulator - which is the term that makes the
+    ceiling `N * 257/256` rather than `N`, and the one an estimate drops.
+    """
+    return (num_docs + 255) >> 8
+
+
+def fixed_bytes(num_docs: int, image_bytes: int) -> int:
+    """An image's size with its page table taken out.
+
+    The page table is the only part that moves with the corpus, so this is
+    the part `max_docs` can be asked about: everything else is the program.
+    """
+    return image_bytes - num_pages(num_docs)
+
+
+def headroom(num_docs: int, image_bytes: int) -> int:
+    """Bytes between the top of the image and the unpacking buffers.
+
+    Negative means the corpus cannot be scored in SRAM - which `build`
+    asserts, but a caller sizing a corpus wants the distance rather than the
+    verdict.
+    """
+    return scratch_base(num_docs) - (AGON_LOAD_ADDR + image_bytes)
+
+
+def max_docs(fixed: int) -> int:
+    """The largest corpus a program of `fixed` bytes can score in SRAM.
+
+    Both bases are rounded down to a 256-byte boundary, so the accumulator
+    and the buffers below it move in whole pages: `scratch_base` falls by
+    exactly 256 for each page the corpus adds, while the image rises by one
+    byte for the same page. Each page therefore costs 257 bytes, and the
+    answer is however many pages the gap holds.
+
+    Solved rather than searched, so that a test bisecting `build` is a second
+    implementation rather than the same one twice.
+    """
+    return 256 * ((scratch_base(0) - AGON_LOAD_ADDR - fixed) // 257)
+
+
 def build(num_docs: int, index_name: str = "WIKI.IDX",
           text_name: str = "WIKI.DAT",
           org: int = AGON_LOAD_ADDR,
@@ -140,7 +184,7 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     falls back to listing articles - which is what the search build already
     is, so the fallback costs nothing.
     """
-    num_pages = (num_docs + 255) >> 8
+    pages = num_pages(num_docs)
     acc_base = accumulator_base(num_docs)
     b = EZ80Builder(org=org)
     agon_header(b, "START")
@@ -284,7 +328,7 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     #
     # One byte per article, tiered into 256-article pages so the per-query
     # passes visit only the pages scoring touched.
-    _emit_clear_acc(b, num_docs, acc_base, num_pages)
+    _emit_clear_acc(b, num_docs, acc_base, pages)
 
     # --- query ---------------------------------------------------------------
     b.label("SCORE_QUERY")
@@ -465,12 +509,12 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     b.ret()
 
     _emit_score_term(b, acc_base)
-    _emit_report(b, num_docs, acc_base, num_pages, oracle is not None)
+    _emit_report(b, num_docs, acc_base, pages, oracle is not None)
     if oracle is not None:
         _emit_oracle(b, oracle)
         _emit_classifier(b, oracle)
     _emit_console(b)
-    _emit_data(b, num_docs, acc_base, num_pages, index_name, text_name)
+    _emit_data(b, num_docs, acc_base, pages, index_name, text_name)
     if oracle is not None:
         _emit_classifier_data(b, oracle)
 
@@ -478,14 +522,16 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     scratch = scratch_base(num_docs)
     assert top <= scratch, (
         f"the image reaches {top:06X}h but the unpacking buffers start at "
-        f"{scratch:06X}h; the corpus is too large to score in SRAM")
+        f"{scratch:06X}h; the corpus is too large to score in SRAM - "
+        f"{num_docs:,} articles against a limit of "
+        f"{max_docs(fixed_bytes(num_docs, len(b.code))):,} for this image")
     b.accumulator = acc_base
     b.num_docs = num_docs
     return b
 
 
 def _emit_clear_acc(b: EZ80Builder, num_docs: int, acc_base: int,
-                    num_pages: int) -> None:
+                    pages: int) -> None:
     """Zero the pages the previous query touched, and their flags.
 
     A whole-corpus memset is ~284,000 stores; scoring touches a handful of
@@ -498,7 +544,7 @@ def _emit_clear_acc(b: EZ80Builder, num_docs: int, acc_base: int,
     acc_end = acc_base + num_docs
     b.label("CLEAR_ACC")
     b.ld_iy_label("PAGE_TAB")
-    b.ld_hl_nn(num_pages)
+    b.ld_hl_nn(pages)
     b.ld_mem_label_hl("PGLEFT")
     b.ld_hl_nn(acc_base)
     b.ld_mem_label_hl("PACC")
@@ -852,7 +898,7 @@ def _emit_score_term(b: EZ80Builder, acc_base: int) -> None:
 
 
 def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
-                 num_pages: int, split_report: bool = False) -> None:
+                 pages: int, split_report: bool = False) -> None:
     """Find the best three scores and print their articles.
 
     Pages the query never touched hold only zeros, so the scan walks the page
@@ -868,7 +914,7 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
         b.ld_mem_label_a("BESTSC", k)
 
     b.ld_iy_label("PAGE_TAB")
-    b.ld_hl_nn(num_pages)
+    b.ld_hl_nn(pages)
     b.ld_mem_label_hl("PGLEFT")
     b.ld_hl_nn(acc_base)
     b.ld_mem_label_hl("PACC")
@@ -1515,7 +1561,7 @@ def _emit_classifier_data(b: EZ80Builder, spec: OracleSpec) -> None:
     buildgraphwalk.emit_cells(b)
 
 
-def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, num_pages: int,
+def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, pages: int,
                index_name: str, text_name: str) -> None:
     b.label("BANNER")
     b.ascii(f"Simple English Wikipedia - {num_docs:,} articles")
@@ -1594,7 +1640,7 @@ def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, num_pages: int,
     # One flag per 256-article page: small enough to live in the image
     # (1,110 bytes for the full corpus), where a `ds` costs real zeros.
     b.label("PAGE_TAB")
-    b.ds(num_pages)
+    b.ds(pages)
 
 
 #: Where the bucket table starts: straight after the header libsearch writes.
