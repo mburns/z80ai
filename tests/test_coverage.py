@@ -200,6 +200,28 @@ def test_the_kinds_tell_a_missing_edge_from_an_impossible_one(db):
     assert scored["stopped_on"] == {"a person": 1}   # Poem, via Erin
 
 
+def test_the_country_list_is_printable_with_what_lands_on_it(db):
+    """The floor curve says how many countries a setting yields, not which.
+    Which is the part a person can check: `Baku`, `Victoria`, `CA` and `World`
+    are all on the real list, and three automatic rules failed to find them
+    without taking China, Angola and Mongolia along."""
+    landings = coverage.countries(db, "w")
+    assert set(landings) == {"France"}
+    assert landings["France"] == 2       # Alice via Paris, and Bob directly
+
+
+def test_a_country_nothing_reaches_is_still_listed(db):
+    """A zero is the shape junk takes when it is harmless, and it still has to
+    be visible - `World` costs nothing today and would cost something the first
+    time anything was filed inside it."""
+    db.execute("INSERT INTO article (source, title, lead) "
+               "VALUES ('w', 'Elsewhere', '')")
+    db.execute("INSERT OR REPLACE INTO entity_type VALUES "
+               "('w', 'country', 'Elsewhere')")
+    landings = coverage.countries(db, "w")
+    assert landings["Elsewhere"] == 0
+
+
 def test_a_person_without_a_birthplace_is_still_a_miss(db):
     """The correction must not swallow the thing worth fixing. Dave is a person
     - the corpus files him under a birth year - and the graph simply has no

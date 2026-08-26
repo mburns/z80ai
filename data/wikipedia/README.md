@@ -857,6 +857,46 @@ subjects says the derived edges chain about as well as the tabulated ones. It
 is not evidence that they are *right* — `--write`'s own scoring is what speaks
 to that — but a bad batch would have shown up here as a much steeper fall.
 
+### The country list has junk in it, and no rule finds it
+
+`Sydney` climbs to **England**. Its infobox says it is in "Cumberland", which
+resolves to the English one, and `Grafton, New South Wales` reaches the United
+States by way of "Clarence" the same way.
+
+Chasing that turned up the smaller and sharper version: four entities on the
+country list are not countries.
+
+```
+Baku        36 climbs land here    the capital of Azerbaijan
+Victoria    82                     a state, and a capital of Seychelles
+CA           1                     a country code
+World        0
+```
+
+`demote` cannot reach them. It compares two claimed countries in a
+containment, and nothing contains Baku — so nothing contradicts it. Three
+rules were tried:
+
+| rule | what it did |
+|---|---|
+| demote anything named as a capital | took **China, Angola and Mongolia** with it — their `capital` fields resolve to the modern country, so `Dzungar Khanate capital_is China` is an edge |
+| keep whichever claim is stronger | the corpus calls Baku a country **6** times and a capital **2**, so Baku stays |
+| a threshold sparing China and catching Baku | fitted to two data points, which is not a rule |
+
+So it is not fixed. The four cost **118 answers out of 42,996** — 0.27% — and
+a rule that risks China to recover that is a bad trade even in the version
+where it works.
+
+What is shipped instead is the list, because a person reading 143 names finds
+`World` and `CA` in seconds where no curve does:
+
+```bash
+python data/wikipedia/coverage.py --countries
+```
+
+The floor curve above says how *many* countries a setting yields. This says
+which, and that turns out to be the reviewable part.
+
 ### Three things that turned out not to be wrong
 
 `created_by born_in` was being marked down for questions with no answer, so the
