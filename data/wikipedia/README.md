@@ -750,6 +750,54 @@ subjects says the derived edges chain about as well as the tabulated ones. It
 is not evidence that they are *right* — `--write`'s own scoring is what speaks
 to that — but a bad batch would have shown up here as a much steeper fall.
 
+### Three things that turned out not to be wrong
+
+`created_by born_in` was being marked down for questions with no answer, so the
+obvious next move was to look for the same fault everywhere else. It is not
+there. Recorded here because a negative result nobody wrote down gets
+re-investigated, and each of these cost an afternoon.
+
+**The other chains are clean.** Of the walks that stop short, 98–99% stop on a
+genuine place — something the corpus places, or places things inside — and
+under 1% on a person:
+
+```
+born_in in_country    a place nothing places 99%   a person 1%
+died_in in_country    a place nothing places 99%   a person 1%
+in_country            a place nothing places 98%   a place that records where it is 2%
+created_by born_in    a person 100%
+```
+
+Their shortfall is real missing containment, not category error. That last row
+is the fix from the previous section seen from the other side: everything left
+in `created_by born_in` is a person with no recorded birthplace, which is a gap
+worth filing rather than a question worth declining.
+
+That table is now printed by `coverage.py` on every run rather than worked out
+by hand, which is the whole argument of this file applied to itself.
+
+**The 93 creators with no categories are mostly bands** — Bon Jovi, The Police,
+One Direction, Panic! at the Disco. `people` already excludes them, since they
+carry neither a birth date nor a birth-year category, so they were being
+counted moot all along and no change was needed.
+
+**Disambiguation pages are not the problem they look like.** Several of those
+93 turned out to be list pages: `created_by` pointing at *Drake* reaches "Drake
+may mean:" and 27 works stop there. Roughly 6% of all edges land on a page like
+that, which sounds alarming until you ask the question that matters — how often
+a walk carries *on* through one and answers with whatever the list was filed
+under. **Fourteen times, out of 32,842**, and all fourteen are right: Oshawa to
+Canada, Thimphu to Bhutan, Eskişehir to Turkey. A list page almost never has a
+`located_in` of its own, so it blocks a chain rather than misdirecting one.
+
+Worth adding that the 6% is unreliable in its own right. Detecting these from
+the lead catches `Cereal usually refers to a type of grass` and `A combination
+puzzle can be solved`, and tightening the pattern to only `may refer to` and
+`may mean` trades those for different false positives. The corpus files just 24
+pages under a disambiguation category, so there is nothing to check the
+detector against. A number that cannot be validated is not worth acting on, and
+the harm it would be measuring is fourteen correct answers.
+
 ### Measuring the coverage, rather than remembering it
 
 Every number in this section used to be measured by hand and quoted, which is
