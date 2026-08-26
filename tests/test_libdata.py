@@ -382,3 +382,53 @@ def test_the_shipped_datasets_parse(examples_dir):
         pairs = libdata.read_files([path])
         assert len(pairs) > 100
         assert all(len(q) >= 2 and r for q, r in pairs)
+
+
+# --- name sensitivity ---------------------------------------------------------
+#
+# `name_sensitivity` exists because accuracy over a question set cannot tell a
+# phrasing the model never learned from a phrasing it *did* learn whose answer
+# depends on who is being asked about. The second is invisible in an accuracy
+# figure and is what the trigram encoder causes. These pin the distinction with
+# two fake classifiers, because a real one would make the test a measurement.
+
+TEMPLATES = {
+    "father_is": ("who is {s}'s father", "name {s}'s father"),
+    "works_in": ("where does {s} work",),
+}
+
+
+def _subjects(_label, wanted):
+    return [f"person{i}" for i in range(wanted)]
+
+
+def test_a_classifier_that_ignores_the_subject_is_perfectly_steady():
+    result = libdata.name_sensitivity(
+        TEMPLATES, _subjects,
+        lambda q: "father_is" if "father" in q else "works_in",
+        per_template=5)
+    assert (result.phrasings, result.steady) == (3, 3)
+    assert result.accuracy == 1.0
+    assert result.worst == []
+
+
+def test_a_classifier_that_reads_the_subject_is_not():
+    """Same question, different person, different answer - which an accuracy
+    figure on its own reports as ordinary error."""
+    # Each phrasing gets its own slice of the names, so the two subjects this
+    # reacts to land in different phrasings - which is the point: one classifier
+    # that reads the name makes every phrasing it appears in unsteady.
+    result = libdata.name_sensitivity(
+        TEMPLATES, _subjects,
+        lambda q: "works_in" if "person0 " in q + " " or "person5" in q
+        else "father_is",
+        per_template=4)
+    assert result.steady < result.phrasings
+    assert 0 < result.accuracy < 1
+    # Every unsteady phrasing is named, with what it mostly said instead.
+    assert result.worst and all(share < 1.0 for _, _, share, _ in result.worst)
+
+
+def test_an_empty_template_set_is_not_a_division_by_zero():
+    result = libdata.name_sensitivity({}, _subjects, lambda q: "x")
+    assert (result.accuracy, result.steadiness) == (1.0, 1.0)

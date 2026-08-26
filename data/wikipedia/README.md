@@ -467,6 +467,44 @@ at seed 0. A number quoted more precisely than it can be measured invites
 exactly that kind of disagreement, and resolving it by picking a side would
 have been the wrong repair.
 
+### Some of that spread is the name, not the phrasing
+
+```console
+$ python tools/name_sensitivity.py --model relations.npz
+   97.7%  of 1,280 questions route to the right path
+   62.5%  of phrasings (20/32) answer the same way whatever the subject
+```
+
+Accuracy over a question set cannot separate a phrasing the model never learned
+from a phrasing it *did* learn whose answer depends on who is being asked
+about. The second is invisible in an accuracy figure, and it is here: hold one
+of the four chain phrasings fixed, vary only the entity, and **twelve of the
+thirty-two change their answer.**
+
+That is the encoder doing what it is documented to do. A query is hashed into
+128 trigram buckets, a name is most of a short question, and the subject is
+therefore most of the input — it is not something the model steps over on its
+way to the verb.
+
+The confusions are not random, which is what makes them worth reporting:
+
+| | | |
+|---|---|---|
+| `what country is X in` | 77.5% | falls to `located_in` |
+| `what country is X located in` | 85.0% | falls to `located_in` |
+| `what country was X born in` | 95.0% | falls to `born_in` |
+
+Every one of them drops the climb and answers with the step before it. That is
+the shape of the bug this corpus already fixed twice — a region returned where
+a country was asked for — arriving by a different route, and it means the
+remaining cases cannot all be repaired in `libgraph`.
+
+The measurement came from the synthetic corpus in [`data/silo/`](../silo/),
+where the same tool reports 124 of 240. That is a worse figure, and it should
+be: those names come from a pool of a few hundred. The point of running it here
+was to find out whether the effect belongs to that corpus or to the encoder,
+and it belongs to the encoder.
+
 **What stops it being better is coverage, not accuracy.** Only 46% of articles
 have an infobox, so a chain that hops onto one of the other 54% cannot
 continue. The oracle is confidently right about where someone was born and

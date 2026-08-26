@@ -56,6 +56,7 @@ import generate  # noqa: F401  - registers the silo's climbs into libgraph.CLIMB
 from schema import SOURCE
 
 import libgraph
+import liboracle
 
 DB_PATH = Path(__file__).resolve().parent.parent / "silo.db"
 
@@ -303,9 +304,22 @@ def subjects(db: sqlite3.Connection, path: str, have: set[str], wanted: int,
     return [rows[i % len(rows)] for i in range(wanted)]
 
 
+def _ask(template: str, name: str, masked: bool) -> str:
+    """One question, with the subject either in it or taken back out.
+
+    Masked questions are what the classifier would see if the pipeline removed
+    the entity before encoding - the oracle resolves the subject first, so it
+    could. Generated with the *true* subject, so this is the ideal case: what
+    masking is worth when the search was right, which it is 88.6% of the time.
+    """
+    question = template.format(s=name.lower())
+    return liboracle.mask(question, name) if masked else question
+
+
 def build(db: sqlite3.Connection, have: set[str], per_template: int,
-          hold_out: int,
-          seed: int) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+          hold_out: int, seed: int,
+          masked: bool = False,
+          ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """(training pairs, held-out pairs), split by phrasing rather than by row."""
     rng = Random(seed)
     train: list[tuple[str, str]] = []
@@ -317,7 +331,7 @@ def build(db: sqlite3.Connection, have: set[str], per_template: int,
         names = subjects(db, path, have, per_template * len(templates), rng)
         for i, template in enumerate(templates):
             block = names[i * per_template:(i + 1) * per_template]
-            rows = [(template.format(s=name.lower()), path) for name in block]
+            rows = [(_ask(template, name, masked), path) for name in block]
             (unseen if template in reserved else train).extend(rows)
     rng.shuffle(train)
     rng.shuffle(unseen)
@@ -387,6 +401,9 @@ def main() -> None:
     ap.add_argument("--emit", choices=("train", "held-out"), default="train",
                     help="'held-out' prints only the reserved phrasings, to "
                          "score generalisation rather than recall")
+    ap.add_argument("--mask", action="store_true",
+                    help="Take the subject back out of each question before "
+                         "printing it - see liboracle.mask")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -408,7 +425,7 @@ def main() -> None:
             resolve(word, have)
 
     train, unseen = build(db, have, args.per_template, args.held_out_templates,
-                          args.seed)
+                          args.seed, masked=args.mask)
     pairs = unseen if args.emit == "held-out" else train
     counts = Counter(path for _, path in pairs)
 
