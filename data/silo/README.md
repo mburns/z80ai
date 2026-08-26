@@ -310,6 +310,117 @@ leads would make lookups both cheaper and more accurate, and would cost the
 property that makes this corpus useful for the comprehension argument — that
 every fact in the graph is also there in the prose, for a reader. Not taken.
 
+## Written entries, beside the generated ones
+
+Every one of the ten thousand generated leads is the same sentence with
+different nouns in it. That is what makes this corpus good for measuring a
+graph walk and useless as something to read, and the card has room for both:
+the sweep below puts the whole thing at 2.6% of what the machine can hold.
+
+`authored.py` reads a directory of text files into the same `article` table,
+with the same `source`, so `buildwikisearch.py` takes no new argument and
+cannot tell them apart:
+
+```bash
+python data/silo/generate.py
+python data/silo/authored.py --report      # <- and re-run after any generate
+python buildwikisearch.py --db data/silo.db --source silo --out dist/SILO
+```
+
+Ten entries ship in `authored/` — incident reports, committee minutes, a
+maintenance log, a judicial direction on what the archive may be asked. They
+carry no `edge`, no `fact` and no `entity_type`: a written entry is findable
+and readable, and the graph can neither walk to it nor from it. The oracle
+answers *about people* from the graph, and this is the archive it is sitting
+on.
+
+**Re-run it after any re-generate.** `generate.write` opens with
+`DELETE FROM article WHERE source = ?`, which takes these too — the same shape
+as `data/wikipedia/birthplaces.py` step 2a.
+
+### What a written entry costs, against a generated one
+
+Codes are learned per corpus, so #51's 30.6% on Wikipedia leads said nothing
+about either of these. Learned over the corpus and packed one entry at a time,
+which is what `write_text` does:
+
+| | entries | raw | packed | saving | bytes each |
+|---|---:|---:|---:|---:|---:|
+| written | 10 | 15,240 | 10,721 | **29.7%** | 1,524 |
+| generated | 4,000 | 450,020 | 99,077 | **78.0%** | 112 |
+
+**Written prose packs like Wikipedia's — 29.7% against 30.6% — and the
+generator's leads pack like a template, because that is what they are.** The
+78% is not a compression result, it is a measurement of how little the
+generated corpus says: a lead that is one sentence with the nouns swapped is
+mostly a sentence the packer has already seen.
+
+So the two are not interchangeable on the card. A written entry costs about
+1,070 packed bytes and a generated one about 25 — **forty of them for every
+document somebody wrote.**
+
+Which still does not make prose the constraint. The ceiling is a count and not
+a size: the accumulator is one byte per article whatever that article holds, so
+a card of 502,016 *written* entries is as legal as one of 502,016 generated
+ones and comes to about 540 MB of `.DAT`. The format has offsets for 4 GB and
+the machine has an SD slot. Filling it would take fifteen hundred novels'
+worth of writing, and the writing is the part that runs out.
+
+### An article is capped by what the device reads, and it was not
+
+`READ_ARTICLE` reads exactly one `CHUNK` — 2,048 packed bytes — and `UNPACK`
+walks it until it has seen the two NULs ending the title and the lead. An
+article packing to more than that **does not truncate**: the second NUL is not
+in what was read, so the decoder carries on into whatever the last query left
+in SRAM.
+
+Nothing checked this, because every lead had been 300 characters since the
+format was written. Asked for a 3,000-character lead the machine printed about
+two and a half thousand of them and stopped, and looked entirely well while
+doing it — emulated SRAM starts zeroed, so the decoder ran into zeros and took
+them for the terminators it was waiting on. On hardware it would run into
+whatever the previous query left.
+
+`libsearch.write_text` now refuses an article past `MAX_PACKED_ARTICLE` or past
+the `2 * CHUNK` it unpacks into, naming the article. `buildwikibin` asserts the
+two constants against its own `CHUNK`, so the build refuses exactly what the
+device cannot finish.
+
+`CardSearch.article` was reading 4,096 packed bytes against the device's 2,048,
+which is the more embarrassing half: a card the machine could not finish was
+one the reference finished fine, so every test that compares the two would have
+agreed with the wrong one. It reads `MAX_PACKED_ARTICLE` now.
+
+The cap on a written entry is therefore the device's and not a taste. Byte-pair
+packing only ever replaces a pair with one byte, so packed text is never longer
+than what went in, and capping the *raw* entry at the packed limit is a cap no
+prose can get past however badly it compresses. That is why `authored.MAX_BODY`
+is derived rather than guessed: a character count would have needed a
+compression ratio, and the ratio is a property of the corpus.
+
+All ten entries come back off a real card byte-for-byte identical to the
+reference, at 1,414 to 1,536 bytes each.
+
+### Two of them lose their own name
+
+`Ration Appeals Panel, Case 2196` asked for by its own title returns the
+generator's `Ration Appeals Panel` — the committee stub — and
+`Relic Disposal Committee, Minutes of Year 217` likewise. Both written entries
+are on the card and both are found; they are not first.
+
+This is BM25 doing what it is for. The stub is eleven words long and the query
+terms are most of it, so it scores above a fifteen-hundred-byte document that
+mentions the committee once in its title. Nothing is broken and nothing needs a
+setting changed.
+
+It is worth knowing because it is the shape of the problem authored entries
+have generally: **a written entry named after something the generator already
+writes about competes with it, and usually loses.** Naming an entry for the
+thing it is *about* is the instinct, and the instinct is wrong here. An exact
+title collision is refused outright by `authored.py`, because taking the name
+would delete the generated article — but a near miss like these two is legal,
+findable, and second.
+
 ### The same corpus at four sizes, and what actually gets dearer
 
 Everything above was measured on one corpus, where "cost tracks how widely a
@@ -656,12 +767,13 @@ Generation sizes scale with `--people`, so a small corpus is the same shape as
 the full one rather than a prefix of it — a prefix would be all founders and
 would answer no kinship question at all.
 
-The card is six files in this directory, in the order they run:
+The card is seven files in this directory, in the order they run:
 
 | | |
 |---|---|
 | `schema.py` | the database — tables, views, and what is not a table |
 | `generate.py` | the simulation, and the writer |
+| `authored.py` | written entries, into the same tables — optional, and re-run after `generate.py` |
 | `questions.py` | what a graph walk can reach, against ground truth |
 | `relationpaths.py` | templated questions, labelled with the path they mean |
 | `buildcard.py` | classifier and card — the one place that knows the order |
@@ -669,6 +781,10 @@ The card is six files in this directory, in the order they run:
 
 `sweep.py` is beside them but not part of a build: it makes its own corpora, at
 several sizes, to measure what changes between them.
+
+`authored/` holds the entries themselves, one document per `.txt` file with its
+title on the first line. They are the only prose in this corpus a person wrote,
+and they are in git because nothing regenerates them.
 
 `tests/test_silo.py` builds a 600-person corpus and checks that it is coherent
 (nobody is their own ancestor, no parent died before their child was born,

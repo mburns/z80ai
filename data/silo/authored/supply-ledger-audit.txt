@@ -1,0 +1,27 @@
+Supply: Audit of the Standing Ledgers, Year 216
+
+The Quartermaster ordered a full audit of the standing ledgers, the first since
+year 201, following the panel's direction in Case 2196.
+
+Every allowance drawn in year 215 was matched against the residence record. Of
+eleven thousand four hundred and six allowances, eleven thousand two hundred and
+ninety matched. One hundred and sixteen did not.
+
+Of the hundred and sixteen, ninety-four are people who moved and whose ledger
+followed them while the residence record did not. Those are corrected. Fourteen
+are people recorded at two addresses, all of which resolve to a marriage where
+one partner's move was entered and the other's was not. Those are corrected.
+
+Eight remain. In each of the eight an allowance is drawn at an address where the
+residence record shows nobody, and in each the ledger entry was opened before
+year 200 and has been continued by hand at every audit since without a name
+against it. Two of the eight are on Level 3.
+
+The Quartermaster has closed all eight and has written to the Sheriff's Office
+rather than to the panel, and records here that he expects no reply and is
+making the record for the sake of the record.
+
+The audit further finds that the ledgers are kept in a hand that changes every
+few years and never carries a signature, so there is no way to ask the person
+who continued an entry why they continued it. From this year every ledger page
+is signed. It is a small thing and it should have been done in 201.

@@ -447,6 +447,22 @@ MIN_PAIR_USES = 64
 #: bytes apiece needs a few hundred; this is room to spare, and asserted.
 MAX_BLOB = 4096
 
+#: What the device reads for one article, and what it unpacks that into -
+#: `buildwikibin.CHUNK` and `2 * CHUNK`, asserted equal there.
+#:
+#: These are the format's limits and not an ingest's preference. `READ_ARTICLE`
+#: reads exactly one `CHUNK` and `UNPACK` walks it until it has seen the two
+#: NULs ending the title and the lead. An article packing to more than that
+#: does not truncate: the second NUL is not in what was read, so the decoder
+#: carries on into whatever the previous query left in SRAM. It looks clean
+#: under the emulator only because emulated SRAM starts zeroed.
+#:
+#: Both are checked, because they can fail independently - a corpus whose
+#: codes expand a long way can be inside the read and outside the buffer it
+#: unpacks into, and that one lands in the pair table.
+MAX_PACKED_ARTICLE = 2048
+MAX_ARTICLE = 2 * MAX_PACKED_ARTICLE
+
 
 def free_codes(raw: bytes) -> list[int]:
     """Byte values the text never uses, which are therefore free to mean a pair.
@@ -573,9 +589,17 @@ def write_text(index: Index, path: Path) -> dict[str, int]:
     # and make every offset meaningless.
     packed = bytearray()
     offsets = []
-    for start, end in bounds:
+    for doc, (start, end) in enumerate(bounds):
         offsets.append(len(packed))
-        packed += pack_text(raw[start:end], merges)
+        one = pack_text(raw[start:end], merges)
+        if len(one) > MAX_PACKED_ARTICLE or end - start > MAX_ARTICLE:
+            raise ValueError(
+                f"{index.titles[doc]!r} is {end - start} bytes packing to "
+                f"{len(one)}, and the device reads {MAX_PACKED_ARTICLE} bytes "
+                f"per article and unpacks into {MAX_ARTICLE}. Shorten the "
+                f"lead: the device cannot see the end of this one, and does "
+                f"not know that")
+        packed += one
 
     header = len(TEXT_MAGIC) + 2 + len(slots) + len(blob) + 4 + 4 * len(offsets)
     with path.open("wb") as fh:
@@ -660,9 +684,12 @@ class CardSearch:
         self.text.seek(self._offsets_at + 4 * doc)
         offset = struct.unpack("<I", self.text.read(4))[0]
         self.text.seek(offset)
-        # Packed, so 4096 bytes is more than the 300-character lead needs even
-        # if nothing in it compressed at all.
-        chunk = unpack_text(self.text.read(4096), self.expansion).split(b"\x00")
+        # Exactly what READ_ARTICLE reads, so that an article the device cannot
+        # finish is one this cannot finish either. Reading more here would make
+        # the reference right about a card the machine gets wrong, which is the
+        # one disagreement neither side would report.
+        chunk = unpack_text(self.text.read(MAX_PACKED_ARTICLE),
+                            self.expansion).split(b"\x00")
         return (chunk[0].decode("utf-8", "replace"),
                 chunk[1].decode("utf-8", "replace"))
 
