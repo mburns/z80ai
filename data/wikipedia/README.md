@@ -715,6 +715,41 @@ for nothing, and any model has to beat that number, on that population, before
 it is worth its cost. `--method` is where one would go; the harness that would
 score it is already here.
 
+#### Putting them on the card is a separate decision
+
+`libgraph.build` ignores `derived` unless given a method, and `birthplaces.py`
+writes the table without touching the graph. Getting these onto a device takes
+a third command, which exists so that somebody takes the decision rather than
+inheriting it:
+
+```bash
+python data/wikipedia/birthplaces.py --write --rebuild-graph
+```
+
+Everything else on the card comes from something a Wikipedia author tabulated
+or filed. These come from a sentence, read by a regex, and a card built with
+them asserts things no infobox states. They fill gaps only — written after
+every other edge and skipping any subject that already has the relation, so a
+sentence cannot overrule a table even if the table is stale.
+
+What it buys, measured:
+
+| | tabulated only | with the leads read |
+|---|---:|---:|
+| edges | 167,868 | **181,453** |
+| subjects on the graph | 37.3% | **42.0%** |
+| `born_in in_country` startable | 42,288 | **55,873** |
+| — questions it answers | 32,842 | **42,996** |
+| — rate | 77.7% | 77.0% |
+| `created_by born_in` | 74.3% | **83.1%** |
+
+**+10,154 answered birthplace questions**, and the rate barely moves. That last
+part is the interesting one: newly startable subjects complete below the
+existing average by construction, so a fall of 0.7 points across 13,585 new
+subjects says the derived edges chain about as well as the tabulated ones. It
+is not evidence that they are *right* — `--write`'s own scoring is what speaks
+to that — but a bad batch would have shown up here as a much steeper fall.
+
 ### Measuring the coverage, rather than remembering it
 
 Every number in this section used to be measured by hand and quoted, which is
