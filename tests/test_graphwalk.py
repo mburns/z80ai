@@ -85,7 +85,8 @@ def graph(tmp_path_factory):
     return card, path, doc, rid, titles, conn
 
 
-def harness(card, steps: list[tuple[int, int]], subject: int) -> EZ80Builder:
+def harness(card, steps: list[tuple[int, int]], subject: int,
+            climb_limit: int = libgraphcard.CLIMB_LIMIT) -> EZ80Builder:
     """A program that walks `steps` from `subject` and prints where it got.
 
     The path is assembled into the image rather than read from a card, because
@@ -186,7 +187,7 @@ def harness(card, steps: list[tuple[int, int]], subject: int) -> EZ80Builder:
     buildgraphwalk.emit_walk(
         b, card.num_edges, types_at=card._types_at - 8 * len(card.type_names),
         num_types=len(card.type_names), handle_label="GRFH",
-        buffer_label="IOBUF", seekoff_label="SEEKOFF")
+        buffer_label="IOBUF", seekoff_label="SEEKOFF", climb_limit=climb_limit)
 
     # SEEK and READ, the two the walk borrows from its caller.
     b.label("SEEK")
@@ -225,19 +226,21 @@ def harness(card, steps: list[tuple[int, int]], subject: int) -> EZ80Builder:
     return b
 
 
-def walk_on_device(graph, steps, subject) -> str:
+def walk_on_device(graph, steps, subject,
+                   climb_limit: int = libgraphcard.CLIMB_LIMIT) -> str:
     card, path, _doc, _rid, _titles, _db = graph
     host = AgonHost(stdin=[], files={"WIKI.GRF": path.read_bytes()})
-    return host.run(harness(card, steps, subject).build(),
+    return host.run(harness(card, steps, subject, climb_limit).build(),
                     max_cycles=200_000_000).strip()
 
 
-def both(graph, steps, subject):
+def both(graph, steps, subject, climb_limit: int = libgraphcard.CLIMB_LIMIT):
     """What the device says, and what the reference says, for one walk."""
     card = graph[0]
-    answer, _walked, _missing = card.follow(subject, steps)
+    answer, _walked, _missing = card.follow(subject, steps,
+                                            climb_limit=climb_limit)
     reference = "NOWHERE" if answer is None else str(answer)
-    return walk_on_device(graph, steps, subject), reference
+    return walk_on_device(graph, steps, subject, climb_limit), reference
 
 
 # --- one hop ------------------------------------------------------------------
@@ -304,6 +307,86 @@ def test_a_climb_that_runs_out_says_nowhere(graph):
     steps = [(rid["born_in"], libgraphcard.PLAIN), (rid["located_in"], country)]
     device, reference = both(graph, steps, doc["Hampshire"])
     assert device == reference == "NOWHERE"
+
+
+# --- how far a climb may go, which is now a choice ----------------------------
+#
+# The limit used to be three separate literal 6s - `libgraph`, `libgraphcard`'s
+# default argument, and an immediate in `buildgraphwalk` - with a comment in the
+# third pointing at a constant in the second that did not exist. One definition
+# now, and a card can be built with another.
+
+
+def climb_to_country(graph, subject: str, limit: int):
+    card, _path, doc, rid, _titles, _db = graph
+    country = card.type_names.index("country")
+    steps = [(rid["born_in"], libgraphcard.PLAIN), (rid["located_in"], country)]
+    return both(graph, steps, doc[subject], climb_limit=limit)
+
+
+def test_the_limit_counts_values_examined_and_not_hops(graph):
+    """The off-by-one every comment in this repository had backwards.
+
+    Both walkers test the type at the *top* of the loop and give up when the
+    count runs out, so the value the last hop reached is never tested: a limit
+    of n permits n - 1 hops. Warsaw -> Poland is one hop and needs two.
+
+    The two implementations agree, which is exactly why nothing caught it -
+    the eZ80 checks, decrements, gives up on zero, and only then hops.
+    """
+    _card, _path, doc, _rid, _titles, _db = graph
+    assert climb_to_country(graph, "Marie Curie", 1) == ("NOWHERE", "NOWHERE")
+
+    device, reference = climb_to_country(graph, "Marie Curie", 2)
+    assert device == reference == str(doc["Poland"])
+
+
+def test_a_climb_stops_where_the_limit_says(graph):
+    """Steventon -> Hampshire -> England is two hops, so it needs three."""
+    _card, _path, doc, _rid, _titles, _db = graph
+    assert climb_to_country(graph, "Jane Austen", 2) == ("NOWHERE", "NOWHERE")
+
+    device, reference = climb_to_country(graph, "Jane Austen", 3)
+    assert device == reference == str(doc["England"])
+
+
+def test_a_shorter_climb_is_unaffected_by_a_deeper_limit(graph):
+    """Raising the limit must not make a walk step past an answer it already
+    had - a quarter of real birthplaces are countries already."""
+    _card, _path, doc, _rid, _titles, _db = graph
+    for limit in (2, 3, 6, 12):
+        device, reference = climb_to_country(graph, "Marie Curie", limit)
+        assert device == reference == str(doc["Poland"]), limit
+
+
+def test_a_deeper_limit_costs_no_card_bytes(graph):
+    """The limit is an immediate, not an unrolled loop, so it is free in the
+    one budget this project has to keep - and `--climb-limit` is therefore a
+    choice about answers rather than about size."""
+    card, _path, doc, rid, _titles, _db = graph
+    country = card.type_names.index("country")
+    steps = [(rid["born_in"], libgraphcard.PLAIN), (rid["located_in"], country)]
+    sizes = {limit: len(harness(card, steps, doc["Jane Austen"], limit).build())
+             for limit in (1, 2, 6, 255)}
+    assert len(set(sizes.values())) == 1, sizes
+
+
+def test_a_limit_of_zero_is_refused(graph):
+    """It would emit a walk that decrements to zero before its first test and
+    answers NOWHERE for everything, including the quarter of subjects that are
+    already what was asked for."""
+    card, _path, doc, rid, _titles, _db = graph
+    country = card.type_names.index("country")
+    steps = [(rid["located_in"], country)]
+    with pytest.raises(ValueError, match="cannot check anything"):
+        harness(card, steps, doc["Poland"], climb_limit=0)
+
+
+def test_one_definition_reaches_all_three_walkers():
+    """`buildgraphwalk` carried a comment saying it matched a constant that
+    `libgraphcard` did not have, and `libgraph` held a third copy."""
+    assert libgraph.CLIMB_LIMIT is libgraphcard.CLIMB_LIMIT
+    assert buildgraphwalk.CLIMB_LIMIT is libgraphcard.CLIMB_LIMIT
 
 
 # --- inverses on the machine --------------------------------------------------

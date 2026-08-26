@@ -311,7 +311,7 @@ def questions(a: Archive) -> list[Question]:
                  _founder, ["founding_father"],
                  asks=lambda a, x: bool(_founder(a, x)),
                  note="a climb, not a path: the depth is the generation, and "
-                      "`libgraph.CLIMB_LIMIT` is 6"),
+                      "a CLIMB_LIMIT of 6 buys five hops"),
 
         Question("who lives next door to X", "set", _living_neighbours,
                  ["lives_at", "next_along"],
@@ -515,10 +515,13 @@ def _climb_by_generation(db: sqlite3.Connection, a: Archive,
                          subjects: list[str]) -> None:
     """Where `CLIMB_LIMIT` bites, which is the one number this corpus is for.
 
-    Seven generations, a limit of six hops, and the limit counts hops rather
-    than nodes checked - so generation 5 reaches its founder on the last hop it
-    is allowed and generation 6 falls exactly one short. Nothing about that is
-    visible on a corpus where the true answer is unknown.
+    Seven generations, and a limit that counts the values a climb may
+    *examine* rather than the hops it may take - the type is tested at the top
+    of the loop, so the value the last hop reached is never tested at all. Six
+    examinations buy five hops. Generation g is exactly g hops from its
+    founder, so generation 5 is the deepest that answers and generation 6 falls
+    one short. Nothing about that is visible on a corpus where the true answer
+    is unknown.
     """
     print("\nThe climb, by generation - `founding_father` against a hop limit "
           f"of {libgraph.CLIMB_LIMIT}")

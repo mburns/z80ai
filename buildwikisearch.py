@@ -27,6 +27,10 @@ import sqlite3
 from pathlib import Path
 
 import buildwikibin
+
+# Only for the climb-limit default. The rest of the graph modules stay inside
+# `build_graph`, which is where the ones that want numpy belong.
+import libgraphcard
 import libsearch
 
 DB_PATH = Path(__file__).resolve().parent / "data" / "simple_english_wikipedia.db"
@@ -85,7 +89,6 @@ def load_corpus(db_path: Path, source: str,
     return titles, leads, aliases
 
 
-
 def build_graph(args: argparse.Namespace, stem: Path,
                 titles: list[str],
                 num_docs: int) -> buildwikibin.OracleSpec:
@@ -97,7 +100,6 @@ def build_graph(args: argparse.Namespace, stem: Path,
     at build time is cheaper to notice than one that is wrong on the machine.
     """
     import buildwikigraph
-    import libgraphcard
     import libinfer
 
     model = libinfer.Model.load(str(args.relations))
@@ -148,6 +150,7 @@ def build_graph(args: argparse.Namespace, stem: Path,
         - 8 * len(graph.types),
         num_types=len(graph.types), num_docs=num_docs, digest=graph.digest,
         paths=paths,
+        climb_limit=args.climb_limit,
         model=libinfer.load_for_build(str(args.relations),
                                       report_io=False))
 
@@ -191,6 +194,13 @@ def main(argv: list[str] | None = None) -> None:
                         help="Phrasebook model over relation paths. With it "
                              "the card gains a .GRF and the binary answers "
                              "from the fact graph before it lists articles")
+    parser.add_argument("--climb-limit", type=int,
+                        default=libgraphcard.CLIMB_LIMIT,
+                        help="How many times a climb may step before giving "
+                             "up. Counts hops, not nodes, so a pedigree n "
+                             "generations deep needs n. Free in card bytes; "
+                             f"costs probes only where it is used (default "
+                             f"{libgraphcard.CLIMB_LIMIT})")
     args = parser.parse_args(argv)
 
     stem = Path(args.out)

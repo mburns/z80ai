@@ -98,6 +98,11 @@ class OracleSpec:
     paths: list[list[tuple[int, int]]]
     #: The phrasebook model, as buildez80.load_for_build returns it.
     model: BuildInputs | None = None
+    #: How many times a climb may step before giving up. A property of the
+    #: card and not of the format: it is an immediate in the walk routine, so
+    #: the choice costs nothing in bytes and shows up only as probes on the
+    #: climbs that use it.
+    climb_limit: int = libgraphcard.CLIMB_LIMIT
 
 
 MAX_INPUT_LEN = 120
@@ -1485,7 +1490,8 @@ def _emit_classifier(b: EZ80Builder, spec: OracleSpec) -> None:
     buildez80._emit_argmax(b)
     buildgraphwalk.emit_walk(
         b, spec.num_edges, spec.types_at, spec.num_types,
-        handle_label="GRFH", buffer_label="IOBUF", seekoff_label="SEEKOFF")
+        handle_label="GRFH", buffer_label="IOBUF", seekoff_label="SEEKOFF",
+        climb_limit=spec.climb_limit)
 
     # After every routine that uses JR: from here the code is too long for a
     # relative jump to reach across, which is why buildez80 orders it so too.

@@ -609,13 +609,76 @@ position now hashes differently.
      6        384,938   26,845       9,419    175      0/20  <- past the hop limit
 ```
 
-Generation 6 needs a seventh hop and `CLIMB_LIMIT` allows six. On the eZ80 that
-is not an error message: the walk returns nothing, the program falls back to
-listing articles, and the card bytes double because a fallback reads article
+Generation 6 needs a sixth hop and `CLIMB_LIMIT` of 6 allows five. On the eZ80
+that is not an error message: the walk returns nothing, the program falls back
+to listing articles, and the card bytes double because a fallback reads article
 text and a graph answer does not.
 
 That column read `2/20` until the entity lookup was fixed, and the two were not
 successes — they were two different people resolving to one document.
+
+### The limit counts values examined, not hops
+
+Everything above, and every comment in this repository, described `CLIMB_LIMIT`
+as a count of hops. It is not, and the difference is exactly one.
+
+Both walkers test the type at the **top** of the loop and give up when the count
+runs out, so the value the last hop reached is never tested at all:
+
+```python
+for _ in range(climb_limit):
+    if self.is_a(here, name):
+        break
+    here = hop(here)          # <- the value this lands on is only tested
+else:                         #    if there is another iteration left
+    return None
+```
+
+The eZ80 does the same thing — check, decrement, give up on zero, and only then
+hop — which is precisely why nothing caught it. Two implementations agreeing
+tells you they match, not that they are right, and this is the failure mode that
+argument has.
+
+So **a limit of n buys n − 1 hops.** Generation g is exactly g hops from its
+founder, measured over all 10,000 people, so a limit of 6 buys generations 1 to
+5 and generation 6 falls one short. Three separate files reached that correct
+conclusion through a backwards explanation, and `tests/test_silo.py` asserted
+`range(1, CLIMB_LIMIT)` and was right for a reason nobody had written down.
+
+### Which makes it worth choosing
+
+`buildwikisearch --climb-limit`, threaded through `buildcard.py`. The limit is
+an immediate in `GW_CLIMBTO` rather than an unrolled loop, so the two cards are
+the same size — **one byte differs between them, at offset 3291, and it is the
+number itself.** Both binaries are 39,865 bytes.
+
+Eight subjects a generation, on both cards:
+
+| gen | hops | limit 6 | instr | card bytes | limit 7 | instr | card bytes |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 8/8 | 368,649 | 4,633 | 8/8 | 368,649 | 4,633 |
+| 2 | 2 | 8/8 | 361,798 | 4,686 | 8/8 | 361,798 | 4,686 |
+| 3 | 3 | 8/8 | 368,153 | 5,053 | 8/8 | 368,153 | 5,053 |
+| 4 | 4 | 8/8 | 369,687 | 5,096 | 8/8 | 369,687 | 5,096 |
+| 5 | 5 | 8/8 | 355,772 | 5,097 | 8/8 | 355,772 | 5,097 |
+| 6 | 6 | **0/8** | 375,877 | 9,310 | **8/8** | 360,646 | 5,354 |
+
+Two things worth taking from it. **Generations 1 to 5 are byte-identical across
+the two cards** — same instructions, same card bytes — so a deeper limit costs
+nothing whatever on the climbs that do not reach it. The loop is bounded by the
+answer, not by the bound.
+
+And **answering generation 6 is cheaper than failing it**: 360,646 instructions
+against 375,877, and 5,354 card bytes against 9,310. Failing means falling back
+to listing articles, and reading article text costs more than a binary search
+does. The hop limit was never buying speed.
+
+What it buys is termination. A cycle in the data — two places each inside the
+other — has to stop somewhere, and that is the whole reason there is a number.
+Six was a containment depth for Wikipedia's `in_country`, where places are not
+nested six deep; it was never a pedigree depth, and this corpus is seven
+generations tall. It stays at 6 by default because that is Wikipedia's number
+and this card is the one that should ask for something else.
 
 ### Two stages that are not the graph
 
