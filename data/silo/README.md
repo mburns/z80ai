@@ -348,6 +348,36 @@ Near enough half the work for 0.2 points. **Card bytes do not move at all**,
 which is the cleanest confirmation that the classifier is arithmetic and not
 I/O — and therefore that shrinking it is free everywhere except accuracy.
 
+### Position bands lose, and now they lose with error bars
+
+`--position-bands` seeds each trigram's hash with where in the query it
+appeared, so word order stops being discarded ([ENCODING.md](../../ENCODING.md)).
+It looks like the obvious lever on the ~45% unseen-phrasing number, since
+`who is the father of X's father` and `who is X's father` differ by structure
+and share every word.
+
+| bands | trained | steady | unseen, three seeds |
+|---|---:|---:|---|
+| **flat** | 95.3% | **114/240** | **45.8%** — 45.4 / 46.6 / 45.5 |
+| 2 | 95.4% | 93/240 | 35.6% — 35.6 / 36.5 / 34.6 |
+| 4 | 93.8% | 81/240 | 29.5% — 26.4 / 33.5 / 28.7 |
+| 8 | 91.4% | 48/240 | 21.5% — 17.6 / 22.5 / 24.3 |
+
+Monotone, and the three-seed spreads do not overlap — this is well outside the
+noise that killed the masking result. `data/questions/relations.py` already
+reported bands losing on the Wikipedia class set and said why: no class there
+is another class reversed, so word order carries no signal while the banding tax
+on the buckets still applies. The silo's twenty paths have the same property,
+and behave the same way. That note asks for a multi-seed re-run before the
+figure is quoted, and this is it.
+
+Two things worth taking from the table beyond the verdict. **Trained accuracy
+barely moves at two bands — 95.4% against 95.3% — while unseen phrasings lose
+ten points**, which is a clean demonstration that the in-grammar number hides
+the damage. And **banding makes the classifier more name-sensitive, not less**:
+steadiness falls from 114/240 to 48/240, because the same name in a different
+position now hashes differently.
+
 ### The hop limit, on the actual machine
 
 ```
@@ -451,6 +481,17 @@ It also cannot be tested on Wikipedia's one-hop classes at all: SimpleQuestions
 records a subject as a Wikidata Q-id rather than as the words appearing in the
 question, so there is nothing to remove. This corpus could answer the question
 only because it knows who every question is about.
+
+**`data/questions/relations.py` had already rejected masking**, which was found
+after the fact and is the more interesting half. Its reason is stronger than
+"it did not help": there, masking *actively destroys* the question, because
+`what country is X in` is only a place question because X is a place, and with
+X removed `in_country` collapsed to 0%.
+
+That mechanism cannot fire here. Every subject in this corpus is a person, so
+the entity's type distinguishes nothing and masking is merely neutral rather
+than harmful. Two corpora, one repair, two different reasons to refuse it —
+and the general one is Wikipedia's, not this one's.
 
 ### A dense graph never says "I don't know"
 

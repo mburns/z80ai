@@ -163,6 +163,13 @@ MAX_EXAMPLES = 1200
 #: paired, but re-run against the real database before quoting.) The second
 #: hop is dropped because it is *quiet*, not because it is out of order.
 #:
+#: That re-run has since happened, on `data/silo/` - a corpus with real entity
+#: names, twenty paths and the same property of having no reversed class - and
+#: under the multi-seed protocol this note asks for. Bands lose monotonically:
+#: 45.8% flat, 35.6% at two bands, 29.5% at four, 21.5% at eight, with
+#: three-seed spreads that do not overlap. It also makes the classifier *more*
+#: sensitive to which entity is being asked about, not less.
+#:
 #: So chain questions work about as well as one coin flip. That is enough to be
 #: interesting on a machine like this and not enough to trust.
 #:
