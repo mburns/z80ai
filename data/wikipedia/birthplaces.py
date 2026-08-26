@@ -339,6 +339,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="Score against this many known people, not all of them")
     ap.add_argument("--write", action="store_true",
                     help="Also fill in the gaps, into `derived`")
+    ap.add_argument("--rebuild-graph", action="store_true",
+                    help="Rebuild `edge` with those rows admitted, so a card "
+                         "built afterwards carries them. This is the step that "
+                         "puts something read out of prose on the device")
     args = ap.parse_args(argv)
 
     db = ingest.connect(args.db)
@@ -355,6 +359,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {rate:.1f}% of the people with no birthplace, against "
               f"{score.resolved / score.asked * 100 if score.asked else 0:.1f}% "
               "of the people who had one")
+
+    if args.rebuild_graph:
+        edges, _dropped = libgraph.build(db, args.source, report=print,
+                                         derived=args.method)
+        db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)",
+                   (f"{args.source}.edges", str(edges)))
+        db.commit()
+        print(f"\n  `edge` rebuilt with {args.method!r} admitted: {edges:,} "
+              "edges. A card built now carries them; rebuild without this to\n"
+              "  go back to what the encyclopedia tabulated.")
     return 0
 
 

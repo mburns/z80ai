@@ -405,8 +405,22 @@ def country_codes(db: sqlite3.Connection, source: str,
 
 
 def build(db: sqlite3.Connection, source: str,
-          report: Callable[[str], None] = lambda _m: None) -> tuple[int, int]:
-    """Populate ``edge`` for one source from its facts. Returns (edges, dropped)."""
+          report: Callable[[str], None] = lambda _m: None,
+          derived: str | None = None) -> tuple[int, int]:
+    """Populate ``edge`` for one source from its facts. Returns (edges, dropped).
+
+    ``derived`` names a method in the `derived` table - "regex" - and admits
+    its rows as edges. **Off by default and deliberately so.** Everything else
+    here comes from something a Wikipedia author tabulated or filed; those come
+    from `birthplaces.py` reading a sentence, and a card built with them
+    asserts things no infobox states. The flag is what makes that a decision
+    somebody takes rather than one that happens.
+
+    They fill gaps only. `birthplaces.py` asks about people who have no
+    birthplace, so a derived row cannot contradict an infobox - but it is
+    written last and skips any subject already carrying the relation, so that
+    holds even if the table is stale.
+    """
     titles = {t for (t,) in db.execute(
         "SELECT title FROM article WHERE source = ?", (source,))}
     redirects = dict(db.execute(
@@ -545,11 +559,35 @@ def build(db: sqlite3.Connection, source: str,
                        [(source, kind, entity) for kind, entity in kinds])
         report(f"  {len(kinds):,} typed entities after containment")
 
-    # Both, because the caller writes this into `meta` as what the database
-    # holds. Returning only the infobox edges recorded 163,807 against a table
-    # of 167,868 - a provenance number that disagrees with the thing it is
-    # provenance for, which is worse than not having one.
-    return len(rows) + len(filed), dropped
+    # Last, and only when asked. Written after everything an author actually
+    # wrote down, and skipping any subject that already has the relation, so a
+    # sentence can fill a gap and can never overrule a table.
+    read = 0
+    if derived:
+        read = _from_derived(db, source, derived)
+        report(f"  {read:,} more read out of leads, method {derived!r}")
+
+    # All of them, because the caller writes this into `meta` as what the
+    # database holds. Returning only the infobox edges recorded 163,807 against
+    # a table of 167,868 - a provenance number that disagrees with the thing it
+    # is provenance for, which is worse than not having one.
+    return len(rows) + len(filed) + read, dropped
+
+
+def _from_derived(db: sqlite3.Connection, source: str, method: str) -> int:
+    """Admit one method's rows from `derived`, for subjects with no such edge."""
+    try:
+        rows = db.execute(
+            "SELECT subject, relation, object FROM derived "
+            "WHERE source = ? AND method = ?", (source, method)).fetchall()
+    except sqlite3.OperationalError:
+        return 0               # a database written before schema 8 has none
+
+    held = {(s, r) for s, r in db.execute(
+        "SELECT subject, relation FROM edge WHERE source = ?", (source,))}
+    fresh = [(source, s, r, o) for s, r, o in rows if (s, r) not in held]
+    db.executemany("INSERT OR REPLACE INTO edge VALUES (?, ?, ?, ?)", fresh)
+    return len(fresh)
 
 
 #: The infobox field whose values name a type, per type. `country = France` is

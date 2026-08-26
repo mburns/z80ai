@@ -278,6 +278,65 @@ def test_the_types_are_settled_again_once_the_categories_are_in(db):
                            ["born_in", "in_country"]).value == "United States"
 
 
+# --- what was read out of prose, and only when asked --------------------------
+
+
+def with_derived(db, method="regex"):
+    """A graph over two people, one of whom has a birthplace only in `derived`."""
+    db.executemany("INSERT INTO article (source, title, lead) "
+                   "VALUES ('w', ?, '')",
+                   [(a,) for a in ("Paris", "Lyon", "France", "Alice", "Bob")])
+    db.executemany(
+        "INSERT OR REPLACE INTO fact (source, subject, property, ordinal, "
+        "value, kind, num) VALUES ('w', ?, ?, 0, ?, 'text', NULL)",
+        [("Paris", "country", "France"), ("Lyon", "country", "France"),
+         ("Alice", "birth_place", "Paris")])
+    db.execute("INSERT OR REPLACE INTO derived VALUES "
+               "('w', 'Bob', 'born_in', 'Lyon', ?)", (method,))
+    # And a row that contradicts what Alice's infobox already says.
+    db.execute("INSERT OR REPLACE INTO derived VALUES "
+               "('w', 'Alice', 'born_in', 'Lyon', ?)", (method,))
+
+
+def test_nothing_read_out_of_prose_is_admitted_by_default(db):
+    """The card asserts what an author tabulated or filed. A sentence somebody
+    wrote is a different kind of claim, and admitting it is a decision rather
+    than a default."""
+    with_derived(db)
+    libgraph.build(db, "w")
+    assert libgraph.follow(db, "w", "Bob", ["born_in"]).value is None
+
+
+def test_asking_for_a_method_admits_that_method(db):
+    with_derived(db)
+    libgraph.build(db, "w", derived="regex")
+    assert libgraph.follow(db, "w", "Bob", ["born_in"]).value == "Lyon"
+
+
+def test_a_sentence_never_overrules_a_table(db):
+    """Alice's infobox says Paris and the derived row says Lyon. `birthplaces`
+    only asks about people with no birthplace, so this should not arise - but
+    a stale table would make it arise, and the order is what makes it safe."""
+    with_derived(db)
+    libgraph.build(db, "w", derived="regex")
+    assert libgraph.follow(db, "w", "Alice", ["born_in"]).value == "Paris"
+
+
+def test_another_method_s_rows_are_left_where_they_are(db):
+    with_derived(db, method="some-model")
+    libgraph.build(db, "w", derived="regex")
+    assert libgraph.follow(db, "w", "Bob", ["born_in"]).value is None
+
+
+def test_the_edge_count_includes_what_was_admitted(db):
+    """`build` returns what the caller writes into `meta` as the graph's size,
+    and a provenance number that disagrees with the table is worse than none."""
+    with_derived(db)
+    reported, _dropped = libgraph.build(db, "w", derived="regex")
+    held = db.execute("SELECT COUNT(*) FROM edge WHERE source = 'w'").fetchone()[0]
+    assert reported == held
+
+
 def test_a_value_resolves_through_a_redirect(db):
     load(db, ["Alan Turing", "United Kingdom"],
          [("Alan Turing", "birth_place", "Britain")],
