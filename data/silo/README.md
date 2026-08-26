@@ -21,7 +21,7 @@ explains why it is a separate database file.
 
 If you only read one section, read [where a question's time actually
 goes](#where-a-questions-time-actually-goes): on the real card the graph walk
-is 3.7% of a query and the classifier is 54% — and that is *after* halving the
+is 1.0% of a query and the classifier is 56% — and that is *after* halving the
 classifier, which halved the query with it.
 
 ## Why bother inventing a corpus
@@ -233,7 +233,7 @@ python data/silo/benchcard.py        # runs it in the emulator, ~2 min
 | | |
 |---|---:|
 | `SILO.bin` | 38.9 KB — program, path table and classifier |
-| `SILO.IDX` | 4.9 MB — 1,525 terms, 323,732 postings |
+| `SILO.IDX` | 5.0 MB — 6,019 terms, 333,278 postings |
 | `SILO.DAT` | 1.2 MB — titles and leads, byte-pair packed |
 | `SILO.GRF` | 1.6 MB — 105,404 edges over 16 relations |
 | accumulator | 13 KB resident, one byte per article |
@@ -248,11 +248,11 @@ without `--relations` — one that searches and neither classifies nor walks:
 
 | | share of a query |
 |---|---:|
-| the classifier — one forward pass, 30,592 two-bit weights | **54.0%** |
-| the search — BM25 over 13,072 articles | 46.0% |
-| the graph walk — four hops | 3.7% |
+| the classifier — one forward pass, 30,592 two-bit weights | **55.8%** |
+| the search — BM25 over 13,072 articles | 44.2% |
+| the graph walk — four hops | 1.0% |
 
-**The graph is the cheap part, by a factor of fifteen.** What the card pays for
+**The graph is the cheap part, by a factor of fifty.** What the card pays for
 is deciding which question it was asked, not answering it. That is the opposite
 of where the effort has gone in this repository, and it is the useful thing to
 know before optimising anything.
@@ -267,6 +267,48 @@ recovers. In instructions a hop is around 3,600 — a slope over five hop counts
 and smaller than the spread of any single query, so it is quoted as *under 2% of
 a question* rather than as a constant. Quoting such a number to four digits is
 the mistake this repository already made once.
+
+### And the search half is already doing the right thing
+
+With the classifier halved, search became the co-equal cost, so the obvious next
+move was to stop feeding it the question. An oracle query is mostly frame —
+"who is … father" — which the entity lookup does not need. Measured on the
+search-only card:
+
+| query | instructions | finds |
+|---|---:|---|
+| `who is alexander e wong's father` | 175,838 | Alexander E. Wong |
+| `alexander e wong` | 173,966 | Alexander E. Wong |
+| `father` | 3,826 | *nothing* |
+
+**The frame costs 1.1% and the idea is dead.** `libsearch.STOPWORDS` already
+drops `who`, `is`, `what` and thirty more, and the words left over — `father`,
+`descended` — are not in this corpus's dictionary at all, so they are refused at
+the index for 1,975 bytes exactly the way `the` is on the Wikipedia card.
+
+What the measurement did show is that the tiering works as designed. Cost tracks
+how many of the 52 pages a term touches, not how many terms there are:
+
+| | documents | instructions |
+|---|---:|---:|
+| `davies` | 3 | 33,103 |
+| `wong` | ~80 | 164,761 |
+| `zzqqxx` | 0 | 3,826 |
+| `alexander wong` | two terms | 173,706 |
+
+A second term adds 10k to a 164k query. **What sets the price is how widely one
+term's postings scatter** — the same conclusion `data/wikipedia/README.md`
+reaches, reproduced on a corpus a twentieth of the size.
+
+(Those two tables were measured before initials were joined, which changed the
+absolute numbers and none of the ratios.)
+
+Which leaves one lever, and it is a corpus decision rather than a card one:
+every lead here names the subject's parents and spouse, so a surname held by 21
+people appears in about 80 documents and flags nearly every page. Shortening the
+leads would make lookups both cheaper and more accurate, and would cost the
+property that makes this corpus useful for the comprehension argument — that
+every fact in the graph is also there in the prose, for a reader. Not taken.
 
 ### The classifier was two and a half times larger than it needed to be
 
@@ -299,41 +341,91 @@ across it would have measured that instead:
 | card bytes | 4,961 | 4,961 |
 | routes correctly, trained phrasings | 95.8% | 95.6% |
 
+Both arms were measured before initials were joined, which is why neither
+matches the 366,655 the card costs now. The comparison is between them.
+
 Near enough half the work for 0.2 points. **Card bytes do not move at all**,
 which is the cleanest confirmation that the classifier is arithmetic and not
 I/O — and therefore that shrinking it is free everywhere except accuracy.
+
+### Position bands lose, and now they lose with error bars
+
+`--position-bands` seeds each trigram's hash with where in the query it
+appeared, so word order stops being discarded ([ENCODING.md](../../ENCODING.md)).
+It looks like the obvious lever on the ~45% unseen-phrasing number, since
+`who is the father of X's father` and `who is X's father` differ by structure
+and share every word.
+
+| bands | trained | steady | unseen, three seeds |
+|---|---:|---:|---|
+| **flat** | 95.3% | **114/240** | **45.8%** — 45.4 / 46.6 / 45.5 |
+| 2 | 95.4% | 93/240 | 35.6% — 35.6 / 36.5 / 34.6 |
+| 4 | 93.8% | 81/240 | 29.5% — 26.4 / 33.5 / 28.7 |
+| 8 | 91.4% | 48/240 | 21.5% — 17.6 / 22.5 / 24.3 |
+
+Monotone, and the three-seed spreads do not overlap — this is well outside the
+noise that killed the masking result. `data/questions/relations.py` already
+reported bands losing on the Wikipedia class set and said why: no class there
+is another class reversed, so word order carries no signal while the banding tax
+on the buckets still applies. The silo's twenty paths have the same property,
+and behave the same way. That note asks for a multi-seed re-run before the
+figure is quoted, and this is it.
+
+Two things worth taking from the table beyond the verdict. **Trained accuracy
+barely moves at two bands — 95.4% against 95.3% — while unseen phrasings lose
+ten points**, which is a clean demonstration that the in-grammar number hides
+the damage. And **banding makes the classifier more name-sensitive, not less**:
+steadiness falls from 114/240 to 48/240, because the same name in a different
+position now hashes differently.
 
 ### The hop limit, on the actual machine
 
 ```
   hops   instructions      +/-  card bytes    +/-  answered
-     1        383,117   17,591       4,961    430     20/20
-     2        384,939   22,094       5,359  1,316     19/20
-     3        389,216   15,618       5,356    280     20/20
-     4        399,280   11,192       5,810    978     19/20
-     5        393,922   10,172       5,624    251     20/20
-     6        414,843   18,699       9,485  1,289      2/20  <- past the hop limit
+     1        366,655   19,950       4,701    161     20/20
+     2        366,092   25,275       4,840    166     20/20
+     3        371,171   27,931       5,095    271     20/20
+     4        373,118   26,852       5,219    177     20/20
+     5        367,864   20,850       5,266    168     20/20
+     6        384,938   26,845       9,419    175      0/20  <- past the hop limit
 ```
 
 Generation 6 needs a seventh hop and `CLIMB_LIMIT` allows six. On the eZ80 that
 is not an error message: the walk returns nothing, the program falls back to
 listing articles, and the card bytes double because a fallback reads article
-text and a graph answer does not. The two that answered are the collisions
-below.
+text and a graph answer does not.
+
+That column read `2/20` until the entity lookup was fixed, and the two were not
+successes — they were two different people resolving to one document.
 
 ### Two stages that are not the graph
 
-**Entity lookup: 88.6% first, 98.0% in the top three** over 500 people. Only
-*first* is usable — the walk follows the top hit and nothing else. Wikipedia's
-equivalent probe scores 85% first, so this is comparable, and it is harder than
-it looks: Faker draws from a few hundred first names and a few hundred
-surnames, so **1,292 of the 10,000 share a first and last name with somebody
-else** and differ only by a middle initial — one search term, one letter.
+**Entity lookup: 100% first**, over 500 people, up from 88.6%. Only *first* is
+usable — the walk follows the top hit and nothing else.
 
-That is exactly how the two generation-6 "answers" happened. `Amanda M. Wilson`
-and `Amanda X. Wilson` both resolved to the same document and both answered
-`Kyle I. Wilson.` at byte-identical cost. The graph was right; it was right
-about the wrong person, and nothing on the screen says so.
+It was 88.6% because **2,264 of the 10,000 share a first and last name** with
+somebody and differ only by a middle initial. That was not a weak signal, it
+was *no* signal: `libsearch.tokenize` dropped single characters at both ends,
+so `Amanda M. Wilson` and `Amanda X. Wilson` were not similar queries, they
+were **the same query**, and the tie-break decided who you meant. 95% of every
+lookup miss was that.
+
+The fix is to glue an initial to the name after it — `mwilson` — which makes a
+rare, highly specific term out of exactly the character that tells them apart.
+Indexing the 26 letters on their own would do the opposite: each would land on
+hundreds of scattered documents and flag every page. Titles and aliases only,
+because that is where a name is an identity rather than a mention.
+
+It cost 2.9% more postings, changed nothing on Wikipedia's twenty probes, and
+made queries *cheaper* — `alexander e wong` went from 173,966 instructions to
+154,276, because `ewong` is rarer than `wong`.
+
+And it deleted the two generation-6 "answers" in the table above, which is the
+part worth pausing on. `Amanda M. Wilson` and `Amanda X. Wilson` had both
+resolved to the same document and both answered `Kyle I. Wilson.` at
+byte-identical cost — the graph right about the wrong person, with nothing on
+the screen to say so. With the initials joined, generation 6 fails **0/20**:
+the machine now reports its hop limit honestly for every one of them.
 
 **The classifier is where the accuracy goes.** Three numbers, and the first one
 means nothing:
@@ -389,6 +481,17 @@ It also cannot be tested on Wikipedia's one-hop classes at all: SimpleQuestions
 records a subject as a Wikidata Q-id rather than as the words appearing in the
 question, so there is nothing to remove. This corpus could answer the question
 only because it knows who every question is about.
+
+**`data/questions/relations.py` had already rejected masking**, which was found
+after the fact and is the more interesting half. Its reason is stronger than
+"it did not help": there, masking *actively destroys* the question, because
+`what country is X in` is only a place question because X is a place, and with
+X removed `in_country` collapsed to 0%.
+
+That mechanism cannot fire here. Every subject in this corpus is a person, so
+the entity's type distinguishes nothing and masking is merely neutral rather
+than harmful. Two corpora, one repair, two different reasons to refuse it —
+and the general one is Wikipedia's, not this one's.
 
 ### A dense graph never says "I don't know"
 

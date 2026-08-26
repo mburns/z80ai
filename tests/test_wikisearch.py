@@ -32,6 +32,13 @@ CORPUS = [
      "Mount Everest is the highest mountain above sea level on Earth."),
     ("Telephone",
      "A telephone is a machine that carries speech over wires."),
+    # Two people who differ by one character. Without joined initials these
+    # are not similar queries, they are the *same* query - a single-character
+    # token is dropped at both ends - and no ranking can separate them.
+    ("Amanda M. Wilson",
+     "Amanda M. Wilson is a cook who works the first shift."),
+    ("Amanda X. Wilson",
+     "Amanda X. Wilson is a welder who works the third shift."),
 ]
 
 ALIASES = {0: ["Graham Bell"], 3: ["Z80", "Zilog Z-80"]}
@@ -278,6 +285,54 @@ def test_the_binary_prints_the_lead_not_just_the_title(card):
 def test_a_query_matching_nothing_says_so(card):
     printed = run_query(card, "aardvark")
     assert "Nothing on the card matches" in printed
+
+
+# --- initials -----------------------------------------------------------------
+
+
+def test_an_initial_is_glued_to_the_name_after_it():
+    assert libsearch.tokenize("Amanda M. Wilson", join_initials=True) == [
+        "amanda", "mwilson"]
+    assert libsearch.tokenize("Amanda M. Wilson") == ["amanda", "wilson"]
+
+
+def test_a_single_character_stopword_is_left_alone():
+    """Gluing `a` eats the word after it, which cost a probe that had always
+    passed: `what is a black hole` became `ablack hole`."""
+    assert libsearch.tokenize("what is a black hole", join_initials=True) == [
+        "black", "hole"]
+
+
+def test_only_two_stopwords_are_a_single_character():
+    """`NEXT_TOKEN` on the eZ80 tests for exactly `a` and `i` rather than
+    carrying the whole list. A third would make the machine disagree with
+    `libsearch.tokenize` in silence, which is why this is pinned here."""
+    assert {w for w in libsearch.STOPWORDS if len(w) == 1} == {"a", "i"}
+
+
+def test_the_device_tells_apart_two_names_that_differ_by_an_initial(card):
+    """The whole point, end to end: the reference separates them and so does
+    the binary. Before the initials were joined both queries scored the two
+    documents identically and the tie-break decided who you meant."""
+    for query, expected in (("amanda m wilson", "Amanda M. Wilson"),
+                            ("amanda x wilson", "Amanda X. Wilson")):
+        assert expected in run_query(card, query)
+
+
+def test_an_initial_at_the_end_of_a_query_terminates(card):
+    """The glue is a one-shot. Without `NTGLUED` a query ending in a lone
+    initial comes back from `NT_SKIP` with the token still one character long
+    and goes round again forever - the emulator would burn its cycle budget
+    rather than fail an assertion, so what this really pins is that the run
+    finishes at all.
+
+    The trailing initial glues to nothing and is dropped, which leaves
+    `wilson`, which both of them have in their leads.
+    """
+    printed = run_query(card, "wilson q")
+    assert "Amanda M. Wilson" in printed
+    assert "Amanda X. Wilson" in printed
+    assert libsearch.tokenize("wilson q", join_initials=True) == ["wilson"]
 
 
 def test_scores_agree_between_the_device_and_the_reference(card, reference):

@@ -3,7 +3,7 @@
 Build the Agon card for the silo, classifier and all.
 
     python data/silo/buildcard.py                    # dist/SILO.{bin,IDX,DAT,GRF}
-    python data/silo/buildcard.py --skip-train       # reuse dist/silo-relations.npz
+    python data/silo/buildcard.py --skip-train       # reuse the model already built
 
 Four steps, and the only reason this exists rather than a line in a README is
 the first one: `buildwikigraph.paths_for` reads `libgraph.CLIMB` to turn a
@@ -203,8 +203,12 @@ def main() -> None:
         raise SystemExit(f"no database at {args.db}\n"
                          f"  python data/silo/generate.py")
     args.out.mkdir(parents=True, exist_ok=True)
-    model = args.out / "silo-relations.npz"
-    probe = args.out / "silo-relations-heldout.npz"
+    # Named after the stem, because they are part of that card. They were not,
+    # and building a second card with `--stem SILOBIG` to compare classifier
+    # sizes overwrote the first card's model - so a later `--skip-train` built
+    # SILO with the wrong classifier and reported it as 94.4 KB without a word.
+    model = args.out / f"{args.stem.lower()}-relations.npz"
+    probe = args.out / f"{args.stem.lower()}-relations-heldout.npz"
 
     full, reduced, unseen = write_questions(args.db, args.out, args.held_out)
     if not args.skip_train:

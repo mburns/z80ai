@@ -106,10 +106,60 @@ STOPWORDS = frozenset([
 ])
 
 
-def tokenize(text: str) -> list[str]:
-    """Words worth indexing, lowercased. Single characters carry nothing."""
-    return [w for w in WORD.findall(text.lower())
-            if len(w) > 1 and w not in STOPWORDS]
+def tokenize(text: str, join_initials: bool = False) -> list[str]:
+    """Words worth indexing, lowercased. Single characters carry nothing.
+
+    Except in a name, where a single character carries everything. `Amanda M.
+    Wilson` and `Amanda X. Wilson` tokenize identically without
+    ``join_initials`` - not to *similar* queries, to the **same** one - so no
+    amount of weighting or ranking can separate them, and the oracle answers
+    confidently about whichever the tie-break preferred.
+
+    Glueing the initial to the word after it makes `mwilson`: a term rare
+    enough to cost what a rare term costs, and specific enough to decide the
+    tie. Indexing the 26 letters on their own would do the opposite - each
+    would land on hundreds of scattered documents and flag every page.
+
+    Only titles and aliases are tokenized this way, because that is where a
+    name is an identity rather than a mention. Prose is full of single letters
+    doing ordinary work, and joining those produces `atall` and `amountain` for
+    nothing.
+
+    The glued word is **consumed**, so `amanda m wilson` gives `amanda mwilson`
+    and not `amanda mwilson wilson`. That is not a preference: `NEXT_TOKEN` on
+    the eZ80 returns one token per call, and keeping the plain word as well
+    would mean returning two, which is a change to every caller. The corpus
+    loses nothing by it - a lookup with no initial still matches the person's
+    lead, which is indexed the ordinary way.
+
+    Consuming is why a single character that is a *stopword* is left alone.
+    `a` and `i` are words rather than initials, and gluing them eats the word
+    after: `what is a black hole` became `ablack hole`, which lost `black` and
+    cost a probe that had passed for as long as there have been probes.
+
+    The exemption should cost the people whose middle initial is A or I, and
+    measurably does not - the silo's lookup is 100.0% either way, because
+    consuming also stops the *wrong* Wilsons collecting `wilson` from their
+    titles. `tests/test_wikisearch.py` pins the two single-character stopwords,
+    because the eZ80 tokenizer tests for exactly those two and a third would
+    make the machine disagree with this function in silence.
+    """
+    words = WORD.findall(text.lower())
+    out: list[str] = []
+    skip = False
+    for i, word in enumerate(words):
+        if skip:
+            skip = False
+            continue
+        if len(word) == 1:
+            if (join_initials and word not in STOPWORDS
+                    and i + 1 < len(words) and len(words[i + 1]) > 1):
+                out.append(word + words[i + 1])
+                skip = True
+            continue
+        if word not in STOPWORDS:
+            out.append(word)
+    return out
 
 
 def term_hash(term: str) -> int:
@@ -161,17 +211,17 @@ def build(titles: list[str], leads: list[str],
     raw: dict[str, dict[int, int]] = {}
     length = [0] * len(titles)
 
-    def add(doc: int, text: str, weight: int) -> None:
-        for term in tokenize(text):
+    def add(doc: int, text: str, weight: int, initials: bool = False) -> None:
+        for term in tokenize(text, join_initials=initials):
             bucket = raw.setdefault(term, {})
             bucket[doc] = bucket.get(doc, 0) + weight
             length[doc] += weight
 
     for doc, (title, lead) in enumerate(zip(titles, leads, strict=True)):
-        add(doc, title.replace("_", " "), TITLE_WEIGHT)
+        add(doc, title.replace("_", " "), TITLE_WEIGHT, initials=True)
         add(doc, lead, 1)
         for alias in aliases.get(doc, ()):
-            add(doc, alias.replace("_", " "), TITLE_WEIGHT)
+            add(doc, alias.replace("_", " "), TITLE_WEIGHT, initials=True)
         if doc % 50_000 == 0 and doc:
             report(f"  indexed {doc:,} documents")
 
@@ -598,7 +648,10 @@ class CardSearch:
     def search(self, query: str, top: int = 3) -> list[tuple[int, int]]:
         """(document, score) for the best matches, largest first."""
         accumulator = bytearray(self.num_docs)
-        for term in tokenize(query)[:self.max_terms]:
+        # The query is tokenized the way titles were, or `amanda m wilson`
+        # never asks for the term that tells the Wilsons apart. A joined term
+        # that matches nothing costs a refused dictionary probe.
+        for term in tokenize(query, join_initials=True)[:self.max_terms]:
             for posting in self._postings(term):
                 total = accumulator[posting.doc] + posting.weight
                 accumulator[posting.doc] = min(255, total)   # saturating
