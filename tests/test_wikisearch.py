@@ -609,8 +609,9 @@ def test_the_classifier_is_paid_for_in_articles():
     """An oracle card carries its model in the image, and every byte of it is
     an article the accumulator cannot have. The silo's two classifier widths
     were 94.4KB and 38.9KB, which is 55,000 articles between them."""
-    plain = buildwikibin.max_docs(4_707)
-    with_model = buildwikibin.max_docs(4_707 + 55_000)
+    search = buildwikibin.fixed_bytes(1, len(buildwikibin.build(1).code))
+    plain = buildwikibin.max_docs(search)
+    with_model = buildwikibin.max_docs(search + 55_000)
     assert plain - with_model == pytest.approx(55_000, abs=256)
 
 

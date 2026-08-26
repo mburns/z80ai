@@ -310,6 +310,74 @@ leads would make lookups both cheaper and more accurate, and would cost the
 property that makes this corpus useful for the comprehension argument — that
 every fact in the graph is also there in the prose, for a reader. Not taken.
 
+### The same corpus at four sizes, and what actually gets dearer
+
+Everything above was measured on one corpus, where "cost tracks how widely a
+term scatters" and "cost tracks how big the corpus is" cannot be told apart —
+every term that is rare in a silo of ten thousand is rare in a silo of that one
+size. `sweep.py` builds the same corpus at four sizes to separate them.
+
+```
+python data/silo/sweep.py            # search-only cards, no classifier, ~7 min
+```
+
+| people | articles | IDX MB | DAT MB | acc KB | of the card | absent | rare, 3 docs | common | docs |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5,000 | 6,754 | 4.6 | 0.6 | 6.6 | 1.3% | 2,902 | 33,955 ±857 | 578,007 | 6,692 |
+| 10,000 | 13,072 | 5.0 | 1.2 | 12.8 | 2.6% | 3,834 | 35,510 ±1,239 | 1,116,258 | 13,010 |
+| 20,000 | 25,796 | 5.7 | 2.3 | 25.2 | 5.1% | 5,647 | 37,843 ±1,359 | 2,199,945 | 25,734 |
+| 37,000 | 47,141 | 6.9 | 4.4 | 46.0 | 9.4% | 8,755 | 40,813 ±1,207 | 4,018,058 | 47,079 |
+
+Three columns, and the middle one is the experiment: `absent` is a word no
+corpus holds, `rare` is the mean of five words holding at exactly three
+documents, and `common` is the widest-scattering term there is. Holding the
+posting count fixed at three while the corpus grows sevenfold is the only way
+to ask whether an article nobody searched for costs anything.
+
+**It does, and the amount is exact.** Subtracting the floor from each row:
+
+| | |
+|---|---|
+| a query that finds nothing | **1,910 + 37 per page**, to the instruction at all four sizes |
+| three documents, above that floor | 31,053 / 31,676 / 32,196 / 32,058 — flat |
+| the widest term, per document | 85.9 / 85.5 / 85.3 / 85.2 |
+
+So the cost of a question is `1,910 + 37 × pages + 85 × documents touched`, and
+only the middle term knows how large the corpus is. **The conclusion the
+one-corpus tables reached survives — what sets the price is how widely a term's
+postings scatter — but it is not the whole sentence.** There is a floor that
+grows with the corpus whatever is asked, because both passes still walk the
+page table to find out which pages to skip. Skipping a page is cheap. Deciding
+to skip it is 37 instructions, and there is one of those per 256 articles
+however empty they are.
+
+At the card's 502,016-article limit that floor is about **74,000 instructions a
+query** — 1,961 pages of tiering overhead before a single posting is read. Set
+against the 7.6 M the Wikipedia card's worst query costs it is nothing, and it
+is the reason the tiering exists at all. It is still the one cost in this
+design that a bigger corpus cannot avoid.
+
+`IDX` barely moves: 4.6 MB at 6,754 articles and 6.9 MB at 47,141, because
+`libsearch.NUM_BUCKETS` is 1 << 20 and the empty bucket table is 4 MB before a
+single posting is written. At this scale the index is mostly the table.
+
+### The corpus cannot reach the card, by a factor of ten
+
+The sweep stops at 37,000 people because `generate.py` will not go further. Two
+walls, and the near one is the calendar: the seventh cohort is born in year 220
+and `NOW` is 220, so `populate` refuses at **37,559** rather than housing people
+who have not been born yet. Behind it is the geometry, at roughly 57,500 —
+`LEVELS` is 144, a floor holds `BEARINGS × RINGS` = 72 dwellings, and 10,368
+homes is all there are.
+
+A search card scores **502,016 articles** ([#62](../../issues/62)). 37,558
+people is about 47,000 articles, which is 9.4% of it. So the sizing question
+this corpus was built to answer has an answer it cannot demonstrate: the card
+is not what stops this corpus, and nothing here reaches the point where it
+would be. `tests/test_silo.py` pins the inequality rather than the two numbers,
+which move with the seed — what must not change quietly is which side of the
+card they fall on.
+
 ### The classifier was two and a half times larger than it needed to be
 
 `classify.py` defaults to 256,192 hidden units. Nothing had ever asked whether a
@@ -598,6 +666,9 @@ The card is six files in this directory, in the order they run:
 | `relationpaths.py` | templated questions, labelled with the path they mean |
 | `buildcard.py` | classifier and card — the one place that knows the order |
 | `benchcard.py` | the emulator, and what a hop costs |
+
+`sweep.py` is beside them but not part of a build: it makes its own corpora, at
+several sizes, to measure what changes between them.
 
 `tests/test_silo.py` builds a 600-person corpus and checks that it is coherent
 (nobody is their own ancestor, no parent died before their child was born,
