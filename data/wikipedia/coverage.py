@@ -74,6 +74,7 @@ import random
 import sqlite3
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -136,7 +137,8 @@ def head_subjects(db: sqlite3.Connection, source: str,
 
 def score_path(db: sqlite3.Connection, source: str, steps: list[str],
                subjects: list[str],
-               persons: set[str] | None = None) -> dict[str, Any]:
+               persons: set[str] | None = None,
+               describe: Callable[[str], str] | None = None) -> dict[str, Any]:
     """Walk ``steps`` from every subject and tally where the walks stopped.
 
     `stopped_at` is the point of the whole file: a path that fails is failing
@@ -152,8 +154,10 @@ def score_path(db: sqlite3.Connection, source: str, steps: list[str],
     because a path made almost entirely of them is worth knowing about too.
     """
     persons = persons if persons is not None else set()
+    describe = describe or describer(db, source, persons)
     complete = moot = 0
     stopped_at: dict[str, int] = {}
+    stopped_on: dict[str, int] = {}
     for subject in subjects:
         answer = libgraph.follow(db, source, subject, steps)
         if answer.complete:
@@ -164,6 +168,8 @@ def score_path(db: sqlite3.Connection, source: str, steps: list[str],
         else:
             key = answer.missing or "?"
             stopped_at[key] = stopped_at.get(key, 0) + 1
+            kind = describe(answer.at or "")
+            stopped_on[kind] = stopped_on.get(kind, 0) + 1
     askable = len(subjects) - moot
     return {
         "startable": len(subjects),
@@ -173,7 +179,47 @@ def score_path(db: sqlite3.Connection, source: str, steps: list[str],
         "rate": complete / askable if askable else 0.0,
         "stopped_at": dict(sorted(stopped_at.items(),
                                   key=lambda kv: -kv[1])),
+        "stopped_on": dict(sorted(stopped_on.items(),
+                                  key=lambda kv: -kv[1])),
     }
+
+
+def describer(db: sqlite3.Connection, source: str,
+              persons: set[str]) -> Callable[[str], str]:
+    """What kind of thing a walk stopped on, as far as the graph can tell.
+
+    `stopped_at` says which hop had no edge; this says what it had no edge
+    *from*, which is the difference between coverage that is missing and
+    coverage that could never exist. `created_by born_in` needed exactly this
+    distinction and the answer was found by hand; making it standing is what
+    stops the next chain needing the same afternoon.
+
+    Built once and passed in, because the sets are three scans of `edge` and
+    there are fifteen paths. Doing it per *walk* rather than per path is three
+    queries times twenty thousand walks, which turned a nine-second report into
+    minutes - which is how this ended up a closure rather than a function.
+    """
+    placed = {s for (s,) in db.execute(
+        "SELECT DISTINCT subject FROM edge WHERE source = ? "
+        "AND relation = 'located_in'", (source,))}
+    contains = {o for (o,) in db.execute(
+        "SELECT DISTINCT object FROM edge WHERE source = ? AND relation IN "
+        "('located_in', 'born_in', 'died_in', 'capital_is')", (source,))}
+    titles = {t for (t,) in db.execute(
+        "SELECT title FROM article WHERE source = ?", (source,))}
+
+    def describe(entity: str) -> str:
+        if entity in persons:
+            return "a person"
+        if entity in placed:
+            return "a place that records where it is"
+        if entity in contains:
+            return "a place nothing places"
+        if entity in titles:
+            return "an article with no place edges"
+        return "not an article at all"
+
+    return describe
 
 
 def climb_distances(db: sqlite3.Connection, source: str, climb: str,
@@ -358,12 +404,13 @@ def measure(db: sqlite3.Connection, source: str,
 
     persons = libgraph.people(db, source)
     result["reach"]["people"] = len(persons)
+    describe = describer(db, source, persons)
 
     for label, steps in paths_to_score():
         subjects = head_subjects(db, source, steps[0])
         if sample and len(subjects) > sample:
             subjects = sorted(rng.sample(subjects, sample))
-        scored = score_path(db, source, steps, subjects, persons)
+        scored = score_path(db, source, steps, subjects, persons, describe)
         scored["of_corpus"] = (scored["startable"] / result["reach"]["articles"]
                                if result["reach"]["articles"] else 0.0)
         result["paths"][label] = scored
@@ -458,6 +505,18 @@ def report(now: dict[str, Any], was: dict[str, Any] | None = None) -> None:
         if p["stopped_at"] and p["rate"] < 1.0:
             worst = ", ".join(f"{k} ({v:,})"
                               for k, v in list(p["stopped_at"].items())[:3])
+            print(f"    {label:<24}{worst}")
+
+    # And what it stopped *on*, which is the difference between coverage that
+    # is missing and coverage that could never exist. `created_by born_in`
+    # needed this distinction and it was worked out by hand; here it is
+    # standing, so the next chain does not need the same afternoon.
+    print("\n  and on what")
+    for label, p in now["paths"].items():
+        if p.get("stopped_on") and p["rate"] < 1.0:
+            total = sum(p["stopped_on"].values()) or 1
+            worst = "  ".join(f"{k} {v / total * 100:.0f}%"
+                              for k, v in list(p["stopped_on"].items())[:3])
             print(f"    {label:<24}{worst}")
 
     for climb, hist in now["climb"].items():
