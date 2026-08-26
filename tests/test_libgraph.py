@@ -218,6 +218,66 @@ def test_a_country_is_preferred_to_a_continent(db):
     assert located(db, "Aarhus") == "Denmark"
 
 
+@pytest.mark.parametrize("claims,within,dropped", [
+    # A continent scraping the floor against the countries inside it. Asia is
+    # called a country by exactly three infoboxes, which is TYPE_FLOOR.
+    ({"Asia": 3, "Japan": 257}, {"Japan": "Asia"}, {"Asia"}),
+    # A state inside the country that contains it.
+    ({"United States": 4155, "California": 16},
+     {"California": "United States"}, {"California"}),
+    ({"Canada": 283, "Ontario": 3}, {"Ontario": "Canada"}, {"Ontario"}),
+    # Inside something that is not claimed at all is no contradiction: France
+    # records that it is in Europe and is still a country.
+    ({"France": 900}, {"France": "Europe"}, set()),
+    # A tie keeps the container, which is what the rule did before.
+    ({"A": 5, "B": 5}, {"A": "B"}, {"A"}),
+])
+def test_which_of_two_claimed_countries_stops_being_one(claims, within, dropped):
+    assert libgraph.demote(claims, within) == dropped
+
+
+def test_a_continent_does_not_take_its_countries_down_with_it(db):
+    """The trap in the obvious rule. Dropping the *contained* one always is
+    what the code did, and three infoboxes saying `country = Asia` is enough to
+    make Japan, China, Iran and forty more "inside another country"."""
+    load(db, ["Asia", "Japan", "Tokyo", "Kyoto", "Osaka", "Kobe", "Nara",
+              "Person"],
+         [("Tokyo", "country", "Japan"),
+          ("Kyoto", "country", "Japan"),
+          ("Osaka", "country", "Japan"),
+          ("Kobe", "country", "Japan"),       # four votes: Japan is a country
+          ("Nara", "country", "Asia"),
+          ("Person", "country", "Asia"),
+          ("Japan", "country", "Asia")])      # three: so is Asia, barely
+
+    assert libgraph.is_a(db, "w", "Japan", "country")
+    assert not libgraph.is_a(db, "w", "Asia", "country")
+
+
+def test_the_types_are_settled_again_once_the_categories_are_in(db):
+    """California is placed inside the United States by its categories, not by
+    its infobox, so the first typing pass sees it contained by nothing and
+    leaves it believing it is a country. The fix documented in #40 never
+    covered that case: "what country was X born in" still answered Chicago 445
+    times and California 555."""
+    load(db, ["United States", "California", "Boston", "Austin", "Reno",
+              "Ohio", "Iowa", "Utah", "Person"],
+         [("Boston", "country", "United States"),
+          ("Austin", "country", "United States"),
+          ("Reno", "country", "United States"),
+          ("Ohio", "country", "California"),
+          ("Iowa", "country", "California"),
+          ("Utah", "country", "California"),   # three votes each
+          ("Person", "birth_place", "California")],
+         categories=[("California", "States of the United States")])
+
+    assert libgraph.is_a(db, "w", "United States", "country")
+    assert not libgraph.is_a(db, "w", "California", "country")
+    # And the climb carries on rather than stopping at the state.
+    assert libgraph.follow(db, "w", "Person",
+                           ["born_in", "in_country"]).value == "United States"
+
+
 def test_a_value_resolves_through_a_redirect(db):
     load(db, ["Alan Turing", "United Kingdom"],
          [("Alan Turing", "birth_place", "Britain")],
