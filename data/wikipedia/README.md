@@ -509,23 +509,47 @@ The pieces, and where they stand — `oracle.py` puts them together:
 |---|---|---|
 | "bell" → the article | the search index here | works |
 | "where was … born" → `born_in` | the phrasebook classifier | **93.8% macro**, 9 relations |
-| "what country was … born in" → a path | the same classifier | **~50%** on unseen phrasings |
+| "what country was … born in" → a path | the same classifier | **84.0%** on unseen phrasings |
 | `(subject, property, ordinal)` → value | this table's primary key | a lookup |
 
 The relation number is from [SimpleQuestions](https://github.com/askplatypus/wikidata-simplequestions)
 mapped to Wikidata — real human-written questions. The path number is over
 phrasings this repo wrote and then withheld from training, which is why it is
-so much lower and why it is the one to believe.
+the one to believe.
 
-It has no decimal place on purpose. Over five seeds the same measurement runs
-43.1% to 56.2% on its 320 held-out questions — a spread of 13 points, on a set
-where four more right in one class moves the figure by one and a quarter. Two
-different values of it were quoted in this repository for months, 51.6% here
-and 43.8% in `oracle.py`, and the interesting part is that neither was wrong:
-both are ordinary draws from that spread, and 51.6% reproduces to the decimal
-at seed 0. A number quoted more precisely than it can be measured invites
-exactly that kind of disagreement, and resolving it by picking a side would
-have been the wrong repair.
+### It was ~50%, and the fix was writing more questions
+
+Not a better model. Every repair tried on this number for months was to the
+encoder or the architecture — class weighting, order-sensitive bands, entity
+masking, two heads — and this note used to conclude that "sweeping the number
+of training phrasings from one to six moved the score 20.3% → 39.4%, so writing
+more of them would have bought a few points at best."
+
+Nineteen points over five wordings is not a few points. That sentence was
+reading a steep curve as a flat one, and the same curve on
+[`data/silo/`](../silo/) was still climbing at nine. So eight more wordings per
+path were written. The held-out three are unchanged, so every row is scored
+against the same 480 questions:
+
+| phrasings | held out | one-hop macro |
+|---:|---:|---:|
+| 1 | 35.8% | |
+| 3 | 51.8% | |
+| 5 *(what shipped)* | 59.2% | 92.1% |
+| 8 | 78.3% | |
+| **13** | **84.0%** | 90.8% |
+
+It costs **1.3 points of one-hop macro**, which makes it a trade rather than a
+free win — and a cheap one by the bar the rejected repairs set, since bands
+cost 7.6 points *for a loss*.
+
+Do not compare 84.0% against the old figure. That measurement held out two
+phrasings of eight and this holds out three of sixteen; they are answers to
+different questions. What the old figure is still good for is its warning about
+precision: over five seeds it ran 43.1% to 56.2%, a spread of 13 points, and
+two different draws from it — 51.6% and 43.8% — sat in two files for months
+looking like a disagreement. Neither was wrong. A number quoted more precisely
+than it can be measured invites exactly that.
 
 ### Some of that spread is the name, not the phrasing
 
