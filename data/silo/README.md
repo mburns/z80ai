@@ -348,6 +348,46 @@ Near enough half the work for 0.2 points. **Card bytes do not move at all**,
 which is the cleanest confirmation that the classifier is arithmetic and not
 I/O — and therefore that shrinking it is free everywhere except accuracy.
 
+### It is short of grammar, not short of data
+
+Nothing tried against the ~45% unseen-phrasing number moved it — not masking,
+not position bands, not halving the model. All three were changes to the
+encoder or the architecture. So the remaining question was whether the limit is
+the machine at all, and it is not.
+
+Train on **k** of the nine wordings left after the held-out three, evaluate on
+the same three at every point, three seeds each:
+
+| phrasings | rows grow with k | rows held at 7,200 |
+|---:|---:|---:|
+| 1 | 17.3% | 17.4% |
+| 2 | 22.7% | 22.7% |
+| 3 | 31.4% | 32.7% |
+| 4 | 36.3% | 36.7% |
+| 6 | 39.2% | 40.6% |
+| 9 | **45.8%** | **45.8%** |
+
+Two things, and the second is the one that matters.
+
+**The curve is still climbing at nine** — 39.2% to 45.8% for the last three
+wordings, with three-seed spreads that do not overlap. Whatever this classifier
+is short of, it has not run out of it.
+
+**The two columns are the same.** The right-hand arm holds the training set at
+7,200 rows however few wordings it is split across, so three phrasings get 120
+questions each instead of 40. It buys nothing: 32.7% against 31.4%, inside the
+noise at every k. **More examples of the same sentence are worth nothing; more
+sentences are worth everything.** That is a fact about the phrasebook and not
+about the corpus, and it is the first thing measured here that says what to do
+next rather than what not to.
+
+What it does not say is where the curve ends. Nine points of grammar is what
+`relationpaths.py` happens to contain, and extrapolating past the last
+measurement is how the numbers in this repository have gone wrong before. The
+test is to write more wordings and re-run this — with the caveat that a second
+dozen written by the same hand on the same afternoon will be more like the
+first dozen than a stranger's would be, which would understate the gain.
+
 ### Position bands lose, and now they lose with error bars
 
 `--position-bands` seeds each trigram's hash with where in the query it

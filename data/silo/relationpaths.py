@@ -318,9 +318,16 @@ def _ask(template: str, name: str, masked: bool) -> str:
 
 def build(db: sqlite3.Connection, have: set[str], per_template: int,
           hold_out: int, seed: int,
-          masked: bool = False,
+          masked: bool = False, phrasings: int | None = None,
           ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """(training pairs, held-out pairs), split by phrasing rather than by row."""
+    """(training pairs, held-out pairs), split by phrasing rather than by row.
+
+    ``phrasings`` keeps only that many of the wordings left after the held-out
+    ones are reserved, which is how the learning curve in
+    `data/silo/README.md` is drawn: the evaluation set is identical at every
+    point on it, so the only thing moving is how much of the grammar the model
+    was shown.
+    """
     rng = Random(seed)
     train: list[tuple[str, str]] = []
     unseen: list[tuple[str, str]] = []
@@ -328,8 +335,12 @@ def build(db: sqlite3.Connection, have: set[str], per_template: int,
         order = list(templates)
         rng.shuffle(order)
         reserved = set(order[:hold_out]) if hold_out else set()
+        rest = order[hold_out:]
+        kept = set(rest if phrasings is None else rest[:phrasings])
         names = subjects(db, path, have, per_template * len(templates), rng)
         for i, template in enumerate(templates):
+            if template not in reserved and template not in kept:
+                continue
             block = names[i * per_template:(i + 1) * per_template]
             rows = [(_ask(template, name, masked), path) for name in block]
             (unseen if template in reserved else train).extend(rows)
@@ -401,6 +412,9 @@ def main() -> None:
     ap.add_argument("--emit", choices=("train", "held-out"), default="train",
                     help="'held-out' prints only the reserved phrasings, to "
                          "score generalisation rather than recall")
+    ap.add_argument("--phrasings", type=int, metavar="K",
+                    help="Train on only K of the wordings left after the "
+                         "held-out ones, for the learning curve")
     ap.add_argument("--mask", action="store_true",
                     help="Take the subject back out of each question before "
                          "printing it - see liboracle.mask")
@@ -425,7 +439,8 @@ def main() -> None:
             resolve(word, have)
 
     train, unseen = build(db, have, args.per_template, args.held_out_templates,
-                          args.seed, masked=args.mask)
+                          args.seed, masked=args.mask,
+                          phrasings=args.phrasings)
     pairs = unseen if args.emit == "held-out" else train
     counts = Counter(path for _, path in pairs)
 
