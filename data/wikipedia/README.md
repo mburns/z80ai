@@ -21,10 +21,15 @@ python data/wikipedia/ingest.py simplewiki-20260801-pages-articles.xml.bz2
 python buildwikisearch.py --out dist/WIKI
 ```
 
-For a card that answers questions rather than only finding articles, train the
-relation classifier and pass it to step 3:
+For a card that answers questions rather than only finding articles, read the
+birthplaces out of the lead text, then train the relation classifier and pass
+it to step 3:
 
 ```bash
+# 2a. Birthplaces for the 36,191 people whose infobox has none (~2 minutes).
+#     `--rebuild-graph` is what puts them on the card; see below.
+python data/wikipedia/birthplaces.py --write --rebuild-graph
+
 python data/questions/relations.py > relations.txt
 python classify.py --file relations.txt -o relations.npz \
        --accum-bits 24 --balance
@@ -37,11 +42,22 @@ article list, so a limited card renumbers everything; the header carries a
 digest of the titles and the program refuses a mismatched pair, because a wrong
 one has no other symptom — every id in it is still some article.
 
+**Step 2a is the one step here that puts something read out of prose on the
+device**, and it is worth 10,154 more answered birthplace questions — the
+reasoning, the scoring against ground truth, and what it costs are all
+[below](#reading-the-birthplaces-the-infoboxes-never-had). Leave it out and the
+card carries only what a Wikipedia author tabulated or filed; everything else
+works the same either way.
+
+**Re-run 2a after any re-ingest.** `ingest.py` rebuilds the graph from the
+facts, which drops the derived edges — the `derived` table survives, so 2a is
+cheap the second time, but the card is back to tabulated-only until you do.
+
 | | full corpus |
 |---|---|
-| `WIKI.IDX` | 23.1 MB |
+| `WIKI.IDX` | 23.3 MB |
 | `WIKI.DAT` | 51.7 MB |
-| `WIKI.GRF` | 2.4 MB — 167,868 edges |
+| `WIKI.GRF` | 2.5 MB — 181,453 edges |
 | `WIKI.bin` | 94.0 KB |
 
 `data/simple_english_wikipedia.db` is **not in git** — it is ~500MB of derived
@@ -57,7 +73,7 @@ $ python data/wikipedia/ingest.py --stats
   simplewiki.articles          283997
   simplewiki.digest            adf8cbb46aabe719
   simplewiki.dump              simplewiki-20260801-pages-articles.xml.bz2
-  simplewiki.edges             167868
+  simplewiki.edges             181453
   simplewiki.facts             2086920
   simplewiki.ingested          2026-08-24T21:49:30
   simplewiki.redirects         114771
@@ -88,7 +104,7 @@ That writes three files. Copy all three onto the card and run `WIKI`:
 | | |
 |---|---|
 | `WIKI.bin` | 5.6 KB — the program |
-| `WIKI.IDX` | 23.1 MB — hashed dictionary and postings |
+| `WIKI.IDX` | 23.3 MB — hashed dictionary and postings |
 | `WIKI.DAT` | 51.7 MB — titles and leads, byte-pair packed |
 
 ```
@@ -553,7 +569,8 @@ category, so this fills gaps and never replaces — which makes it monotonic,
 and means no chain that completed before stops completing.
 
 3,945 edges, and they are the ones that were being asked for. Taken with the
-value templates and the rank fallback:
+value templates and the rank fallback — on the graph the facts and categories
+support, before step 2a reads any lead text:
 
 | | before | after |
 |---|---:|---:|
@@ -715,22 +732,24 @@ for nothing, and any model has to beat that number, on that population, before
 it is worth its cost. `--method` is where one would go; the harness that would
 score it is already here.
 
-#### Putting them on the card is a separate decision
+#### Putting them on the card is a decision, and it has been taken
 
-`libgraph.build` ignores `derived` unless given a method, and `birthplaces.py`
-writes the table without touching the graph. Getting these onto a device takes
-a third command, which exists so that somebody takes the decision rather than
-inheriting it:
+**The oracle build runs this** — it is step 2a above:
 
 ```bash
 python data/wikipedia/birthplaces.py --write --rebuild-graph
 ```
 
-Everything else on the card comes from something a Wikipedia author tabulated
-or filed. These come from a sentence, read by a regex, and a card built with
-them asserts things no infobox states. They fill gaps only — written after
-every other edge and skipping any subject that already has the relation, so a
-sentence cannot overrule a table even if the table is stale.
+It is still two flags rather than a default, and `libgraph.build` still ignores
+`derived` unless given a method, because the distinction is worth keeping
+legible: everything else on the card comes from something a Wikipedia author
+tabulated or filed, and these come from a sentence read by a regex. A card
+built this way asserts things no infobox states. Dropping 2a gives a card that
+does not, and nothing else changes.
+
+They fill gaps only — written after every other edge and skipping any subject
+that already has the relation, so a sentence cannot overrule a table even if
+the table is stale.
 
 What it buys, measured:
 
