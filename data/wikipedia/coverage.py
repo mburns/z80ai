@@ -267,6 +267,41 @@ def type_floors(db: sqlite3.Connection, source: str,
             for n in range(1, highest)}
 
 
+def countries(db: sqlite3.Connection, source: str) -> dict[str, int]:
+    """Every entity the graph calls a country, and how many climbs land there.
+
+    The floor curve above says how *many* countries a setting yields. It does
+    not say *which*, and which is the thing a person can check in under a
+    minute: `Baku`, `Victoria`, `CA` and `World` are all in this list, and no
+    amount of curve-reading finds them.
+
+    Three automatic rules were tried against those four and none survived. The
+    corpus calls Baku a country six times and a capital twice, so preponderance
+    keeps it; demoting anything named as a capital takes China, Angola and
+    Mongolia with it, their `capital` fields resolving to the modern country;
+    and a threshold that spares China while catching Baku is fitted to two data
+    points. So the list is printed instead, and judged by someone.
+
+    They cost 118 answers out of 42,996, which is the other half of why: a rule
+    that risks China to recover 0.27% is a bad trade even when it works.
+    """
+    typed = [e for (e,) in db.execute(
+        "SELECT entity FROM entity_type WHERE source = ? AND kind = 'country' "
+        "ORDER BY entity", (source,))]
+    landings = dict.fromkeys(typed, 0)
+    reached: dict[str, str | None] = {}
+    for (place,) in db.execute(
+            "SELECT object FROM edge WHERE source = ? AND relation = 'born_in'",
+            (source,)):
+        if place not in reached:
+            reached[place] = libgraph.follow(
+                db, source, place, ["in_country"]).value
+        end = reached[place]
+        if end in landings:
+            landings[end] += 1
+    return landings
+
+
 def reach(db: sqlite3.Connection, source: str) -> dict[str, Any]:
     """The headline numbers: how much of the corpus is on the graph at all."""
     def one(sql: str) -> int:
@@ -559,6 +594,10 @@ def main() -> None:
                     help="emit the measurement instead of the table")
     ap.add_argument("--baseline", type=Path,
                     help="a --json file to show this run's change against")
+    ap.add_argument("--countries", action="store_true",
+                    help="list every entity the graph calls a country, with "
+                         "how many climbs land there. No rule finds the bad "
+                         "ones; a person reading the names does")
     args = ap.parse_args()
 
     if not args.db.exists():
@@ -566,6 +605,13 @@ def main() -> None:
 
     db = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     try:
+        if args.countries:
+            landings = countries(db, args.source)
+            print(f"\n  {len(landings)} entities the graph calls a country, "
+                  "and the birthplace climbs landing on each\n")
+            for name, n in sorted(landings.items()):
+                print(f"    {name:<36}{n:>7,}")
+            return
         now = measure(db, args.source, args.sample, args.seed)
     finally:
         db.close()
