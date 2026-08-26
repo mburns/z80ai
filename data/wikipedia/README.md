@@ -53,7 +53,7 @@ back to a snapshot without asking anyone:
 
 ```console
 $ python data/wikipedia/ingest.py --stats
-  schema_version               7
+  schema_version               8
   simplewiki.articles          283997
   simplewiki.digest            adf8cbb46aabe719
   simplewiki.dump              simplewiki-20260801-pages-articles.xml.bz2
@@ -593,6 +593,63 @@ the `1935 births` / `Living people` categories Wikipedia files people under
 almost without exception — 78,594 of them. That tail is kept deliberately
 tight; `Deaths from cancer` is not a birth-year category and the articles in it
 are diseases.
+
+### Reading the birthplaces the infoboxes never had
+
+78,594 people are in this corpus and 42,288 have a birthplace. The other
+**36,191 have a lead and no birthplace** — and Wikipedia's house style puts the
+birth in the first clause, so a great many of those leads say it anyway.
+
+`birthplaces.py` reads them. It is the only part of this pipeline that reads a
+sentence rather than a table, which is exactly why it is the only part with an
+evaluation harness attached to it.
+
+**Nothing it produces reaches `fact`.** Rows land in `derived`, keyed by the
+method that wrote them, so a reader wanting only what the encyclopedia
+tabulated reads `fact` and never sees them. `method` is part of the primary key
+rather than a column beside it, so two extractors can disagree about the same
+person and both be kept — which is what makes one measurable against the other.
+The graph build ignores `derived`, so the card is unchanged.
+
+**It is scored before it is trusted**, and the ground truth is free: the 42,288
+people who *do* have a birthplace also have leads, and their infoboxes say the
+answer.
+
+| | regex |
+|---|---:|
+| the lead said something | 20.4% |
+| and it named an article | 18.3% |
+| and it matched the infobox exactly | **13.8%** |
+| and it climbs to the same country | **93.4%** |
+
+That gap is the finding. **Agreement is the obvious measure and it is the wrong
+one**, because the infobox and the lead routinely name *different places that
+are both true* — College Park against Georgia, Ontario against Canada, Brooklyn
+against New York City, Whitby against Toronto. Marking those wrong measures
+granularity, not correctness. The oracle is asked which *country*, so what
+matters is whether the two climb to the same one, and 93.4% is where that lands.
+
+93.4% is itself a floor. Several of the 352 disagreements are the climb's own
+typing rather than the extraction: `Ontario` climbs to Ontario and `California`
+to California, both being called countries by enough infoboxes to clear
+`TYPE_FLOOR`. That is a separate bug and it is not this file's.
+
+**The eval set and the target set are not the same population, in the useful
+direction.** The regex resolves 18.3% of people who have an infobox birthplace
+and **37.5% of people who do not** — because a person missing one frequently
+has no infobox at all, and the opening sentence states the birth regardless. So
+the yield does not transfer, and the figure to quote is the one measured on the
+population it ran on:
+
+```
+13,585 rows over 36,191 people    37.5%
+```
+
+Which is the answer to *"could a model fill in the missing facts"*: **measure
+the trivial thing first.** A regex over the leads recovers 13,585 birthplaces
+for nothing, and any model has to beat that number, on that population, before
+it is worth its cost. `--method` is where one would go; the harness that would
+score it is already here.
 
 ### Measuring the coverage, rather than remembering it
 
