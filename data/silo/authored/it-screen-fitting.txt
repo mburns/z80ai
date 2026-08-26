@@ -1,0 +1,25 @@
+IT Standing Order 9: Screen Fitting and Replacement
+
+A screen is fitted by two people and never by one. The second is present to
+witness what the first sees during the interval between the old screen coming
+down and the new one going up, and to sign that they saw it.
+
+The interval is to be kept under four minutes. Where a fitting is expected to
+run longer, the section is to be cleared first and a deputy present.
+
+Screens removed from service are returned to Level 34 intact. A screen is not
+opened outside Level 34, is not opened by a screen fitter, and is not opened at
+all except by an analyst with the Server Warden present. A fitter who finds a
+screen already open is to stop, leave it, and report.
+
+Cable is drawn from the runs on the same level wherever the run exists. Where it
+does not, a cable runner is assigned and the new run is entered on the level
+plan before the screen is energised, not after. Three runs entered after the
+fact were found during the year 216 audit to cross section boundaries in ways no
+plan showed, and one of those had been carrying since year 198.
+
+What is displayed on a screen is not a matter for the fitter and questions about
+it are not to be answered by the fitter. The standing answer is that the screen
+shows what it shows and that the question belongs to IT. Fitters are reminded
+that this answer is not evasion but the limit of what they have been told, and
+that the limit is the same for the analyst who signs their work.

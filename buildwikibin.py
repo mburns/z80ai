@@ -55,7 +55,9 @@ if TYPE_CHECKING:
 
 from libsearch import (
     MAGIC,
+    MAX_ARTICLE,
     MAX_BLOB,
+    MAX_PACKED_ARTICLE,
     MAX_QUERY_TERMS,
     MAX_WEIGHT,
     NUM_BUCKETS,
@@ -1650,6 +1652,13 @@ TABLE_AT = 6 + 1 + 1 + 4 + 4 + 4
 #: the top byte of a 24-bit value rather than a 24-bit operation the eZ80 lacks.
 assert NUM_BUCKETS & (NUM_BUCKETS - 1) == 0, "bucket count must be a power of two"
 assert NUM_BUCKETS <= 1 << 24, "a bucket index has to fit in 24 bits"
+
+#: `libsearch` refuses an article larger than what READ_ARTICLE reads and
+#: UNPACK unpacks into. It has to be told those sizes, and this is the only
+#: place that knows them, so the two are pinned against each other here rather
+#: than being written down twice and drifting apart once.
+assert MAX_PACKED_ARTICLE == CHUNK, "the build refuses what the device reads"
+assert MAX_ARTICLE == 2 * CHUNK, "the build refuses what TEXTBUF holds"
 BUCKET_MASK_HI = ((NUM_BUCKETS - 1) >> 16) & 0xFF
 
 

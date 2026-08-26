@@ -1,0 +1,28 @@
+Incident Report 207-04: Solvent Exposure, Level 96
+
+Two batch mixers of Second Shift were exposed to solvent vapour on the fourth
+day of year 207 when a fume hood on Level 96 lost draw during a transfer.
+
+The hood had drawn correctly at the shift check four hours earlier. The fan
+itself was found running. The loss of draw came from a duct damper on Level 95,
+one level above the hood it serves, which had been closed by an electrician
+working on an unrelated circuit who had been told the damper was a fire
+shutter.
+
+He had been told correctly. It is a fire shutter. It is also the only thing
+between the Level 96 hoods and the stack, and the level plan marks it as one
+and not the other. Both departments have worked from that plan for as long as
+either can show.
+
+The mixers were taken to Medical and released the same day. Neither has returned
+to solvent work, at their own request, and the panel does not criticise that.
+
+The finding is not that the electrician erred. He read the plan, the plan was
+wrong by omission, and he had no way to learn otherwise short of asking a
+question he had no reason to ask. The finding is that a component serving two
+departments appears on the plans of one.
+
+Chemical and Electrical have jointly reviewed every shared component below
+Level 90 and found eleven more of the same kind. Four are dampers. The list is
+appended to the Mechanical master plan and both departments have signed it.
+Nothing above Level 90 has been reviewed.

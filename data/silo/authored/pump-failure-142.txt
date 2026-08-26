@@ -1,0 +1,29 @@
+Incident Report 214-11: Cistern Pump Failure, Level 142
+
+At approximately 0340 on the eleventh day of the two hundred and fourteenth
+year, the primary cistern pump on Level 142 stopped without warning. The Third
+Shift pump operator on duty logged the silence before the pressure alarm
+reached her, which is the only reason the loss was held to eleven hours of
+supply rather than the full reserve.
+
+Water Treatment attended within the hour. The fault was traced to the lower
+bearing housing, where a seal had been weeping for long enough to leave a salt
+line the width of a thumb. The weep does not appear in any maintenance log for
+the preceding two years. Mechanical has since confirmed that the housing is one
+of four of its pattern still in service and that no spare exists below Level
+120.
+
+Supply was restored at 1450 the same day by cross-feeding from the secondary
+cistern, a procedure last rehearsed in year 209 and not since. Two of the four
+valve stations required force to turn. One is recorded here as seized and has
+been referred to Mechanical as its own work order.
+
+The panel's finding is that the failure was not sudden. A seal that leaves a
+salt line has been failing for months, and nobody whose duty it was to look at
+that housing was told that looking at it was their duty. The rota for Level 142
+lists the pump and does not list the housing. Down Deep has run on that
+distinction since the rota was written.
+
+Recommendation: fold the bearing housings into the pump entry on every rota
+below Level 120, and rehearse the cross-feed annually rather than when it is
+needed.

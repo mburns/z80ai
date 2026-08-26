@@ -1,0 +1,30 @@
+Maintenance Log: Generator Three, Years 211 to 220
+
+Generator Three sits on Level 140 and has carried the base load since Generator
+One was taken down in year 206. What follows is the standing log, kept by the
+generator technicians of all three shifts and copied here at the request of the
+Mechanical foreman.
+
+Year 211. Bearing temperatures high on the outboard side through the summer
+months. Oil changed twice against a schedule of once. No fault found.
+
+Year 213. Coupling replaced. The old coupling had worn unevenly, which the log
+attributes to a shaft alignment never checked since installation. Alignment
+checked and found within tolerance, so the wear is unexplained and the note is
+left here rather than closed.
+
+Year 215. Governor hunting under load change. Adjusted by First Shift, adjusted
+again by Third Shift in the opposite direction, and adjusted a third time after
+the two technicians spoke to each other. The foreman has ruled that governor
+adjustments are logged before they are made and not after.
+
+Year 217. Winding insulation tested. Two readings below the figure the manual
+calls acceptable and above the figure it calls dangerous. Retested at the same
+values a month later. The machine has run on those readings for three years.
+
+Year 219. Outboard bearing temperatures high again, in the same months and on
+the same side as year 211. The technician who noticed the match was not born
+when the first note was written and found it by reading the log from the front,
+which nobody had asked her to do.
+
+Year 220. No entries yet. The bearing is watched.

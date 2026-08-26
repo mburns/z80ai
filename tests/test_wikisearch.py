@@ -533,6 +533,67 @@ def test_the_unpacking_buffers_cost_the_image_nothing():
     assert scratch + buildwikibin.SCRATCH_BYTES <= builder.accumulator
 
 
+# --- how long an article may be -----------------------------------------------
+#
+# `READ_ARTICLE` reads exactly one CHUNK and `UNPACK` walks it until it has seen
+# the two NULs ending the title and the lead. An article packing to more than
+# that does not truncate - the second NUL is not in what was read, so the
+# decoder carries on into whatever the last query left in SRAM. It looked clean
+# when it was found only because emulated SRAM starts zeroed.
+#
+# Nothing checked this while every lead was 300 characters, which is the
+# condition under which a limit is easiest to be wrong about.
+
+PROSE = ("the pump on level forty two failed at oh six hundred and the shift "
+         "lead reported water in the lower corridor before the seal was "
+         "replaced by the maintenance crew who logged it as routine ")
+
+
+def one_article_card(out, lead: str):
+    index = libsearch.build(["Incident Report", "Filler"],
+                            [lead, "nothing here at all"], {})
+    idx, dat = out / "WIKI.IDX", out / "WIKI.DAT"
+    libsearch.write_index(index, idx)
+    libsearch.write_text(index, dat)
+    return idx, dat, index
+
+
+def test_an_article_the_device_cannot_finish_is_refused_at_build_time(tmp_path):
+    """And names the article, because a corpus is a lot of places to look."""
+    with pytest.raises(ValueError, match="Incident Report"):
+        one_article_card(tmp_path, (PROSE * 40)[:6000])
+
+
+def test_the_refusal_says_what_the_device_can_actually_hold(tmp_path):
+    with pytest.raises(ValueError, match=str(libsearch.MAX_PACKED_ARTICLE)):
+        one_article_card(tmp_path, (PROSE * 40)[:6000])
+
+
+def test_an_article_at_the_limit_still_reaches_the_screen(tmp_path):
+    """The boundary is worth exercising from both sides: one byte over raises,
+    and the largest thing that does not raise must still come back whole."""
+    lead = (PROSE * 40)[:libsearch.MAX_PACKED_ARTICLE - 200]
+    card = one_article_card(tmp_path, lead)
+    idx, dat, _index = card
+
+    reference = libsearch.CardSearch(idx, dat)
+    try:
+        assert reference.article(0) == ("Incident Report", lead)
+    finally:
+        reference.close()
+
+    printed = "".join(run_query(card, "incident").split())
+    assert "".join(lead.split()) in printed
+
+
+def test_the_reference_reads_what_the_device_reads(tmp_path):
+    """`article` used to read 4096 packed bytes against the device's 2048, so a
+    card the machine could not finish was one the reference finished fine - and
+    every test that compares the two would have agreed with the wrong one."""
+    assert libsearch.MAX_PACKED_ARTICLE == buildwikibin.CHUNK
+    assert libsearch.MAX_ARTICLE == 2 * buildwikibin.CHUNK
+
+
 # --- the ceiling, which used to be a guess ------------------------------------
 #
 # `buildwikisearch` warned above "380KB of accumulator" on the grounds that the
