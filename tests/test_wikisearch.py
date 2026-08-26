@@ -13,9 +13,16 @@ the failure modes are the loud kind.
 
 from __future__ import annotations
 
+import sqlite3
+import sys
+from pathlib import Path
+
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent
+                       / "data" / "wikipedia"))
 import buildwikibin
+import ingest
 import libsearch
 from libhost import AgonHost
 
@@ -285,6 +292,56 @@ def test_the_binary_prints_the_lead_not_just_the_title(card):
 def test_a_query_matching_nothing_says_so(card):
     printed = run_query(card, "aardvark")
     assert "Nothing on the card matches" in printed
+
+
+# --- fame ---------------------------------------------------------------------
+
+
+def test_fame_is_the_value_that_was_swept():
+    """A toy corpus cannot pin this, and pretending otherwise would be worse
+    than not trying.
+
+    `FAME` boosts an article by how many alternate names point at it. Its
+    damage - a famous page outranking the article somebody asked for by name -
+    needs a corpus with enough famous pages to swamp a ranking, and it scales
+    with corpus size: 77.7% of articles found by their own title at 40,000
+    articles, 53.3% at 120,000, 47.8% at 283,997. On the eight documents in
+    this file the difference between 0.25 and 1.0 is under a point.
+
+    So this pins the number and points at the measurement, which lives in
+    `tools/probe_entities.py --sample N` and needs the real database. What it
+    catches is somebody changing the constant without re-running that.
+    """
+    assert libsearch.FAME == 0.25
+
+
+def test_the_corpus_probe_sets_are_built_from_what_the_card_indexes(tmp_path):
+    """The twenty hand-written probes could not choose between four values of
+    FAME - 5% of resolution each, and assembled from the symptoms of the one
+    bug FAME repairs. These come out of the corpus instead."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import probe_entities
+
+    db_path = tmp_path / "corpus.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(ingest._schema())
+    conn.executemany("INSERT INTO article (source, title, lead) "
+                     "VALUES ('simplewiki', ?, '')",
+                     [(t,) for t, _ in CORPUS])
+    conn.executemany("INSERT INTO redirect (source, title, target) "
+                     "VALUES ('simplewiki', ?, ?)",
+                     [("Graham Bell", "Alexander Graham Bell"),
+                      ("Nowhere", "An Article That Does Not Exist")])
+    conn.commit()
+    conn.close()
+
+    by_title, by_redirect = probe_entities.corpus_probes(
+        db_path, "simplewiki", sample=100, seed=0)
+    assert len(by_title) == len(CORPUS)
+    assert all(query == wanted for query, wanted in by_title)
+    # A redirect pointing outside the corpus is not a probe: it has no right
+    # answer, and counting it would make every card look worse than it is.
+    assert by_redirect == [("Graham Bell", "Alexander Graham Bell")]
 
 
 # --- initials -----------------------------------------------------------------

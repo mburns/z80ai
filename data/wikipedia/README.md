@@ -142,6 +142,40 @@ because a person reads all of them; an oracle walks only the first, and its
 mistakes have no symptom — the graph answers correctly about the wrong subject
 and what comes back is fluent and wrong.
 
+### Twenty probes were not enough to notice
+
+They still read 85%. What they could not see is that **less than half of all
+articles were found first by their own exact title** — 47.8%, on the shipped
+card, for months.
+
+`libsearch.FAME` boosts an article by how many redirects point at it, and was
+set to 1.0 by a measurement over those same twenty probes, with a note saying
+it had never been swept. Swept now, on the whole corpus, against probe sets
+built from the corpus itself — `--sample N`, every article asked for by its own
+name and every redirect asked for by itself:
+
+| FAME | by title | by redirect | the twenty |
+|---:|---:|---:|---:|
+| 0.0 | 93.9% | 88.1% | 11/20 |
+| **0.25** | 87.8% | **91.7%** | 17/20 |
+| 0.5 | 73.3% | 89.7% | 17/20 |
+| 1.0 *(was)* | **47.8%** | 85.1% | 17/20 |
+
+0.25 beats the old value by forty points by title, by six on redirects — a set
+biased *toward* fame, since redirect count is what the knob scores — and ties
+it on the twenty. It dominates, so there is no trade to weigh, and it is now
+the default.
+
+The useful half of this is not the number. **The twenty probes were assembled
+from the misses of one particular failure** — a derived article beating the
+thing it derives from — so they are blind by construction to any failure its
+repair introduces, and they approved of one that broke half the corpus. A probe
+set built from a bug's symptoms will endorse any fix for that bug.
+
+It also got worse as the corpus grew: 77.7% by title at 40,000 articles, 53.3%
+at 120,000, 47.8% at 283,997. A card built with `--limit` was hurt least, which
+is exactly backwards from where anyone would notice.
+
 An initial is glued to the name after it — `amanda m wilson` is indexed and
 queried as `amanda mwilson` — because a single character was dropped at both
 ends, which made two people who differ only by a middle initial into the *same
