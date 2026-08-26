@@ -29,6 +29,13 @@ gap between them is the argument. They are not the current figures - reading
 value templates, the rank fallback and the categories below have since taken
 the same two chains to 77.7% and 82.3%. `coverage.py` prints today's.)
 
+Every figure in this file is measured on the graph *this module* builds, which
+is the one the facts and categories support. The documented card build adds a
+step that reads birthplaces out of lead text, taking `born_in in_country` to
+55,873 startable subjects and 42,996 answers; see `birthplaces.py`. Those edges
+are an input to `build`, not something it derives, and they are off unless
+asked for.
+
 ## Asking for a type, not a number of hops
 
 A question asks for a country, not for two hops. How many hops that takes is a

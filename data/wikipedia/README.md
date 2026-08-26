@@ -21,10 +21,15 @@ python data/wikipedia/ingest.py simplewiki-20260801-pages-articles.xml.bz2
 python buildwikisearch.py --out dist/WIKI
 ```
 
-For a card that answers questions rather than only finding articles, train the
-relation classifier and pass it to step 3:
+For a card that answers questions rather than only finding articles, read the
+birthplaces out of the lead text, then train the relation classifier and pass
+it to step 3:
 
 ```bash
+# 2a. Birthplaces for the 36,191 people whose infobox has none (~2 minutes).
+#     `--rebuild-graph` is what puts them on the card; see below.
+python data/wikipedia/birthplaces.py --write --rebuild-graph
+
 python data/questions/relations.py > relations.txt
 python classify.py --file relations.txt -o relations.npz \
        --accum-bits 24 --balance
@@ -37,11 +42,22 @@ article list, so a limited card renumbers everything; the header carries a
 digest of the titles and the program refuses a mismatched pair, because a wrong
 one has no other symptom — every id in it is still some article.
 
+**Step 2a is the one step here that puts something read out of prose on the
+device**, and it is worth 10,154 more answered birthplace questions — the
+reasoning, the scoring against ground truth, and what it costs are all
+[below](#reading-the-birthplaces-the-infoboxes-never-had). Leave it out and the
+card carries only what a Wikipedia author tabulated or filed; everything else
+works the same either way.
+
+**Re-run 2a after any re-ingest.** `ingest.py` rebuilds the graph from the
+facts, which drops the derived edges — the `derived` table survives, so 2a is
+cheap the second time, but the card is back to tabulated-only until you do.
+
 | | full corpus |
 |---|---|
-| `WIKI.IDX` | 23.1 MB |
+| `WIKI.IDX` | 23.3 MB |
 | `WIKI.DAT` | 51.7 MB |
-| `WIKI.GRF` | 2.4 MB — 167,868 edges |
+| `WIKI.GRF` | 2.5 MB — 181,453 edges |
 | `WIKI.bin` | 94.0 KB |
 
 `data/simple_english_wikipedia.db` is **not in git** — it is ~500MB of derived
@@ -57,7 +73,7 @@ $ python data/wikipedia/ingest.py --stats
   simplewiki.articles          283997
   simplewiki.digest            adf8cbb46aabe719
   simplewiki.dump              simplewiki-20260801-pages-articles.xml.bz2
-  simplewiki.edges             167868
+  simplewiki.edges             181453
   simplewiki.facts             2086920
   simplewiki.ingested          2026-08-24T21:49:30
   simplewiki.redirects         114771
@@ -88,7 +104,7 @@ That writes three files. Copy all three onto the card and run `WIKI`:
 | | |
 |---|---|
 | `WIKI.bin` | 5.6 KB — the program |
-| `WIKI.IDX` | 23.1 MB — hashed dictionary and postings |
+| `WIKI.IDX` | 23.3 MB — hashed dictionary and postings |
 | `WIKI.DAT` | 51.7 MB — titles and leads, byte-pair packed |
 
 ```
@@ -577,7 +593,8 @@ category, so this fills gaps and never replaces — which makes it monotonic,
 and means no chain that completed before stops completing.
 
 3,945 edges, and they are the ones that were being asked for. Taken with the
-value templates and the rank fallback:
+value templates and the rank fallback — on the graph the facts and categories
+support, before step 2a reads any lead text:
 
 | | before | after |
 |---|---:|---:|
@@ -739,22 +756,24 @@ for nothing, and any model has to beat that number, on that population, before
 it is worth its cost. `--method` is where one would go; the harness that would
 score it is already here.
 
-#### Putting them on the card is a separate decision
+#### Putting them on the card is a decision, and it has been taken
 
-`libgraph.build` ignores `derived` unless given a method, and `birthplaces.py`
-writes the table without touching the graph. Getting these onto a device takes
-a third command, which exists so that somebody takes the decision rather than
-inheriting it:
+**The oracle build runs this** — it is step 2a above:
 
 ```bash
 python data/wikipedia/birthplaces.py --write --rebuild-graph
 ```
 
-Everything else on the card comes from something a Wikipedia author tabulated
-or filed. These come from a sentence, read by a regex, and a card built with
-them asserts things no infobox states. They fill gaps only — written after
-every other edge and skipping any subject that already has the relation, so a
-sentence cannot overrule a table even if the table is stale.
+It is still two flags rather than a default, and `libgraph.build` still ignores
+`derived` unless given a method, because the distinction is worth keeping
+legible: everything else on the card comes from something a Wikipedia author
+tabulated or filed, and these come from a sentence read by a regex. A card
+built this way asserts things no infobox states. Dropping 2a gives a card that
+does not, and nothing else changes.
+
+They fill gaps only — written after every other edge and skipping any subject
+that already has the relation, so a sentence cannot overrule a table even if
+the table is stale.
 
 What it buys, measured:
 
@@ -773,6 +792,54 @@ existing average by construction, so a fall of 0.7 points across 13,585 new
 subjects says the derived edges chain about as well as the tabulated ones. It
 is not evidence that they are *right* — `--write`'s own scoring is what speaks
 to that — but a bad batch would have shown up here as a much steeper fall.
+
+### Three things that turned out not to be wrong
+
+`created_by born_in` was being marked down for questions with no answer, so the
+obvious next move was to look for the same fault everywhere else. It is not
+there. Recorded here because a negative result nobody wrote down gets
+re-investigated, and each of these cost an afternoon.
+
+**The other chains are clean.** Of the walks that stop short, 98–99% stop on a
+genuine place — something the corpus places, or places things inside — and
+under 1% on a person:
+
+```
+born_in in_country    a place nothing places 99%   a person 1%
+died_in in_country    a place nothing places 99%   a person 1%
+in_country            a place nothing places 98%   a place that records where it is 2%
+created_by born_in    a person 100%
+```
+
+Their shortfall is real missing containment, not category error. That last row
+is the fix from the previous section seen from the other side: everything left
+in `created_by born_in` is a person with no recorded birthplace, which is a gap
+worth filing rather than a question worth declining.
+
+That table is now printed by `coverage.py` on every run rather than worked out
+by hand, which is the whole argument of this file applied to itself.
+
+**The 93 creators with no categories are mostly bands** — Bon Jovi, The Police,
+One Direction, Panic! at the Disco. `people` already excludes them, since they
+carry neither a birth date nor a birth-year category, so they were being
+counted moot all along and no change was needed.
+
+**Disambiguation pages are not the problem they look like.** Several of those
+93 turned out to be list pages: `created_by` pointing at *Drake* reaches "Drake
+may mean:" and 27 works stop there. Roughly 6% of all edges land on a page like
+that, which sounds alarming until you ask the question that matters — how often
+a walk carries *on* through one and answers with whatever the list was filed
+under. **Fourteen times, out of 32,842**, and all fourteen are right: Oshawa to
+Canada, Thimphu to Bhutan, Eskişehir to Turkey. A list page almost never has a
+`located_in` of its own, so it blocks a chain rather than misdirecting one.
+
+Worth adding that the 6% is unreliable in its own right. Detecting these from
+the lead catches `Cereal usually refers to a type of grass` and `A combination
+puzzle can be solved`, and tightening the pattern to only `may refer to` and
+`may mean` trades those for different false positives. The corpus files just 24
+pages under a disambiguation category, so there is nothing to check the
+detector against. A number that cannot be validated is not worth acting on, and
+the harm it would be measuring is fourteen correct answers.
 
 ### Measuring the coverage, rather than remembering it
 
