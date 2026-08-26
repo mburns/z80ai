@@ -41,7 +41,7 @@ one has no other symptom — every id in it is still some article.
 |---|---|
 | `WIKI.IDX` | 23.1 MB |
 | `WIKI.DAT` | 51.7 MB |
-| `WIKI.GRF` | 2.4 MB — 167,922 edges |
+| `WIKI.GRF` | 2.4 MB — 167,868 edges |
 | `WIKI.bin` | 94.0 KB |
 
 `data/simple_english_wikipedia.db` is **not in git** — it is ~500MB of derived
@@ -57,7 +57,7 @@ $ python data/wikipedia/ingest.py --stats
   simplewiki.articles          283997
   simplewiki.digest            adf8cbb46aabe719
   simplewiki.dump              simplewiki-20260801-pages-articles.xml.bz2
-  simplewiki.edges             167922
+  simplewiki.edges             167868
   simplewiki.facts             2086920
   simplewiki.ingested          2026-08-24T21:49:30
   simplewiki.redirects         114771
@@ -517,8 +517,9 @@ That paragraph was right about the cause and wrong about the remedy, which
 `coverage.py` was written to settle. Of the birthplace climbs that failed,
 **41.7% ran out of `located_in` edges and 2.2% hit the hop limit** — so the
 graph was running out of road, not failing to recognise a country when it
-arrived at one. The 193 entities it calls countries are very nearly the 195
-there are.
+arrived at one. It called 193 entities countries at the time, against the 195
+there are — a resemblance that turned out to be a coincidence covering for
+about fifty bad entries in both directions. See below.
 
 The places it died on were not obscure: New York, Washington, Moscow,
 Maryland, Michigan. `Infobox U.S. state` has no country field at all — the
@@ -546,11 +547,64 @@ value templates and the rank fallback:
 
 | | before | after |
 |---|---:|---:|
-| edges | 150,335 | **167,922** |
-| `born_in in_country` | 45.7% | **76.9%** |
-| — questions it answers | 19,238 | **32,518** |
-| `died_in in_country` | 48.1% | **81.0%** |
-| climbs that never reach a country | 43.8% | **23.1%** |
+| edges | 150,335 | **167,868** |
+| `born_in in_country` | 45.7% | **77.7%** |
+| — questions it answers | 19,238 | **32,842** |
+| `died_in in_country` | 48.1% | **82.3%** |
+| climbs that never reach a country | 43.8% | **22.3%** |
+
+### Asking for a country and being told California
+
+The rule above — a claimed country sitting inside another claimed country is
+not a country — was right, landed in #40, and **did not cover its own examples**.
+It was still answering Chicago 445 times and California 555.
+
+Two faults, and they had to be fixed together because either one alone makes
+things worse.
+
+**The demotion ran before the categories were read.** California is placed
+inside the United States by its categories, not by its infobox, so when the
+types were settled it was contained by nothing and kept its claim. The
+ordering — types before categories — is deliberate and documented above,
+because `from_categories` needs to know what a country is to prefer Denmark
+over Europe. So the types are now settled **twice**: once for that, and again
+once the containment is complete. Only demotions can change on the second pass,
+since a category never says `country = X`.
+
+**Dropping the contained one is the wrong rule.** Three infoboxes say
+`country = Asia`, which is exactly `TYPE_FLOOR` — so Asia was a country, and
+Japan, China, Iran and forty more became things "inside another country". Fixing
+the ordering alone would have demoted every one of them. Antarctica and the
+Caribbean clear the floor the same way; Europe does not, which is why the France
+example worked and hid all of it.
+
+So the rule now keeps whichever of the two the corpus calls a country **more
+often**, and the counts are not close:
+
+```
+Asia            3   against  Japan 257, China 74, Iran 35
+United States 4155  against  California 16, Chicago 5, Massachusetts 4
+Canada        283   against  Ontario 3
+```
+
+| | before | after |
+|---|---:|---:|
+| entities typed a country | 193 | **143** |
+| — of those, inside another country | 44 | **0** |
+| `in_country` | 76.2% | **86.6%** |
+| — questions it answers | 37,888 | **43,137** |
+| climbs that never reach a country | 23.8% | **13.4%** |
+| birthplace climbs landing on the United States | 6,786 | **10,600** |
+
+That last row is the point. Those 3,814 were not failures — they were answers,
+and the answer was "California". **A missing answer is silent and a wrong one
+is fluent**, which is the failure this whole file is arranged against.
+
+Greenland and Hong Kong are demoted by the same rule and I am content with
+that. Antarctica and the Caribbean survive, containing nothing that
+contradicts them — nothing is filed inside either, so nothing outvotes them.
+No birthplace climbs to Antarctica and twelve climb to the Caribbean, which is
+the same fault as California at a five-hundredth of the size.
 
 ### The one chain that looked broken was the scoreboard
 

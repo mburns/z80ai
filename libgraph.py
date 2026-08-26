@@ -27,20 +27,20 @@ subjects completing to **40.7%**, and ``death_place -> country`` from 1.0% to
 (Those four are the before and after of *that* change alone, kept because the
 gap between them is the argument. They are not the current figures - reading
 value templates, the rank fallback and the categories below have since taken
-the same two chains to 76.9% and 81.0%. `coverage.py` prints today's.)
+the same two chains to 77.7% and 82.3%. `coverage.py` prints today's.)
 
 ## Asking for a type, not a number of hops
 
 A question asks for a country, not for two hops. How many hops that takes is a
 property of the graph: for the 42,288 people this corpus records a birthplace
-for, the birthplace is *already* a country 17.2% of the time, one hop away
-37.6%, two hops 1.3%. A fixed two-hop path is right for about a third of them
-and destroys a correct answer for the sixth that needed none.
+for, the birthplace is *already* a country 9.0% of the time, one hop away
+57.8%, two hops 10.3%. A fixed two-hop path is right for a tenth of them and
+destroys a correct answer for the eleventh that needed none.
 
 So `in_country` climbs `located_in` until the value is something the corpus
 calls a country, and stops immediately if it already is. That, the value
 templates and the categories below take the share of people for whom a country
-can be named at all to **76.9%**.
+can be named at all to **77.7%**.
 
 Those three shares are printed by `data/wikipedia/coverage.py`, against
 whichever database is to hand, rather than remembered. They moved once already
@@ -74,7 +74,8 @@ category is at the edge of that line and stays on the near side of it: "filed
 under `Cities in Denmark`" is a thing the page says, not a thing concluded from
 what it says.
 
-A quarter of birthplace climbs still reach nothing. That used to be 44%, and
+Twenty-two percent of birthplace climbs still reach nothing. That used to be
+44%, and
 the difference was not better traversal - it was noticing, by measuring rather
 than assuming, that the climbs were running out of road rather than failing to
 recognise a country on arrival. What remains is a property of the corpus, and
@@ -131,9 +132,10 @@ FIELD_RELATION: dict[str, tuple[str, int]] = {
 #: answer of type country, and how many hops that takes is a property of the
 #: graph rather than of the question. Measured over the 42,288 people this
 #: corpus records a birthplace for, the distance from that birthplace to a
-#: country is 0 hops for 17.2% of them, 1 hop for 52.2%, 2 for 7.0% and 3 for
-#: 0.5%. A fixed two-hop path is right for a fourteenth of them and actively
-#: destroys the answer for the sixth whose birthplace was already the country.
+#: country is 0 hops for 9.0% of them, 1 hop for 57.8%, 2 for 10.3% and 3 for
+#: 0.6%. A fixed two-hop path is right for a tenth of them and actively
+#: destroys the answer for the eleventh whose birthplace was already the
+#: country.
 #: `coverage.py --db <db>` prints the curve for whichever corpus is to hand.
 CLIMB: dict[str, tuple[str, str]] = {
     "in_country": ("located_in", "country"),
@@ -145,8 +147,9 @@ CLIMB: dict[str, tuple[str, str]] = {
 CLIMB_LIMIT = 6
 
 #: An entity has to be named a country by this many independent infoboxes for
-#: the corpus to be taken at its word. At 3 it yields 193 countries; at 1 it
-#: yields 371 and starts admitting things like "Washington (state)".
+#: the corpus to be taken at its word. At 3 that is 193 claims, which `demote`
+#: then cuts to 143 by dropping the ones the containment contradicts; at 1 it
+#: is 371 claims and starts admitting things like "Washington (state)".
 #: `coverage.py` prints the whole curve, which is what makes the choice
 #: reviewable - the floor decides where every `in_country` climb stops.
 TYPE_FLOOR = 3
@@ -525,9 +528,26 @@ def build(db: sqlite3.Connection, source: str,
             [(source, subject, target) for subject, target in filed])
         report(f"  {len(filed):,} more from categories")
 
+        # And now the types again, because `demote` needs to know what
+        # contains what and half of that did not exist when it last ran.
+        # California, Chicago and Los Angeles are placed inside the United
+        # States by their categories, not by their infoboxes, so the pass above
+        # saw them contained by nothing and left them believing they were
+        # countries. The documented fix for this landed in #40 and never
+        # covered them - "what country was X born in" still answered Chicago
+        # 445 times and California 555.
+        #
+        # Only the demotions can change here, not the claims: a category never
+        # says `country = X`. So this re-reads the containment and nothing else.
+        kinds = types(db, source, resolve)
+        db.execute("DELETE FROM entity_type WHERE source = ?", (source,))
+        db.executemany("INSERT OR REPLACE INTO entity_type VALUES (?, ?, ?)",
+                       [(source, kind, entity) for kind, entity in kinds])
+        report(f"  {len(kinds):,} typed entities after containment")
+
     # Both, because the caller writes this into `meta` as what the database
-    # holds. Returning only the infobox edges recorded 163,977 against a table
-    # of 167,922 - a provenance number that disagrees with the thing it is
+    # holds. Returning only the infobox edges recorded 163,807 against a table
+    # of 167,868 - a provenance number that disagrees with the thing it is
     # provenance for, which is worse than not having one.
     return len(rows) + len(filed), dropped
 
@@ -555,24 +575,51 @@ def types(db: sqlite3.Connection, source: str,
             target = resolve(value)
             if target:
                 counts[(kind, target)] = counts.get((kind, target), 0) + 1
-    # Three infoboxes calling a thing a country is a low bar for a corpus this
-    # size: California, Chicago and Los Angeles all clear it, and a climb that
-    # reaches one stops and answers it. So a claim is dropped when the same
-    # graph contradicts it - and the contradiction that counts is being inside
-    # *another country*, not being inside anything at all. France records that
-    # it is in Europe and is still a country; California records that it is in
-    # the United States and is not.
-    #
-    # Six entities, and 1,294 of 19,238 answered climbs: before this, "what
-    # country was X born in" answered Chicago 428 times and California 312.
-    claimed = {k[1] for k, n in counts.items()
-               if n >= TYPE_FLOOR and k[0] == "country"}
     within = dict(db.execute(
         "SELECT subject, object FROM edge WHERE source = ? AND relation = ?",
         (source, "located_in")))
-    demoted = {e for e in claimed if within.get(e) in claimed}
+    demoted = demote({e: n for (kind, e), n in counts.items()
+                      if kind == "country" and n >= TYPE_FLOOR}, within)
     return sorted(k for k, n in counts.items()
                   if n >= TYPE_FLOOR and k[1] not in demoted)
+
+
+def demote(claims: dict[str, int], within: dict[str, str]) -> set[str]:
+    """Of two claimed countries in a containment, the one to stop believing.
+
+    Three infoboxes calling a thing a country is a low bar for a corpus this
+    size - California, Chicago and Los Angeles all clear it - and a climb that
+    reaches one stops and answers it. So a claim is dropped when the same graph
+    contradicts it, the contradiction being that it sits *inside another
+    country*. Being inside anything at all is not enough: France records that
+    it is in Europe and is still a country.
+
+    **Which of the two to drop is decided by how often the corpus calls each a
+    country**, not by which is the container. Dropping the contained one always
+    is the obvious rule and it is wrong here, because three infoboxes say
+    `country = Asia`: that is exactly `TYPE_FLOOR`, so Asia is claimed, and
+    every country filed inside it - Japan, China, Iran, forty more - becomes a
+    thing "inside another country" and gets demoted. Antarctica and the
+    Caribbean clear the floor the same way, and Europe does not, which is why
+    the France example above worked and hid this.
+
+    The counts are not close, so this is not a delicate judgement:
+
+        Asia 3            against Japan 257, China 74, Iran 35
+        United States 4155 against California 16, Chicago 5, Massachusetts 4
+        Canada 283         against Ontario 3
+
+    A tie keeps the container, which is the old behaviour.
+    """
+    dropped = set()
+    for entity, container in within.items():
+        if entity not in claims or container not in claims:
+            continue
+        if claims[container] < claims[entity]:
+            dropped.add(container)
+        else:
+            dropped.add(entity)
+    return dropped
 
 
 def people(db: sqlite3.Connection, source: str) -> set[str]:
