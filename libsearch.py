@@ -78,13 +78,34 @@ K1, B = 1.5, 0.75
 #: Wikipedia's editors have already voted on which is which, by writing
 #: redirects: Napoleon has twelve alternate names and Napoleon II has three.
 #:
-#: At 1.0 the probe set goes from 50% to 85% first-place and 75% to 100%
-#: in the top three. **Not swept.** The obvious next value to try is 0.5,
-#: since one probe suggests a famous article can now outrank a relevant
-#: one - "what language is spoken in brazil" answers with English before
-#: Brazil - and the run that would have measured it was killed by memory
-#: pressure rather than telling us anything.
-FAME = 1.0
+#: This was 1.0 and unswept, with a note here asking for 0.5 to be tried. It
+#: has now been swept, on the whole corpus, against probe sets large enough to
+#: choose - `tools/probe_entities.py --sample N`, where **by title** is every
+#: article asked for by its own name and **by redirect** is every alternate
+#: name asked for by itself:
+#:
+#:      FAME   by title   by redirect   the twenty
+#:      0.0       93.9%         88.1%        11/20
+#:      0.25      87.8%         91.7%        17/20     <- this
+#:      0.5       73.3%         89.7%        17/20
+#:      1.0       47.8%         85.1%        17/20
+#:
+#: **At 1.0, less than half of all articles were found first by their own exact
+#: title.** 0.25 beats it by forty points there, by six on redirects - a set
+#: biased *toward* fame, since redirect count is what this scores - and ties it
+#: on the twenty. It dominates; there is no trade to weigh.
+#:
+#: The twenty could not see any of that. They read 17/20 at both, because they
+#: were assembled from the misses of the failure this knob repairs and are
+#: therefore blind by construction to the failure it causes. That is the more
+#: useful half of this measurement: a probe set built from one bug's symptoms
+#: will approve of any fix for that bug, however much else it breaks.
+#:
+#: It got worse as the corpus grew - 77.7% by title at 40,000 articles, 53.3%
+#: at 120,000, 47.8% at 283,997 - because a larger corpus holds more famous
+#: articles to swamp the ranking. A card built with `--limit` was hurt least,
+#: which is exactly backwards from where the damage would be noticed.
+FAME = 0.25
 
 WORD = re.compile(r"[a-z0-9]+")
 
