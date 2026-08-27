@@ -94,8 +94,9 @@ class OracleSpec:
     #: has no other symptom - every id in the wrong graph is still an article.
     num_docs: int
     digest: int
-    #: phrase index -> the (relation, kind) steps it means.
-    paths: list[list[tuple[int, int]]]
+    #: phrase index -> the (relation, kind) steps it means, or `None` for a
+    #: phrase the machine should refuse rather than walk.
+    paths: list[list[tuple[int, int]] | None]
     #: The phrasebook model, as buildez80.load_for_build returns it.
     model: BuildInputs | None = None
     #: How many times a climb may step before giving up. A property of the
@@ -1409,6 +1410,8 @@ def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
     b.ld_de_label("PATHTAB")
     b.add_hl_de()
     b.ld_a_hl()                      # the step count
+    b.cp_n(libgraphcard.REFUSE)
+    b.jp_z("RP_IDK")                 # a phrase that is a refusal, not a path
     b.or_a()
     b.jp_z("RP_SHOW")                # a phrase with no walkable path
     b.push_hl()
@@ -1435,6 +1438,15 @@ def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
     b.call("PRSTR")                  # the title alone: this is an answer
     b.ld_a_n(ord("."))
     b.rst(MOS_OUTCHAR)
+    b.jp("PRNL")
+
+    # A refusal. Not the article list: this corpus has no gaps, so the list is
+    # never empty and offering it would be the fluent wrong answer wearing a
+    # different hat. The machine says it does not know, and says nothing else.
+    b.label("RP_IDK")
+    b.call("PRNL")
+    b.ld_hl_label("MSGIDK")
+    b.call("PRSTR")
     b.jp("PRNL")
 
 
@@ -1548,13 +1560,21 @@ def _emit_classifier_data(b: EZ80Builder, spec: OracleSpec) -> None:
         b.label(f"WTS{i}")
         b.blob(buildez80.encode_weights(weights))
 
+    # Only the oracle build refuses anything, so the message lives here rather
+    # than beside MSGNONE - a search card would otherwise carry 24 bytes it can
+    # never print, and every article the accumulator holds is worth a byte.
+    b.label("MSGIDK")
+    b.ascii("I do not know that one.")
+    b.db(0)
+
     # The paths table: one fixed-width row per phrase, so the index is three
     # doublings rather than a multiply. A phrase whose path this cannot walk -
-    # an inverse, for now - gets a zero count and falls back to the search.
+    # an inverse, for now - gets a zero count and falls back to the search, and
+    # a phrase that is a refusal gets REFUSE and falls back to nothing.
     b.label("PATHTAB")
     for steps in spec.paths:
-        row = [len(steps)]
-        for relation, kind in steps:
+        row = [libgraphcard.REFUSE] if steps is None else [len(steps)]
+        for relation, kind in (steps or ()):
             row += [relation, kind]
         assert len(row) <= PATH_STRIDE, f"path too long: {steps}"
         b.emit(*row, *([0] * (PATH_STRIDE - len(row))))

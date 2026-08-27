@@ -47,7 +47,7 @@ FACTS = [
     ("Marie Curie", "birth_place", "Warsaw"),
     ("Warsaw", "country", "Poland"),
 ]
-PHRASES = ["BORN_IN", "BORN_IN IN_COUNTRY"]
+PHRASES = ["BORN_IN", "BORN_IN IN_COUNTRY", libgraphcard.REFUSE_PATH.upper()]
 
 
 @pytest.fixture(scope="module")
@@ -110,6 +110,9 @@ def binary(card, tmp_path_factory):
         pairs.extend((f.format(who), "BORN_IN IN_COUNTRY") for f in (
             "what country was {} born in", "which country was {} born in",
             "what nation was {} born in", "{} was born in what country"))
+        pairs.extend((f.format(who), libgraphcard.REFUSE_PATH.upper()) for f in (
+            "how many cousins does {} have", "count the cousins of {}",
+            "is {} related to me", "who is the oldest friend of {}"))
 
     model, _o, _m = classify.train(
         pairs, [32], 200, 0.01, seed=0, split_seed=0, val_frac=0.25,
@@ -181,6 +184,32 @@ def test_a_query_matching_no_article_says_so(card, binary):
     out = ask(card, binary, "zzzzqqq")
     assert "Warsaw" not in out and "England" not in out
     assert "nothing" in out.lower() or "no " in out.lower()
+
+
+# --- refusing, which a corpus with no gaps cannot otherwise do ----------------
+
+
+def test_a_refused_phrase_says_so_instead_of_walking(card, binary):
+    """The whole point of the class. A count over a set is not a path at any
+    length, and without somewhere to route it the question lands on a path that
+    *does* complete - so the machine answers a different question, fluently."""
+    out = ask(card, binary, "how many cousins does jane austen have")
+    assert "I do not know that one." in out
+
+
+def test_a_refusal_offers_no_articles(card, binary):
+    """Distinct from the search fallback on purpose. This corpus has no gaps,
+    so the article list is never empty, and offering it would be the confident
+    wrong answer wearing a different hat."""
+    out = ask(card, binary, "how many cousins does jane austen have")
+    assert "Steventon" not in out and "Hampshire" not in out
+
+
+def test_refusing_is_not_what_an_unwalkable_path_does(card, binary):
+    """A step count of zero still hands over the article - `None` and `[]` are
+    different things and the card keeps them apart."""
+    out = ask(card, binary, "where was poland born")
+    assert "I do not know that one." not in out
 
 
 # --- the pair of files that must agree ----------------------------------------
