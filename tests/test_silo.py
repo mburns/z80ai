@@ -405,12 +405,26 @@ def test_every_phrase_the_classifier_knows_is_a_path_the_card_can_walk(silo):
         "SELECT DISTINCT kind FROM entity_type WHERE source = ?",
         (schema.SOURCE,))})
 
+    import libgraphcard
+
     labels = list(relationpaths.PATHS)
     steps = buildwikigraph.paths_for(labels, have, kinds)
-    inert = [label for label, path in zip(labels, steps, strict=True) if not path]
+
+    # `[]` is the failure - a label whose path this corpus has no edges for.
+    # `None` is the refusal class, which is deliberate, and testing `not path`
+    # cannot tell them apart.
+    inert = [label for label, path in zip(labels, steps, strict=True)
+             if path == []]
     assert inert == [], f"the card would answer these with silence: {inert}"
-    # One byte of length plus two per step, and the table is fixed-stride.
-    assert max(1 + 2 * len(path) for path in steps) <= PATH_STRIDE
+
+    refusals = [label for label, path in zip(labels, steps, strict=True)
+                if path is None]
+    assert refusals == [libgraphcard.REFUSE_PATH], refusals
+
+    # One byte of length plus two per step, and the table is fixed-stride. A
+    # refusal is one byte and no steps.
+    assert max(1 + 2 * len(path) for path in steps
+               if path is not None) <= PATH_STRIDE
 
 
 def test_the_climbs_are_registered_by_importing_the_corpus(silo):

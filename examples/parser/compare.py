@@ -14,12 +14,17 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections import Counter
 
 import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import gendata
+import table
 
 import feedme
 
@@ -135,9 +140,19 @@ def main() -> None:
         print(f"{label:>22} {r['char_acc']:9.1%} {r['train']:8.1%} {r['eval']:8.1%}")
 
     print(f"{'always-majority':>22} {'-':>9} {'-':>8} {majority:8.1%}")
+
+    # The third row is not a model. See table.py for why the comparison is fair
+    # in the way it is scored and unfair in the way that matters.
+    table_train, _ = table.score(train_pairs)
+    table_eval, _ = table.score(eval_pairs)
+    print(f"{'word table':>22} {'-':>9} {table_train:8.1%} {table_eval:8.1%}")
+
     print("\neval is the number that matters: those object pairs never appeared "
           "in training,\nin any phrasing, so a model can only score by "
-          "representing word order.")
+          "representing word order.\nThe table never needed to see a pair, so "
+          "holding them out costs it nothing.")
+
+    _report_unknown_words(results)
 
     if args.save:
         r = results[8]
@@ -151,6 +166,36 @@ def main() -> None:
             "total_epochs": args.epochs,
         }, args.save)
         print(f"\nSaved the position-aware model to {args.save}")
+
+
+#: Objects the corpus does not contain, to ask both approaches about.
+MADE_UP = (("ZORKMID", "BOX"), ("KEY", "GRUE"), ("XYZZY", "PLUGH"))
+
+
+def _report_unknown_words(results: dict) -> None:
+    """What each does with a word it was never given.
+
+    The property an Interactive Fiction needs most and the one a bare argmax
+    cannot have - a player types a noun the author never wrote about every few
+    turns, and "I don't know the word 'zorkmid'" is the only useful thing to
+    say back.
+    """
+    commands = [t.format(a=a, b=b) for a, b in MADE_UP for t in gendata.TEMPLATES]
+
+    print(f"\nwords neither was given, {len(commands)} commands:")
+    for bands, label in ((1, "flat"), (8, "8 position bands")):
+        model = results[bands]["model"]
+        query_encoder, context_encoder = results[bands]["encoders"]
+        said = Counter(
+            feedme.generate_response(model, command, query_encoder,
+                                     context_encoder, max_len=8).strip()
+            for command in commands)
+        shown = ", ".join(f"{value!r} x{n}" for value, n in said.most_common())
+        print(f"  {label:>18}  {shown}")
+
+    declined = sum(table.respond(command) is None for command in commands)
+    print(f"  {'word table':>18}  declined {declined}/{len(commands)}, "
+          f"naming the word it did not know")
 
 
 if __name__ == "__main__":

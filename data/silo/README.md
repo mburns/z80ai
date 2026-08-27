@@ -157,11 +157,12 @@ generation      asked  hops needed   reached
 6                 307            6      0.0%
 ```
 
-`CLIMB_LIMIT` is 6 and counts hops taken rather than nodes checked, so
-generation 5 reaches its founder on the last hop it is allowed and generation 6
-falls exactly one short. Nothing is wrong; that is the price of a walk that
-must not loop forever, and it is only visible on a corpus where the true answer
-is known.
+`CLIMB_LIMIT` is 6 and counts the values a climb may *examine* rather than the
+hops it may take, so it buys five hops: generation 5 reaches its founder on the
+last one it is allowed and generation 6 falls exactly one short. Nothing is
+wrong; that is the price of a walk that must not loop forever, and it is only
+visible on a corpus where the true answer is known. `--climb-limit 7` buys the
+seventh — see [below](#the-limit-counts-values-examined-not-hops).
 
 ### A set, reached through an inverse hop
 
@@ -400,6 +401,43 @@ compression ratio, and the ratio is a property of the corpus.
 
 All ten entries come back off a real card byte-for-byte identical to the
 reference, at 1,414 to 1,536 bytes each.
+
+### And then the screen broke them in half
+
+Nothing in this repository has ever emitted a VDU sequence. All fifty-seven
+print sites push one character through `RST 10h` and let the terminal decide
+where a line ends, which was invisible for as long as a lead was 300 characters
+of one paragraph. Fifteen hundred bytes of prose is not.
+
+`PRWRAP` measures the next word before printing the space in front of it, and
+breaks the line instead when it will not fit. No lookahead buffer is needed:
+the whole article is already unpacked in `TEXTBUF`, so the word can be measured
+in place. A paragraph break the author wrote is honoured rather than treated as
+another space, which is the only formatting `authored.py` keeps.
+
+```
+Incident Report 214-11: Cistern Pump Failure, Level 142
+At approximately 0340 on the eleventh day of the two hundred and fourteenth
+year, the primary cistern pump on Level 142 stopped without warning. The
+Third Shift pump operator on duty logged the silence before the pressure
+alarm reached her, which is the only reason the loss was held to eleven
+hours of supply rather than the full reserve.
+
+Water Treatment attended within the hour. The fault was traced to the lower
+bearing housing, where a seal had been weeping for long enough to leave a
+salt line the width of a thumb...
+```
+
+**106 bytes, and it cost nothing at all.** The article ceiling moves in whole
+256-article pages — an article is 257 bytes of budget and the gap holds a whole
+number of pages — so 106 bytes of program did not cross a boundary and the
+limit is still 502,016. That is the granularity from [#65](../../pull/65) paying
+for something rather than just being a fact about the arithmetic.
+
+`AgonHost` models no screen; it collects what `RST 10h` was given. That is the
+right level to assert at, because the *program* is what has to decide where a
+line ends — so the tests read the character stream the way a terminal would and
+check that no line runs past the width and no word is split across two.
 
 ### Two of them lose their own name
 
@@ -785,6 +823,166 @@ at all — and the one failure the machine *can* report is the hop limit.
 
 Completeness takes away the machine's ability to say it does not know. That is
 worth having measured before wishing a corpus were denser.
+
+### Giving it back, as a class rather than a threshold
+
+`libinfer.classify` is a bare argmax. There is no score, no margin and nowhere
+to put a confidence cut-off, so the only way this machine can decline is to be
+*taught* declining — the way `examples/smalltalk` carries CLINC's out-of-scope
+utterances as an `IDK` class rather than as a rule.
+
+`relationpaths.PATHS` now holds a twenty-first label, `refuse`, with twelve
+phrasings covering the four shapes above: a count over a set, a maximum over
+one, an intersection of two ancestor sets, and a count around the ring.
+
+On the card it needs its own step count. Zero was already taken — it means "no
+edges for this phrase", which sends the machine to the article list — so
+`libgraphcard.REFUSE` is 0xFF and the walk routine jumps to a message instead
+of a walk. `None` and `[]` are different things all the way from `paths_for`
+through the `.GRF` to the eZ80.
+
+```
+? how many cousins does amanda m wilson have
+I do not know that one.
+
+? who is amanda m wilson's father
+Larry O. Wilson.
+```
+
+**A refusal is the cheapest thing the card does** — 2,573 card bytes against
+4,663 for an answer, because it reads no article text and walks no graph.
+
+### What the class costs, and what it does not fix
+
+| | 20 paths | 21 with `refuse` |
+|---|---:|---:|
+| binary | 39,865 | 40,030 |
+| trained phrasings | 95.6% | 95.4% |
+| **phrasings never seen** | **44.5%** | **44.3%** |
+| steady phrasings | 114/240 | 116/252 |
+
+A twenty-first class costs 165 bytes and nothing else. Both accuracy columns
+move less than the seed-to-seed noise this file has already documented, so the
+class is free in the only budget that was in question.
+
+Held out, **`refuse` scores 47.5%** — above the 44.3% mean and mid-table among
+the twenty-one. Two caveats, and the second is the interesting one.
+
+Its number is not comparable to the others. For a path, twelve phrasings are
+twelve ways of asking one question; for `refuse` they are three ways each of
+asking four *different* questions, so holding out three at random can remove a
+whole shape rather than a wording of a familiar one. It is a harder split, not
+a better classifier.
+
+And **when a refusal is missed it goes where the words point**: 32 of the 63
+misses land on `crew_is`, because "who is the oldest person on X's crew" shares
+almost every term with "who is on X's crew". The rest scatter over `father_is
+father_is`, `job_is` and `works_in located_in`.
+
+That is exactly the misrouting the class exists to prevent, still happening on
+the wordings where an answerable path is a near neighbour in trigram space. The
+class converts about half of these questions from a confident wrong answer into
+a refusal. It does not convert them all, and the ones it misses are the ones
+that look most like questions this corpus can answer.
+
+## Using it as an oracle for authored fiction
+
+Everything above measures the card. This is what an author of a Silo-like
+Interactive Fiction would need to know before writing against one, and most of
+it is a constraint rather than a capability.
+
+### What it can be asked
+
+Two things, and they do not overlap.
+
+**About people, from the graph.** Twenty question shapes — parent, spouse, job,
+shift, crew, class, dwelling, neighbour, section, birth year, and the
+compositions of those. A question in one of those shapes about somebody in the
+corpus is answered with a name and a full stop, in about 370,000 instructions,
+whatever the corpus size.
+
+**About anything, from the text.** Any entry — generated or written — is found
+by the words in it. `data/silo/authored/` holds ten documents nobody generated,
+and asking for a phrase in one returns it. That is a search engine, not an
+oracle: it hands over prose and makes no claim about it.
+
+### The graph knows nothing about written entries, and that is the point
+
+A written entry carries no `edge`, no `fact` and no `entity_type`. So a *path*
+question that lands on one cannot be answered, and what the machine does then is
+fall back to showing the text:
+
+```
+? who is the cistern pump failure's father
+Incident Report 214-11: Cistern Pump Failure, Level 142
+At approximately 0340 on the eleventh day of...
+```
+
+The classifier routed that to `father_is`, the search resolved it to the
+incident report, and the walk found no edge. The fallback is the honest answer,
+and it is only available because the entry has no edges to walk. **An authored
+entry can never be the subject of a fabricated fact**, because there is nothing
+there to fabricate from. Giving written entries their own edges would take that
+away, which is the argument against doing it.
+
+### Two different ways of saying no
+
+Worth keeping apart when writing dialogue for the machine, because they mean
+different things and the order they fire in is fixed:
+
+| | |
+|---|---|
+| `Nothing on the card matches that.` | it does not know **who** you mean |
+| `I do not know that one.` | it knows who, but not **that question** |
+
+The search runs before the classifier, so a refusal only fires once a subject
+has resolved. `how many cousins does zzqqxx have` gets the first message, not
+the second, at 7,101 instructions — the cheapest thing the card does.
+
+### The four questions a path cannot express
+
+Composition — follow this, then that, in either direction — is the whole of what
+this machine reasons with. It stops at aggregation, ranking and set
+intersection, and these are the four shapes it stops at:
+
+| | why |
+|---|---|
+| how many cousins does X have | a count over a set; a path ends in a value |
+| who is the oldest on X's crew | a maximum over a set it can enumerate but not rank |
+| is X related to Y | an intersection of two recursive ancestor sets |
+| how many live on X's floor | a count around the ring: a program, not a query |
+
+They now route to `refuse` and are declined about half the time on wordings the
+classifier never saw. **The other half still misroute**, and predictably: a
+refusal whose words overlap an answerable path lands on that path. Anything
+phrased around a crew tends to reach `crew_is`.
+
+For an author that is a rule about *phrasing*, not about content. A question the
+machine must decline is safest when it shares as few words as possible with one
+it can answer — and "who is the oldest person on X's crew" is about as unsafe as
+it gets.
+
+### Rules for writing entries
+
+- **Do not name an entry after something the generator writes about.** An exact
+  collision is refused by `authored.py`; a near miss is legal and loses. Two of
+  the ten shipped entries do exactly this — `Ration Appeals Panel, Case 2196`
+  asked for by its own title returns the committee stub, because BM25 prefers an
+  eleven-word document the query terms are most of.
+- **1,952 bytes an entry**, derived from what the device reads rather than
+  chosen. Longer is refused at build time.
+- **A written entry costs about forty generated ones** on the card — 1,070
+  packed bytes against 25 — and the ceiling is still a count, not a size, so
+  neither is the constraint.
+- **Re-run `authored.py` after every `generate.py`**, which deletes them.
+- The classifier knows twenty shapes and one refusal. A question outside all
+  twenty-one does not fail; it lands on whichever of them it looks most like.
+
+### What this is not
+
+It is an oracle you query, not a world you are inside. There is no state, no
+turn loop, no parser for verbs, and nothing here writes to the card. Those are
+the second half of [#62](../../issues/62) and none of them exist.
 
 ## What SQLite is doing
 

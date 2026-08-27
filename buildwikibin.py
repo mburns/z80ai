@@ -47,6 +47,7 @@ import argparse
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import libagonio
 import libgraphcard
 from libez80 import AGON_LOAD_ADDR, AGON_SRAM_TOP, EZ80Builder, agon_header
 
@@ -94,8 +95,9 @@ class OracleSpec:
     #: has no other symptom - every id in the wrong graph is still an article.
     num_docs: int
     digest: int
-    #: phrase index -> the (relation, kind) steps it means.
-    paths: list[list[tuple[int, int]]]
+    #: phrase index -> the (relation, kind) steps it means, or `None` for a
+    #: phrase the machine should refuse rather than walk.
+    paths: list[list[tuple[int, int]] | None]
     #: The phrasebook model, as buildez80.load_for_build returns it.
     model: BuildInputs | None = None
     #: How many times a climb may step before giving up. A property of the
@@ -113,6 +115,12 @@ TOP_K = 3
 CHUNK = 2048
 #: Stack margin below the top of SRAM, matching the inference builds.
 STACK_MARGIN = 0x1000
+
+#: Where `PRWRAP` breaks a line, from `libagonio` so that the wrapper and the
+#: programs using it cannot disagree. Not a build parameter because nothing yet
+#: knows the screen mode - see the second scope of issue #62, where finding
+#: that out is the first item.
+WRAP_WIDTH = libagonio.WRAP_WIDTH
 
 
 def accumulator_base(num_docs: int) -> int:
@@ -1072,7 +1080,7 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
     b.inc_hl()
     b.or_a()
     b.jr_nz("SO_FIND")
-    b.call("PRSTR")
+    b.call("PRWRAP")                 # the lead, broken between words
     b.call("PRNL")
     b.ret()
 
@@ -1250,69 +1258,12 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
 
 
 def _emit_console(b: EZ80Builder) -> None:
-    b.label("PRSTR")
-    b.ld_a_hl()
-    b.or_a()
-    b.ret_z()
-    b.rst(MOS_OUTCHAR)
-    b.inc_hl()
-    b.jr("PRSTR")
+    """The four console routines, shared with any other Agon program.
 
-    b.label("PRNL")
-    b.ld_a_n(13)
-    b.rst(MOS_OUTCHAR)
-    b.ld_a_n(10)
-    b.rst(MOS_OUTCHAR)
-    b.ret()
-
-    b.label("READ_INPUT")
-    b.xor_a()
-    b.ld_mem_label_a("INPLEN")
-
-    b.label("RI_LOOP")
-    b.ld_a_n(MOS_GETKEY)
-    b.rst(MOS_API)
-    b.or_a()
-    b.jr_z("RI_LOOP")
-    b.cp_n(13)
-    b.jr_z("RI_DONE")
-    b.cp_n(8)
-    b.jr_z("RI_DEL")
-    b.cp_n(127)
-    b.jr_z("RI_DEL")
-    b.cp_n(32)
-    b.jr_c("RI_LOOP")
-
-    b.ld_c_a()
-    b.ld_a_mem_label("INPLEN")
-    b.cp_n(MAX_INPUT_LEN)
-    b.jr_nc("RI_LOOP")
-    b.ld_hl_label("INPBUF")
-    b.ld_de_nn(0)
-    b.ld_e_a()
-    b.add_hl_de()
-    b.ld_hl_c()
-    b.ld_a_mem_label("INPLEN")
-    b.inc_a()
-    b.ld_mem_label_a("INPLEN")
-    b.ld_a_c()
-    b.rst(MOS_OUTCHAR)
-    b.jr("RI_LOOP")
-
-    b.label("RI_DEL")
-    b.ld_a_mem_label("INPLEN")
-    b.or_a()
-    b.jr_z("RI_LOOP")
-    b.dec_a()
-    b.ld_mem_label_a("INPLEN")
-    for code in (8, 32, 8):
-        b.ld_a_n(code)
-        b.rst(MOS_OUTCHAR)
-    b.jr("RI_LOOP")
-
-    b.label("RI_DONE")
-    b.call("PRNL")
-    b.ret()
+    Lifted into `libagonio` when the turn loop wanted the same ones. The
+    emission is unchanged, which `test_codegen_stability` is the check on.
+    """
+    libagonio.emit_console(b, MAX_INPUT_LEN)
 
 
 
@@ -1409,6 +1360,8 @@ def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
     b.ld_de_label("PATHTAB")
     b.add_hl_de()
     b.ld_a_hl()                      # the step count
+    b.cp_n(libgraphcard.REFUSE)
+    b.jp_z("RP_IDK")                 # a phrase that is a refusal, not a path
     b.or_a()
     b.jp_z("RP_SHOW")                # a phrase with no walkable path
     b.push_hl()
@@ -1435,6 +1388,15 @@ def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
     b.call("PRSTR")                  # the title alone: this is an answer
     b.ld_a_n(ord("."))
     b.rst(MOS_OUTCHAR)
+    b.jp("PRNL")
+
+    # A refusal. Not the article list: this corpus has no gaps, so the list is
+    # never empty and offering it would be the fluent wrong answer wearing a
+    # different hat. The machine says it does not know, and says nothing else.
+    b.label("RP_IDK")
+    b.call("PRNL")
+    b.ld_hl_label("MSGIDK")
+    b.call("PRSTR")
     b.jp("PRNL")
 
 
@@ -1548,13 +1510,21 @@ def _emit_classifier_data(b: EZ80Builder, spec: OracleSpec) -> None:
         b.label(f"WTS{i}")
         b.blob(buildez80.encode_weights(weights))
 
+    # Only the oracle build refuses anything, so the message lives here rather
+    # than beside MSGNONE - a search card would otherwise carry 24 bytes it can
+    # never print, and every article the accumulator holds is worth a byte.
+    b.label("MSGIDK")
+    b.ascii("I do not know that one.")
+    b.db(0)
+
     # The paths table: one fixed-width row per phrase, so the index is three
     # doublings rather than a multiply. A phrase whose path this cannot walk -
-    # an inverse, for now - gets a zero count and falls back to the search.
+    # an inverse, for now - gets a zero count and falls back to the search, and
+    # a phrase that is a refusal gets REFUSE and falls back to nothing.
     b.label("PATHTAB")
     for steps in spec.paths:
-        row = [len(steps)]
-        for relation, kind in steps:
+        row = [libgraphcard.REFUSE] if steps is None else [len(steps)]
+        for relation, kind in (steps or ()):
             row += [relation, kind]
         assert len(row) <= PATH_STRIDE, f"path too long: {steps}"
         b.emit(*row, *([0] * (PATH_STRIDE - len(row))))
@@ -1611,7 +1581,7 @@ def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, pages: int,
     b.ascii(TEXT_MAGIC.decode())
 
     for name in ("IDXH", "DATH", "INPLEN", "TOKPOS", "TOKLEN", "NSCORED",
-                 "SHOWN", "HCNT", "NULSEEN", "NTGLUED"):
+                 "SHOWN", "HCNT", "NULSEEN", "NTGLUED", "WRAPCOL"):
         b.label(name)
         b.db(0)
     b.label("BESTSC")

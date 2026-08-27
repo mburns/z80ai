@@ -27,11 +27,46 @@ earns nothing there.
     flat (current)     99.3%    97.9%    85.9%
   8 position bands    100.0%   100.0%    98.4%
    always-majority         -        -    56.2%
+        word table         -   100.0%   100.0%
 ```
 
 Errors on unseen pairs fall by 89%. See [ENCODING.md](../../ENCODING.md) for why
 this does not generalise to the paraphrase-style examples, where the same change
 makes things worse.
+
+## The fourth row is not a model
+
+`table.py` is a verb set, a noise-word set, a preposition set, and the sizes
+written down. It scores 100% on both splits, and the reason is the whole point:
+**held-out pairs cost it nothing, because it never needed to see a pair.** The
+model has to infer from examples what the table was told.
+
+That is unfair in exactly the way the comparison is for. An author of an
+Interactive Fiction writes the world down — a key is small, a barn is large —
+and does not train it. The question the second scope of
+[#62](../../../issues/62) turns on is whether `PUT X IN Y` should go through a
+model at all, and this is what the authoring step buys.
+
+### What a word it was never given does
+
+The property that decides it, and it is not accuracy:
+
+```
+words neither was given, 12 commands:
+                flat  'OK' x8, 'NO' x4
+    8 position bands  'NO' x7, 'OK' x5
+          word table  declined 12/12, naming the word it did not know
+```
+
+`PUT ZORKMID IN BOX` gets a confident `OK` or `NO` from both models and nothing
+at all from the table. A player types a noun the author never wrote about every
+few turns, and *"I don't know the word 'zorkmid'"* is the only useful thing to
+say back — which a bare argmax has no way to produce, the same gap
+`data/silo/` closed by [teaching a refuse class](../../data/silo/README.md).
+
+The model is not wrong here in a way more training would fix. It is being asked
+a question that has no answer and returning its best guess, because returning a
+best guess is the only thing it can do.
 
 ## Building it
 
