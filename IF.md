@@ -112,13 +112,52 @@ At 12 bytes a room and 8 a thing, 505 KB is more rooms than anybody will write.
 Prose dominates and [#67](data/silo/README.md) already measured that a card
 holds far more of it than an author will produce.
 
+## Rules, and the three shapes of four they close
+
+`data/silo/README.md` names four things a graph path cannot express, and the
+reason is principled rather than accidental: composition works in both
+directions and stops at aggregation, ranking and set intersection.
+
+A rule is a flat list of conditions that must all hold, and a list of actions
+to take when they do. That is the smallest step past a path, and it is worth
+being exact about what the step buys:
+
+| a path cannot | a rule | |
+|---|---|---|
+| a count over a set | **yes** | `CARRYING 2` — a question about a set, not about any one thing |
+| an intersection of two sets | **yes** | two `HAVE` conditions ANDed: not two things, *these* two |
+| state that outlives the question | **yes** | `FLAG` set in one room and read in another |
+| a maximum over a set | **no** | ranking needs a loop, and a flat condition list has none |
+
+Three of four. The fourth is not an oversight — a condition list is evaluated
+once per rule and never iterates, so "the oldest person on X's crew" is exactly
+as far out of reach as it was. Closing it wants a loop opcode, which is a
+different instrument and a bigger one.
+
+```
+> take badge
+> take wrench
+Your hands are full. Whatever else you find down here is going to have to
+wait, or something you already have is going down the stair without you.
+The badge and the wrench together look like a story you would rather not
+have to tell a deputy.
+```
+
+Both of those are rules. The first is a count and the second a conjunction, and
+neither is a question the silo card could be asked at any length.
+
+A rule is length-prefixed so that skipping one is an addition rather than a
+walk over its parts. Flags and the one-shot markers are a **byte apiece rather
+than a bit**: bits are eight times smaller and want a shift and a mask at four
+call sites, and there is half a megabyte of SRAM spare — the sixty bytes are
+not worth four places to be wrong, and a restore that replayed every event the
+player had already seen would be the bug that saved them.
+
 ## What it does not do yet
 
-No rules — `the door opens if you have the key and the power is on` is not a
-graph query and not a word table either; it wants a condition→action bytecode,
-which is the next item. No daemons, no containers, no save and restore on the
-device, and no screen mode or status line. The world is also not wired to the
-silo card, so the oracle terminal that ought to be standing in the IT office is
-not there.
+No daemons, no containers, no ranking, and no save and restore on the device -
+`mos_fwrite` is in `libhost` and tested, and the eZ80 side is not written. No
+screen mode and no status line. The world is not wired to the silo card either,
+so the oracle terminal that ought to be standing in the IT office is not there.
 
 Those are the rest of #62's second scope.
