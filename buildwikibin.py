@@ -47,8 +47,10 @@ import argparse
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import buildif
 import libagonio
 import libgraphcard
+import libworld
 from libez80 import AGON_LOAD_ADDR, AGON_SRAM_TOP, EZ80Builder, agon_header
 
 if TYPE_CHECKING:
@@ -192,12 +194,19 @@ def max_docs(fixed: int) -> int:
 def build(num_docs: int, index_name: str = "WIKI.IDX",
           text_name: str = "WIKI.DAT",
           org: int = AGON_LOAD_ADDR,
-          oracle: OracleSpec | None = None) -> EZ80Builder:
+          oracle: OracleSpec | None = None,
+          world: libworld.World | None = None) -> EZ80Builder:
     """Emit the search program for a card holding ``num_docs`` articles.
 
     With ``oracle``, the same program answers from the fact graph first and
     falls back to listing articles - which is what the search build already
     is, so the fallback costs nothing.
+
+    With ``world``, the card becomes a terminal standing in one of that
+    world's rooms, and the program is somewhere before it is something to ask.
+    Issue #62 pictured the terminal as the small thing inside the world; the
+    world is 4,050 bytes and this program is 38,912, so it is the other way
+    about and the world is what gets carried.
     """
     pages = num_pages(num_docs)
     acc_base = accumulator_base(num_docs)
@@ -241,9 +250,30 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
         b.or_a()
         b.jp_nz("BADCARD")
 
+    if world is not None:
+        # A world, and the card standing in one of its rooms. `ATTERM` says
+        # which of the two is listening: the word table when the player is
+        # walking about, the classifier when they are at the screen.
+        #
+        # They share `INPBUF`, which is the whole of what "the two input paths
+        # can coexist" turned out to mean - one line, read by whichever parser
+        # the mode byte selects, and neither writes to it.
+        b.ld_a_n(world.start)
+        b.ld_mem_label_a("HERE")
+        buildif.emit_reset(b, world)
+        b.call("DESCRIBE")
+
     b.label("MAINLOOP")
+    if world is not None:
+        b.call("RULES_RUN")
     b.call("PRNL")
-    b.ld_hl_label("PROMPT")
+    b.ld_hl_label("TERMPROMPT" if world is not None else "PROMPT")
+    if world is not None:
+        b.ld_a_mem_label("ATTERM")
+        b.or_a()
+        b.jr_nz("ML_PROMPT")
+        b.ld_hl_label("WPROMPT")     # walking about, not at the screen
+        b.label("ML_PROMPT")
     b.call("PRSTR")
     b.call("READ_INPUT")
 
@@ -253,6 +283,24 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     b.ld_a_mem_label("INPBUF")
     b.cp_n(ord("!"))
     b.jp_z("QUIT")
+
+    if world is not None:
+        b.ld_a_mem_label("ATTERM")
+        b.or_a()
+        b.jp_z("WORLD_TURN")
+        # LEAVE stands up again. Checked before the card, so a player who
+        # types it never pays for a search that was not a question.
+        b.call("SPLIT")
+        b.ld_hl_label("LEAVEWORD")
+        b.ld_de_label("W1")
+        b.ld_a_mem_label("W1LEN")
+        b.call("LOOKUP")
+        b.jr_c("ML_ASK")
+        b.xor_a()
+        b.ld_mem_label_a("ATTERM")
+        b.call("DESCRIBE")
+        b.jp("MAINLOOP")
+        b.label("ML_ASK")
 
     b.call("CLEAR_ACC")
     b.call("SCORE_QUERY")
@@ -529,7 +577,26 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
         _emit_oracle(b, oracle)
         _emit_classifier(b, oracle)
     _emit_console(b)
+    if world is not None:
+        # The world's turn, entered with a line already in INPBUF. `TURN` is
+        # the label everything in `buildif` jumps to when it is done, and here
+        # it is the way back into this program's loop.
+        b.label("WORLD_TURN")
+        buildif.emit_dispatch(b, quit_label="QUIT")
+        b.label("TURN")
+        b.jp("MAINLOOP")
+        buildif.emit_world_routines(b, world)
+        buildif.emit_world_tables(b, world)
+        b.label("LEAVEWORD")
+        for word in ("LEAVE", "STAND", "STOP"):
+            b.db(len(word))
+            b.ascii(word)
+            b.db(0)
+        b.db(0)
+
     _emit_data(b, num_docs, acc_base, pages, index_name, text_name)
+    if world is not None:
+        buildif.emit_world_ram(b, world, shared_console=True)
     if oracle is not None:
         _emit_classifier_data(b, oracle)
 
