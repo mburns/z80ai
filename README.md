@@ -12,7 +12,8 @@ For insight on how to best train your own model, see [TRAINING.md](TRAINING.md).
 
 ## Examples
 
-Two pre-built examples are included:
+Four pre-built models are included, in rough order of what they ask of the
+machine:
 
 ### [tinychat](examples/tinychat/)
 
@@ -82,10 +83,16 @@ turned out to be the same problem with the evidence thrown away.
 See [data/README.md](data/README.md) for what makes a dataset suit a 2-bit
 model, and `data/lint.py` for checking one before you train it.
 
+## The datasets
+
+Two of them, and neither is a model. They are the other half of the project:
+what a machine that does nothing but compare and add can *look up* and *work
+out*, once the arithmetic has been moved to build time.
+
 ### [Simple English Wikipedia on a card](data/wikipedia/)
 
-Not a model at all. **283,997 articles searched in plain English on an Agon**,
-from an SD card, in a 6KB program:
+**283,997 articles searched in plain English on an Agon**, from an SD card, in
+a 6KB program:
 
 ```
 ? mount everest
@@ -96,20 +103,71 @@ Himalayas, a tall mountain range in Asia.
 ```
 
 An ordinary inverted index, because the trigram encoder the models use scores
-2 of 13 on the same queries and returns *Bures Hamlet* for "who wrote hamlet" —
-it throws away which words matched, which is the one thing retrieval needs.
-BM25 gets 11 of 13. All the arithmetic happens at build time, so the machine
-does nothing but add bytes; that is what keeps the score accumulator at one
-byte per article — 277KB, resident, for the whole encyclopedia.
+**2 of 13** on the same queries and returns *Bures Hamlet* for "who wrote
+hamlet" — it throws away which words matched, which is the one thing retrieval
+needs. BM25 gets 11 of 13. All the arithmetic happens at build time, so the
+machine does nothing but add bytes; that is what keeps the score accumulator at
+one byte per article — 277KB, resident, for the whole encyclopedia.
 
 `benchwiki.py` runs the card in the emulator and counts what a query costs.
-Looking up `zilog z80` retires 66,359 instructions and reads 6,282 bytes;
-`mount everest` costs 1.8 M because *mount* is a common word and *everest* is
-not. What sets the price is the commonest word in the query, not how many words
-it has.
+`zilog z80` retires 66,359 instructions and reads 6,282 bytes; `mount everest`
+costs 1.8 M because *mount* is a common word and *everest* is not. What sets
+the price is the commonest word in the query, not how many words it has.
 
-It is a search box, not an oracle: "who wrote hamlet" returns *Hamlet*, and
-reading the answer out of the article is comprehension, which is out of reach.
+**It is also an oracle now.** Reading an answer out of an article is
+comprehension and still out of reach — but the answer no longer has to come
+from the article:
+
+```
+? who wrote hamlet                     ->  William Shakespeare.
+? where was alexander graham bell born ->  Edinburgh.
+? what country is warsaw in            ->  Poland.
+```
+
+Those come off `WIKI.GRF`, a fact graph in a layout a machine with no
+arithmetic beyond addition can read: a hop is a binary search over fixed-width
+records. When the graph has no answer the program lists articles, so nothing is
+lost by asking.
+
+The ceiling was never the walk — it was **coverage**. Only 46% of articles
+carry an infobox, so a chain that hops onto one of the other 54% stops. Joining
+the corpus to Wikidata by its sitelink is what moved it:
+
+| | before | after |
+|---|---:|---:|
+| what country was X born in | 77.7% | **86.5%** |
+| what country is X in | 86.6% | **93.3%** |
+| subjects on the graph | 37.4% | **62.8%** |
+| edges | 168,306 | **270,740** |
+
+### [A silo, synthesized](data/silo/)
+
+Ten thousand people under one lid, seven generations deep — a corpus invented
+because the encyclopedia is the wrong instrument for the question underneath
+it. Wikipedia's oracle is limited by what nobody wrote down, so measuring it
+measures where the road ends rather than how far a machine could travel.
+
+Here the facts are all there and the answer is known for all ten thousand:
+
+| | hops | walk | best guess |
+|---|---:|---:|---:|
+| who is X's father | 1 | 100% | 48.9% — nearest man of the same surname |
+| which department does X work in | 1 | 100% | 8.2% — always the commonest |
+| who is X's paternal grandfather | 2 | 100% | 45.1% — same surname, 56 years older |
+| which department does X's **father** work in | 2 | 100% | 28.8% — *whatever X does* |
+| which section does X's father's department sit in | 4 | 100% | — |
+
+**The guess column is the point.** A synthetic dataset is the easiest place in
+the world to publish a flattering number, so two of those baselines are
+deliberately strong: children take their father's surname, and 45% of people
+follow a parent into their department. A walk that could not beat them would
+not be worth the card it walks on.
+
+105,404 stored edges imply **506,543 relationships nobody wrote down** —
+cousins, housemates, classmates, neighbours — as views rather than tables, so
+what is stored and what is worked out cannot be confused. And because it is the
+one corpus where the truth is known, it is where the costs are visible: on the
+real card the graph walk is **1.0%** of a query and the classifier is 56%.
 
 ## Which budget is the claim about?
 
@@ -454,34 +512,6 @@ rr l         ; ACC = ACC / 4
 ```
 
 That's the entire neural network: unpack weight, multiply-accumulate, shift. Repeat ~100K times per character generated.
-
-## Recent fixes
-
-Building the emulator-backed test suite surfaced four bugs in the generated
-code. If you have an older build, rebuild it:
-
-- **`MULADD` borrow** (`buildz80com.py`, `buildz80tap.py`) — a weight of `-2` was
-  applied as two consecutive `SBC HL,DE` without clearing carry in between, so
-  every `-2` weight subtracted one too many whenever the first subtraction
-  borrowed. Affected every inference on both CP/M and ZX builds.
-- **ZX Spectrum keyboard** (`buildz80tap.py`) — the buffer-full check did
-  `PUSH AF / CP B / POP AF / JR NC`, and `POP AF` restored the flags from
-  *before* the compare. `JR NC` therefore tested the preceding `CP 32`, which is
-  never carry for a printable character, so every keystroke was discarded. The
-  `.TAP` build could not accept input at all.
-- **Packed-weight row alignment** — weights were packed as one flat stream while
-  the unpack loop reloads a byte at every 4th weight *of each neuron*. Any layer
-  whose input width was not a multiple of four desynchronised from row 1 onward.
-- **`align()`** — `if overage < boundary` is always true, so aligning an
-  already-aligned address inserted a whole extra boundary of padding.
-
-Two more in the Python:
-
-- `feedme.AutoregressiveModel._forward_int` truncated toward zero when shifting
-  down; `SRA H / RR L` floors. The reported integer accuracy was optimistic for
-  every negative accumulator.
-- Layers were discovered with a lexical sort, so a model with ten or more layers
-  would have run `fc10` immediately after `fc1`.
 
 ---
 
