@@ -439,6 +439,54 @@ def test_counting_is_free_once_the_inverse_index_exists(db):
     assert libgraph.count(db, "w", "Paris", "born_in") == 0
 
 
+def test_a_count_is_a_step_and_it_ends_the_walk(db):
+    """"How many people were born in London" is one step, not an aggregate.
+
+    The reverse table is sorted, so every record for one object is contiguous
+    and a count is a binary search then a scan. It ends the walk because a
+    number has no edges - there is nowhere to hop from three.
+    """
+    load(db, ["Alan Turing", "Ada Lovelace", "Charles Babbage", "London"],
+         [("Alan Turing", "birth_place", "London"),
+          ("Ada Lovelace", "birth_place", "London"),
+          ("Charles Babbage", "birth_place", "London")])
+    assert libgraph.follow(db, "w", "London", ["count_born_in"]).value == "3"
+    # A hop, then a count of what points back at where it landed.
+    assert libgraph.follow(db, "w", "Alan Turing",
+                           ["born_in", "count_born_in"]).value == "3"
+    assert libgraph.follow(db, "w", "Paris", ["count_born_in"]).value == "0"
+
+
+def test_two_subjects_meet_where_the_same_path_lands_on_one_value(db):
+    """`common` is what a question about two people needs, and it is two walks
+    and a comparison rather than anything new."""
+    load(db, ["Alan Turing", "Ada Lovelace", "Charles Babbage",
+              "London", "Paris", "England", "France"],
+         [("Alan Turing", "birth_place", "London"),
+          ("Ada Lovelace", "birth_place", "London"),
+          ("Charles Babbage", "birth_place", "Paris"),
+          ("London", "country", "England"),
+          ("Paris", "country", "France")])
+    assert libgraph.common(db, "w", "Alan Turing", "Ada Lovelace",
+                           ["born_in"]) == "London"
+    assert libgraph.common(db, "w", "Alan Turing", "Charles Babbage",
+                           ["born_in"]) is None
+    # Two hops, and they still have to land on the same value.
+    assert libgraph.common(db, "w", "Alan Turing", "Ada Lovelace",
+                           ["born_in", "located_in"]) == "England"
+
+
+def test_a_walk_that_does_not_finish_is_not_a_connection(db):
+    """A pair fails when *either* walk runs out, which is why a hop limit costs
+    twice as much on a pair question as on a single one."""
+    load(db, ["Alan Turing", "Ada Lovelace", "London"],
+         [("Alan Turing", "birth_place", "London")])
+    assert libgraph.common(db, "w", "Alan Turing", "Ada Lovelace",
+                           ["born_in"]) is None
+    assert libgraph.common(db, "w", "Ada Lovelace", "Alan Turing",
+                           ["born_in"]) is None
+
+
 def test_rebuilding_replaces_rather_than_accumulates(db):
     chain_fixture(db)
     before = db.execute("SELECT COUNT(*) FROM edge").fetchone()[0]

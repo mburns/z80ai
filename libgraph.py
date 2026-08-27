@@ -155,6 +155,24 @@ CLIMB: dict[str, tuple[str, str]] = {
 #: routine have to agree and used to hold three separate literals.
 CLIMB_LIMIT = libgraphcard.CLIMB_LIMIT
 
+#: Prefix that turns a relation into "how many point at me by it".
+#: `count_child_of` is "how many children"; `count_lives_at`, asked of a
+#: dwelling, is "how many live here".
+#:
+#: `data/silo/questions.py` listed counting among the things no path could
+#: express. That was wrong about the *graph* while being right about `follow`:
+#: the reverse table is sorted, so every record for one object is contiguous,
+#: and a count is a binary search followed by a scan - a loop and a counter
+#: rather than an aggregate. What no path expresses is a **maximum**, which
+#: needs the values compared rather than tallied.
+#:
+#: The eZ80 does not carry this yet, and what it needs is specific: a routine
+#: beside `GW_HOP` that scans from the record `GW_FIND` lands on instead of
+#: returning it, one of the spare `kind` bytes in the step encoding to mark the
+#: step, and something that can print a decimal number - the program has only
+#: ever printed titles it read off the card.
+COUNT = "count_"
+
 #: An entity has to be named a country by this many independent infoboxes for
 #: the corpus to be taken at its word. At 3 that is 193 claims, which `demote`
 #: then cuts to 143 by dropping the ones the containment contradicts; at 1 it
@@ -742,6 +760,13 @@ def follow(db: sqlite3.Connection, source: str, subject: str,
     here: str = subject
     walked = [subject]
     for relation in relations:
+        if relation.startswith(COUNT):
+            # A count ends the walk: it answers with a number, and there is
+            # nowhere to hop from a number. Reported here rather than left to
+            # the caller because "how many children does X have" was listed as
+            # a question no path could express, and it is one step.
+            return Answer(str(count(db, source, here, relation[len(COUNT):])),
+                          walked)
         if relation in CLIMB:
             step, kind = CLIMB[relation]
             reached = _climb(db, source, here, walked, step, kind)
@@ -806,3 +831,30 @@ def count(db: sqlite3.Connection, source: str, obj: str, relation: str) -> int:
     return int(db.execute(
         "SELECT COUNT(*) FROM edge WHERE source = ? AND object = ? "
         "AND relation = ?", (source, obj, relation)).fetchone()[0])
+
+
+def common(db: sqlite3.Connection, source: str, left: str, right: str,
+           relations: list[str]) -> str | None:
+    """Where two subjects meet, if the same path from each lands on one value.
+
+    Every question this module could answer named one subject. "Is X related to
+    Y", "did X and Y work together", "were they at school together" name two,
+    and they are the questions somebody investigating actually asks - a lookup
+    is what you do when you already know whose record to open.
+
+    The mechanism is deliberately the smallest one that works: **walk the same
+    path from both ends and compare the answers**. `founding_father` climbs a
+    male line until it reaches a founder, so running it twice and comparing
+    settles descent without a `sibling` table, an ancestor set or a join. Two
+    walks and one comparison of two 24-bit ids, which is a thing an eZ80 can
+    do; the cost of the comparison is nothing against the cost of arriving.
+
+    It answers a narrower question than "related", and the narrowness is the
+    honest part. A shared `founding_father` is a shared *paternal* line: two
+    people with the same mother's mother do not have one, and this will say so.
+    """
+    here = follow(db, source, left, relations)
+    if not here.complete:
+        return None
+    there = follow(db, source, right, relations)
+    return here.value if there.complete and here.value == there.value else None
