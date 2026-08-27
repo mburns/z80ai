@@ -402,6 +402,43 @@ compression ratio, and the ratio is a property of the corpus.
 All ten entries come back off a real card byte-for-byte identical to the
 reference, at 1,414 to 1,536 bytes each.
 
+### And then the screen broke them in half
+
+Nothing in this repository has ever emitted a VDU sequence. All fifty-seven
+print sites push one character through `RST 10h` and let the terminal decide
+where a line ends, which was invisible for as long as a lead was 300 characters
+of one paragraph. Fifteen hundred bytes of prose is not.
+
+`PRWRAP` measures the next word before printing the space in front of it, and
+breaks the line instead when it will not fit. No lookahead buffer is needed:
+the whole article is already unpacked in `TEXTBUF`, so the word can be measured
+in place. A paragraph break the author wrote is honoured rather than treated as
+another space, which is the only formatting `authored.py` keeps.
+
+```
+Incident Report 214-11: Cistern Pump Failure, Level 142
+At approximately 0340 on the eleventh day of the two hundred and fourteenth
+year, the primary cistern pump on Level 142 stopped without warning. The
+Third Shift pump operator on duty logged the silence before the pressure
+alarm reached her, which is the only reason the loss was held to eleven
+hours of supply rather than the full reserve.
+
+Water Treatment attended within the hour. The fault was traced to the lower
+bearing housing, where a seal had been weeping for long enough to leave a
+salt line the width of a thumb...
+```
+
+**106 bytes, and it cost nothing at all.** The article ceiling moves in whole
+256-article pages — an article is 257 bytes of budget and the gap holds a whole
+number of pages — so 106 bytes of program did not cross a boundary and the
+limit is still 502,016. That is the granularity from [#65](../../pull/65) paying
+for something rather than just being a fact about the arithmetic.
+
+`AgonHost` models no screen; it collects what `RST 10h` was given. That is the
+right level to assert at, because the *program* is what has to decide where a
+line ends — so the tests read the character stream the way a terminal would and
+check that no line runs past the width and no word is split across two.
+
 ### Two of them lose their own name
 
 `Ration Appeals Panel, Case 2196` asked for by its own title returns the

@@ -115,6 +115,13 @@ CHUNK = 2048
 #: Stack margin below the top of SRAM, matching the inference builds.
 STACK_MARGIN = 0x1000
 
+#: Where `PRWRAP` breaks a line. The Agon's default mode is 80 columns and a
+#: line printed to exactly 80 makes the terminal wrap it itself, which costs a
+#: blank line; this leaves room and is still wider than any prose on the card
+#: needs. Not a build parameter because nothing yet knows the screen mode - see
+#: the second scope of issue #62, where finding that out is the first item.
+WRAP_WIDTH = 76
+
 
 def accumulator_base(num_docs: int) -> int:
     """Where the score accumulator sits: as high as it can, below the stack."""
@@ -1073,7 +1080,7 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
     b.inc_hl()
     b.or_a()
     b.jr_nz("SO_FIND")
-    b.call("PRSTR")
+    b.call("PRWRAP")                 # the lead, broken between words
     b.call("PRNL")
     b.ret()
 
@@ -1265,6 +1272,89 @@ def _emit_console(b: EZ80Builder) -> None:
     b.ld_a_n(10)
     b.rst(MOS_OUTCHAR)
     b.ret()
+
+    # PRWRAP: PRSTR, but breaking between words instead of wherever the column
+    # runs out.
+    #
+    # Nothing in this repository has ever emitted a VDU sequence - every one of
+    # the fifty-seven print sites pushes one character through `RST 10h` and
+    # lets the terminal decide - which was invisible while a lead was 300
+    # characters of one paragraph. `data/silo/authored/` put fifteen-hundred-byte
+    # documents on the card and the screen started breaking words in half.
+    #
+    # No lookahead buffer: the whole article is already unpacked in TEXTBUF, so
+    # the next word can be measured in place and the decision made before the
+    # space is printed. A word longer than a line is not special-cased - it is
+    # measured up to the width, fails to fit whatever the column, and starts a
+    # line of its own.
+    b.label("PRWRAP")
+    b.xor_a()
+    b.ld_mem_label_a("WRAPCOL")
+
+    b.label("PW_NEXT")
+    b.ld_a_hl()
+    b.or_a()
+    b.ret_z()
+    b.cp_n(10)
+    b.jr_z("PW_BREAK")
+    b.cp_n(32)
+    b.jr_z("PW_SPACE")
+    b.rst(MOS_OUTCHAR)               # an ordinary character
+    b.inc_hl()
+    b.ld_a_mem_label("WRAPCOL")
+    b.inc_a()
+    b.ld_mem_label_a("WRAPCOL")
+    b.jr("PW_NEXT")
+
+    # A newline the author wrote: `authored.py` keeps paragraph breaks because
+    # they are the only formatting that survives to a screen with no wrap.
+    b.label("PW_BREAK")
+    b.inc_hl()
+    b.call("PRNL")
+    b.xor_a()
+    b.ld_mem_label_a("WRAPCOL")
+    b.jr("PW_NEXT")
+
+    b.label("PW_SPACE")
+    b.inc_hl()                       # step over the space
+    b.push_hl()
+    b.ld_c_n(0)
+    b.label("PW_MEAS")
+    b.ld_a_hl()
+    b.or_a()
+    b.jr_z("PW_MEASD")
+    b.cp_n(32)
+    b.jr_z("PW_MEASD")
+    b.cp_n(10)
+    b.jr_z("PW_MEASD")
+    b.inc_hl()
+    b.inc_c()
+    b.ld_a_c()
+    b.cp_n(WRAP_WIDTH)               # longer than a line: stop counting
+    b.jr_nc("PW_MEASD")
+    b.jr("PW_MEAS")
+
+    b.label("PW_MEASD")
+    b.pop_hl()
+    b.ld_a_mem_label("WRAPCOL")
+    b.or_a()
+    b.jr_z("PW_NEXT")                # at the margin already: swallow the space
+    b.add_a_c()
+    b.inc_a()                        # and the space itself
+    b.cp_n(WRAP_WIDTH + 1)
+    b.jr_c("PW_FITS")
+    b.call("PRNL")
+    b.xor_a()
+    b.ld_mem_label_a("WRAPCOL")
+    b.jr("PW_NEXT")
+
+    b.label("PW_FITS")
+    b.ld_a_n(32)
+    b.rst(MOS_OUTCHAR)
+    b.ld_a_mem_label("WRAPCOL")
+    b.inc_a()
+    b.ld_mem_label_a("WRAPCOL")
+    b.jr("PW_NEXT")
 
     b.label("READ_INPUT")
     b.xor_a()
@@ -1631,7 +1721,7 @@ def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, pages: int,
     b.ascii(TEXT_MAGIC.decode())
 
     for name in ("IDXH", "DATH", "INPLEN", "TOKPOS", "TOKLEN", "NSCORED",
-                 "SHOWN", "HCNT", "NULSEEN", "NTGLUED"):
+                 "SHOWN", "HCNT", "NULSEEN", "NTGLUED", "WRAPCOL"):
         b.label(name)
         b.db(0)
     b.label("BESTSC")
