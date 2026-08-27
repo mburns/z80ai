@@ -157,11 +157,12 @@ generation      asked  hops needed   reached
 6                 307            6      0.0%
 ```
 
-`CLIMB_LIMIT` is 6 and counts hops taken rather than nodes checked, so
-generation 5 reaches its founder on the last hop it is allowed and generation 6
-falls exactly one short. Nothing is wrong; that is the price of a walk that
-must not loop forever, and it is only visible on a corpus where the true answer
-is known.
+`CLIMB_LIMIT` is 6 and counts the values a climb may *examine* rather than the
+hops it may take, so it buys five hops: generation 5 reaches its founder on the
+last one it is allowed and generation 6 falls exactly one short. Nothing is
+wrong; that is the price of a walk that must not loop forever, and it is only
+visible on a corpus where the true answer is known. `--climb-limit 7` buys the
+seventh — see [below](#the-limit-counts-values-examined-not-hops).
 
 ### A set, reached through an inverse hop
 
@@ -846,6 +847,105 @@ the wordings where an answerable path is a near neighbour in trigram space. The
 class converts about half of these questions from a confident wrong answer into
 a refusal. It does not convert them all, and the ones it misses are the ones
 that look most like questions this corpus can answer.
+
+## Using it as an oracle for authored fiction
+
+Everything above measures the card. This is what an author of a Silo-like
+Interactive Fiction would need to know before writing against one, and most of
+it is a constraint rather than a capability.
+
+### What it can be asked
+
+Two things, and they do not overlap.
+
+**About people, from the graph.** Twenty question shapes — parent, spouse, job,
+shift, crew, class, dwelling, neighbour, section, birth year, and the
+compositions of those. A question in one of those shapes about somebody in the
+corpus is answered with a name and a full stop, in about 370,000 instructions,
+whatever the corpus size.
+
+**About anything, from the text.** Any entry — generated or written — is found
+by the words in it. `data/silo/authored/` holds ten documents nobody generated,
+and asking for a phrase in one returns it. That is a search engine, not an
+oracle: it hands over prose and makes no claim about it.
+
+### The graph knows nothing about written entries, and that is the point
+
+A written entry carries no `edge`, no `fact` and no `entity_type`. So a *path*
+question that lands on one cannot be answered, and what the machine does then is
+fall back to showing the text:
+
+```
+? who is the cistern pump failure's father
+Incident Report 214-11: Cistern Pump Failure, Level 142
+At approximately 0340 on the eleventh day of...
+```
+
+The classifier routed that to `father_is`, the search resolved it to the
+incident report, and the walk found no edge. The fallback is the honest answer,
+and it is only available because the entry has no edges to walk. **An authored
+entry can never be the subject of a fabricated fact**, because there is nothing
+there to fabricate from. Giving written entries their own edges would take that
+away, which is the argument against doing it.
+
+### Two different ways of saying no
+
+Worth keeping apart when writing dialogue for the machine, because they mean
+different things and the order they fire in is fixed:
+
+| | |
+|---|---|
+| `Nothing on the card matches that.` | it does not know **who** you mean |
+| `I do not know that one.` | it knows who, but not **that question** |
+
+The search runs before the classifier, so a refusal only fires once a subject
+has resolved. `how many cousins does zzqqxx have` gets the first message, not
+the second, at 7,101 instructions — the cheapest thing the card does.
+
+### The four questions a path cannot express
+
+Composition — follow this, then that, in either direction — is the whole of what
+this machine reasons with. It stops at aggregation, ranking and set
+intersection, and these are the four shapes it stops at:
+
+| | why |
+|---|---|
+| how many cousins does X have | a count over a set; a path ends in a value |
+| who is the oldest on X's crew | a maximum over a set it can enumerate but not rank |
+| is X related to Y | an intersection of two recursive ancestor sets |
+| how many live on X's floor | a count around the ring: a program, not a query |
+
+They now route to `refuse` and are declined about half the time on wordings the
+classifier never saw. **The other half still misroute**, and predictably: a
+refusal whose words overlap an answerable path lands on that path. Anything
+phrased around a crew tends to reach `crew_is`.
+
+For an author that is a rule about *phrasing*, not about content. A question the
+machine must decline is safest when it shares as few words as possible with one
+it can answer — and "who is the oldest person on X's crew" is about as unsafe as
+it gets.
+
+### Rules for writing entries
+
+- **Do not name an entry after something the generator writes about.** An exact
+  collision is refused by `authored.py`; a near miss is legal and loses. Two of
+  the ten shipped entries do exactly this — `Ration Appeals Panel, Case 2196`
+  asked for by its own title returns the committee stub, because BM25 prefers an
+  eleven-word document the query terms are most of.
+- **1,952 bytes an entry**, derived from what the device reads rather than
+  chosen. Longer is refused at build time.
+- **A written entry costs about forty generated ones** on the card — 1,070
+  packed bytes against 25 — and the ceiling is still a count, not a size, so
+  neither is the constraint.
+- **Re-run `authored.py` after every `generate.py`**, which deletes them.
+- The classifier knows twenty shapes and one refusal. A question outside all
+  twenty-one does not fail; it lands on whichever of them it looks most like.
+
+### What this is not
+
+It is an oracle you query, not a world you are inside. There is no state, no
+turn loop, no parser for verbs, and nothing here writes to the card. Those are
+the second half of [#62](../../issues/62) and none of them exist.
 
 ## What SQLite is doing
 
