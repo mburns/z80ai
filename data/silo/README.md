@@ -605,6 +605,85 @@ test is to write more wordings and re-run this — with the caveat that a second
 dozen written by the same hand on the same afternoon will be more like the
 first dozen than a stranger's would be, which would understate the gain.
 
+### Before writing more wordings, the encoder had 128 buckets
+
+The next move was obvious and wrong to make first. Writing more wordings meant
+trusting the caveat above, so `tools/phrasebook_diversity.py` measured it
+instead: how much a path's wordings resemble each other in the 128 buckets the
+model actually sees, and how far a held-out wording is from the nearest one
+trained on.
+
+**The caveat does not hold.** Per-path held-out accuracy against per-path
+novelty correlates **−0.126** across the twenty-one paths — nothing. The 44.5%
+is a fact about the model, not an artifact of a phrasebook that repeats itself,
+and more varied wordings would not have depressed it.
+
+What the instrument did find was worse. Held-out wordings sit only **0.225**
+away from their nearest training twin — 77.5% similar to something the model
+has already seen — and it still gets more than half of them wrong. And of the
+misses, **a quarter are a path losing to its own prefix**:
+
+```
+class_is class_is_of  ->  class_is           71
+mother_is mother_is   ->  mother_is          64
+father_is father_is   ->  father_is          61
+```
+
+Those paths already say *grandmother* in five of their twelve wordings. The
+distinguishing word is there and the encoder is losing it, so no amount of
+English fixes that quarter.
+
+**859 distinct trigrams, 128 buckets, 85% of them sharing one.** Every bucket
+occupied, 6.7 trigrams apiece — so a trigram that separates two paths arrives
+on top of six that do not. `libinfer.NUM_BUCKETS` had been 128 since the first
+commit; [#54](../../pull/54) swept the classifier's *hidden* width and nothing
+had ever swept its *input* width.
+
+| buckets | held out | three seeds | trigrams colliding |
+|---:|---:|---|---:|
+| 128 | 45.0% | 42.7 / 46.8 / 45.4 | 85% |
+| **256** | **52.5%** | 54.5 / 51.2 / 51.8 | 71% |
+| 512 | 51.7% | 53.4 / 48.4 / 53.1 | 49% |
+| 1,024 | 51.2% | 51.7 / 50.8 | 27% |
+
+**+7.5 points from one constant**, with three-seed spreads that do not overlap
+— against masking (noise), position bands (worse) and halving the model (no
+change). All of it arrives at 256 and none of it after, which is the happier
+half of the result: **the device takes the bucket index from the hash's low
+byte and puts it in one register, so 256 is also the most it can address**
+without a wider index everywhere. The sweep and the hardware agree on the same
+number for unrelated reasons.
+
+Collisions keep falling past 256 and accuracy does not, so collision is the
+mechanism up to a point and not the whole story. What is left at 256 is the
+prefix quarter, which did not move: it is 19.6% of misses at 128 and 23.9% at
+512 — fewer in absolute terms because there are fewer misses, but a larger
+share of what remains. That is a different problem and it is still open.
+
+### What the width costs on the card
+
+Measured on a real silo card, same corpus and same 128,96 hidden layers:
+
+| | 128 | 256 |
+|---|---:|---:|
+| held-out phrasings | 44.5% | **49.9%** |
+| weights | 30,592 | 47,072 |
+| `SILO.bin` | 38.9 KB | 55.9 KB |
+| articles this image can score | 467,200 | 449,792 |
+
+**17,408 articles for five points.** On a corpus of 13,082 that is free; on the
+whole of Simple English Wikipedia at 283,997 the ceiling is still 1.6× the
+corpus.
+
+One figure worth not misreading: `classify.py` reports the model as "11,768
+bytes packed 2-bit", and that is the `.npz`. The eZ80's compact kernel
+interprets **a byte per weight**, so what the card carries is 47,320 — which is
+where sixteen of the seventeen kilobytes went.
+
+The count travels in the model file the way `position_bands` does, and is
+written only when it differs from 128, so every model trained before this
+existed still loads as what it is and no shipped artifact moved.
+
 ### Position bands lose, and now they lose with error bars
 
 `--position-bands` seeds each trigram's hash with where in the query it
@@ -756,6 +835,12 @@ means nothing:
 | **phrasings it was never trained on** | **44.5%** |
 | questions it *was* trained on | 95.8% |
 | phrasings that answer the same way whatever the name | **124/240** |
+
+> The second row is **49.9%** on the card this now builds. It was 44.5% for as
+> long as the encoder had 128 trigram buckets, which nothing had ever swept —
+> see [before writing more wordings](#before-writing-more-wordings-the-encoder-had-128-buckets).
+> The paragraphs below are the diagnosis made at 128 and every word of it still
+> holds; the number moved for a reason none of them names.
 
 The first is the trap `data/README.md` warns about, measured: these questions
 are templated, so a held-out "who is X's father" still has "who is Y's father"
