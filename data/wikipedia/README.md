@@ -1096,6 +1096,90 @@ first run against a real corpus. It prints a decimal place for the same reason:
 Nothing downstream reads the table yet — no card file changed and no answer
 changed. It is the key, not the facts.
 
+## Reading the facts, now that the key exists
+
+`wikidata.py` cuts a Wikidata graph dump down to the statements this
+encyclopedia could use — 22GB and 766.5M edges in, **3.1MB out** — and imports
+them into `derived` under method `wikidata`. Two programs, because the export
+needs `ladybug` and 22GB of disk and nothing else here does; the file it writes
+is read with the standard library.
+
+```bash
+python data/wikipedia/wikidata.py --export wikidata.lbdb -o wikidata.tsv.gz
+python data/wikipedia/wikidata.py --score wikidata.tsv.gz          # writes nothing
+python data/wikipedia/wikidata.py --write wikidata.tsv.gz --rebuild-graph
+```
+
+Keyed by Q-id, not by title. A title is a fact about one snapshot — 726 of them
+changed the day the escaping was fixed — so the export outlives the corpus it
+was cut against and the join is redone from `sitelink` every time.
+
+| path | before | after |
+|---|---:|---:|
+| `born_in in_country` | 42,288 startable, 77.7% | **67,510, 86.5%** |
+| `died_in in_country` | 17,277, 82.3% | **33,645, 89.5%** |
+| `in_country` | 49,784, 86.6% | **86,289, 93.3%** |
+| `created_by born_in` | 11,107, 74.3% | **13,406, 93.3%** |
+| subjects on the graph | 37.4% | **62.8%** |
+
+**The rates went up as well as the counts**, which is not what happens here.
+Every previous change that made more subjects startable added the ones that
+were failing for a reason and pulled the rate down — this file says so twice.
+This one adds the containment those subjects needed to climb in the same pass
+that adds the subjects.
+
+### Three rules, each because the version without it was wrong
+
+**A country is only taken for something Wikidata puts administratively inside
+something else.** `country` on a place is where it is; on a *language* it is
+where it is spoken, which is how `English language` collects ninety of them.
+Rather than carry a list of what counts as a place, this asks Wikidata the
+question it already answers: only a place has a `P131`. 36,103 subjects refused.
+
+**Values that do not nest are declined, not picked.** `derived` holds one object
+per subject and relation. Where they nest — `Sialkot` inside `Punjab Province`
+inside `British Raj` — that is one answer at three depths and the innermost is
+it. Where they do not, Everest is in China *and* Nepal and a band is nine
+genres, and choosing would put a fluent half-truth on a card with nothing
+marking it as one. 14,680 declined, about ten thousand of them genres.
+
+**A refinement has to keep its ability to climb.** Where Wikidata's value is
+provably inside what the corpus already said it replaces it — `Mississippi` to
+`Carrollton, Mississippi`. That is only an improvement if the finer answer still
+reaches a country, so 924 are refused because it would not.
+
+### The cost of a refinement was measured against the wrong graph
+
+Refinement looked to cost **6,879** country answers. `Carl Wieman: Oregon ->
+Corvallis, Oregon` — and Corvallis is in this encyclopedia while nothing in it
+says Corvallis is in Oregon, because that article has no infobox at all and
+`from_categories` will not read `Cities in Benton County, Oregon` for a subject
+it does not already know to be a place. Chicken and egg: it cannot be recognised
+as a place because nothing yet says where it is.
+
+But Wikidata has `Corvallis -> Benton County, Oregon`, and **this import adds
+it**. Measured against the graph the import leaves rather than the one it found,
+the cost is **909**, against 1,319 subjects that could not climb before and now
+can. A cost measured before the repair that removes it is not the cost.
+
+### Which is also why the hop limit moved
+
+The chains got longer. `Carl Wieman` reached the United States in two hops and
+now reaches it in four, through a county and a state that were not there before.
+`Cannes` needs six:
+
+```
+Cannes -> Grasse -> Arrondissement of Grasse -> Alpes-Maritimes
+       -> Provence-Alpes-Côte d'Azur -> Metropolitan France -> France
+```
+
+`CLIMB_LIMIT` was 6, which buys five hops, and it had exactly one step of
+headroom before this. 4,643 answers went past it. **Eight recovers every one and
+nine buys nothing** — no chain in this corpus is deeper — and the eZ80 cost of
+the deeper limit was already measured in [`data/silo/`](../silo/): climbs that
+never reach the limit are byte-identical, and a climb the limit newly answers
+gets *cheaper*, because failing one falls back to reading article text.
+
 ## Redirects earn their place
 
 Wikipedia's 114,771 redirects are indexed as alternate names scoring into their

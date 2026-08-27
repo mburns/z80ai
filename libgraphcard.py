@@ -71,13 +71,32 @@ STEP = struct.Struct("<BB")
 #: it may take: both walkers test the type at the top of the loop, so the value
 #: the last hop reached is never tested. A limit of n buys n - 1 hops.
 #:
-#: Six is a containment depth, from Wikipedia's `in_country`. It is *not* a
-#: pedigree depth: generation g in `data/silo/` is exactly g hops from its
-#: founder, so six buys generations 1 to 5 and that corpus has spent its whole
-#: life reporting generation 6 as unanswerable. What bounds it at all is a
-#: cycle - two places each inside the other - which must terminate whatever the
-#: data says.
-CLIMB_LIMIT = 6
+#: Eight, and both corpora say so independently.
+#:
+#: It was six, which was a containment depth measured before Wikidata supplied
+#: the containment. Importing it made the chains longer - `Cannes` reaches
+#: France through `Grasse`, an arrondissement, a department, a region and
+#: `Metropolitan France` - and swept 4,643 answers past a limit that had one
+#: step of headroom. Eight recovers every one of them, and **nine buys
+#: nothing**: no chain in that corpus is deeper, so this is where the data
+#: stops asking rather than a round number.
+#:
+#: It is *not* a pedigree depth, and that is the other half of the argument.
+#: Generation g in `data/silo/` is exactly g hops from its founder and that
+#: corpus has seven generations, so six answered five of them and eight answers
+#: all seven. The two corpora wanted the same number for unrelated reasons.
+#:
+#: Raising it is close to free. A climb tests the type at the top of the loop
+#: and returns, so anything that answered before does the same work; only a
+#: climb that was going to fail pays, and it pays two more edge reads. On the
+#: eZ80 the number is an immediate, so the routine is the same size. A failing
+#: climb is in fact the *expensive* case already - `data/silo/` measures 9,419
+#: card bytes for a generation-6 walk that gives up and falls back to reading
+#: article text, against 5,266 for one that answers.
+#:
+#: What bounds it at all is a cycle - two places each inside the other - which
+#: must terminate whatever the data says.
+CLIMB_LIMIT = 8
 
 #: A step count meaning "this phrase is a refusal, not a path" - the machine
 #: says it does not know rather than walking anywhere.
