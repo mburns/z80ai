@@ -124,6 +124,7 @@ def build(world: World, org: int = AGON_LOAD_ADDR) -> EZ80Builder:
 
     # --- the turn loop --------------------------------------------------------
     b.label("TURN")
+    b.call("RULES_RUN")              # the world reacts before it asks again
     b.call("PRNL")
     b.ld_hl_label("PROMPT")
     b.call("PRSTR")
@@ -178,6 +179,7 @@ def build(world: World, org: int = AGON_LOAD_ADDR) -> EZ80Builder:
     _emit_thing_row(b)
     _emit_where_ptr(b)
     _ldptr(b)
+    _emit_rules(b, world)
 
     b.label("BYE")
     b.ld_hl_label("MSGBYE")
@@ -625,8 +627,304 @@ def _emit_take_drop(b: EZ80Builder, world: World) -> None:
     b.jp("TURN")
 
 
-#: The messages, which are the whole of this program's manners. Kept together
-#: so that a world in another language changes one table.
+def _emit_rules(b: EZ80Builder, world: World) -> None:
+    """Check every rule; fire the ones whose conditions all hold.
+
+    The step past a path, and a small one. A graph walk composes - follow this,
+    then that - and stops at conjunction. A flat list of conditions ANDed
+    together is the least that does not, and `IF.md` reports which of the four
+    shapes `data/silo/README.md` names it actually closes. It is three.
+
+    A rule is length-prefixed so that skipping one is an addition rather than a
+    walk over its parts, which is what the first version of this did and got
+    wrong twice.
+    """
+    b.label("RULES_RUN")
+    if not world.rules:
+        b.ret()
+        return
+
+    b.ld_hl_label("RULETAB")
+    b.ld_mem_label_hl("RULEPTR")
+    b.ld_c_n(0)
+
+    b.label("RU_NEXT")
+    b.ld_hl_mem_label("RULEPTR")
+    b.ld_a_hl()
+    b.or_a()
+    b.ret_z()                        # a zero length ends the table
+
+    b.push_bc()
+    b.call("RU_ONE")
+    b.pop_bc()
+
+    b.ld_hl_mem_label("RULEPTR")
+    b.ld_a_hl()
+    b.ld_de_nn(0)
+    b.ld_e_a()
+    b.add_hl_de()
+    b.ld_mem_label_hl("RULEPTR")
+    b.inc_c()
+    b.jr("RU_NEXT")
+
+    # RU_ONE: the rule at RULEPTR, with C its number. Leaves RULEPTR alone -
+    # the caller steps over it by its length whatever happens here.
+    b.label("RU_ONE")
+    b.ld_hl_mem_label("RULEPTR")
+    b.inc_hl()
+    b.ld_a_hl()
+    b.ld_mem_label_a("RU_ONCE")
+    b.inc_hl()
+    b.ld_a_hl()
+    b.ld_mem_label_a("RU_NC")
+    b.inc_hl()
+    b.ld_a_hl()
+    b.ld_mem_label_a("RU_NA")
+    b.inc_hl()
+    b.ld_mem_label_hl("RU_CUR")
+
+    b.ld_a_mem_label("RU_ONCE")
+    b.or_a()
+    b.jr_z("RU_COND")
+    b.call("FIREDP")
+    b.or_a()
+    b.ret_nz()                       # already fired, and fires once
+
+    b.label("RU_COND")
+    b.ld_a_mem_label("RU_NC")
+    b.or_a()
+    b.jr_z("RU_ACT")
+    b.ld_b_a()
+
+    b.label("RU_CLP")
+    b.push_bc()
+    b.ld_hl_mem_label("RU_CUR")
+    b.ld_a_hl()
+    b.ld_mem_label_a("RU_OP")
+    b.inc_hl()
+    b.ld_a_hl()
+    b.ld_mem_label_a("RU_ARG")
+    b.inc_hl()
+    b.ld_mem_label_hl("RU_CUR")
+    b.call("RU_TEST")
+    b.pop_bc()
+    b.ret_nc()                       # one condition short is the whole rule
+    b.djnz("RU_CLP")
+
+    b.label("RU_ACT")
+    b.ld_a_mem_label("RU_NA")
+    b.or_a()
+    b.jr_z("RU_FIRED")
+    b.ld_b_a()
+    b.label("RU_ALP")
+    b.push_bc()
+    b.call("RU_DO")
+    b.pop_bc()
+    b.djnz("RU_ALP")
+
+    b.label("RU_FIRED")
+    b.call("MARKFIRED")
+    b.ret()
+
+    _emit_rule_test(b, world)
+    _emit_rule_do(b, world)
+    _emit_rule_state(b, world)
+
+
+def _emit_rule_test(b: EZ80Builder, world: World) -> None:
+    """One condition, from RU_OP and RU_ARG -> carry set when it holds."""
+    b.label("RU_TEST")
+    b.ld_a_mem_label("RU_OP")
+
+    b.cp_n(libworld.C_AT)
+    b.jr_nz("RT_HAVE")
+    b.ld_a_mem_label("HERE")
+    b.ld_hl_label("RU_ARG")
+    b.cp_hl()
+    b.jr_z("RT_YES")
+    b.jr("RT_NO")
+
+    b.label("RT_HAVE")
+    b.cp_n(libworld.C_HAVE)
+    b.jr_nz("RT_HERE")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("WHEREPTR")
+    b.ld_a_hl()
+    b.cp_n(CARRIED)
+    b.jr_z("RT_YES")
+    b.jr("RT_NO")
+
+    b.label("RT_HERE")
+    b.cp_n(libworld.C_HERE)
+    b.jr_nz("RT_FLAG")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("WHEREPTR")
+    b.ld_a_hl()
+    b.ld_hl_label("HERE")
+    b.cp_hl()
+    b.jr_z("RT_YES")
+    b.jr("RT_NO")
+
+    b.label("RT_FLAG")
+    b.cp_n(libworld.C_FLAG)
+    b.jr_nz("RT_NFLAG")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("FLAGPTR")
+    b.ld_a_hl()
+    b.or_a()
+    b.jr_nz("RT_YES")
+    b.jr("RT_NO")
+
+    b.label("RT_NFLAG")
+    b.cp_n(libworld.C_NFLAG)
+    b.jr_nz("RT_COUNT")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("FLAGPTR")
+    b.ld_a_hl()
+    b.or_a()
+    b.jr_z("RT_YES")
+    b.jr("RT_NO")
+
+    # The count a path cannot do, and the reason this opcode exists at all.
+    b.label("RT_COUNT")
+    b.cp_n(libworld.C_CARRYING)
+    b.jr_nz("RT_NO")
+    b.call("COUNTHELD")
+    b.ld_hl_label("RU_ARG")
+    b.cp_hl()
+    b.jr_c("RT_NO")                  # carrying fewer than the rule asked for
+    b.jr("RT_YES")
+
+    b.label("RT_NO")
+    b.or_a()
+    b.ret()
+    b.label("RT_YES")
+    b.scf()
+    b.ret()
+
+
+def _emit_rule_do(b: EZ80Builder, world: World) -> None:
+    """One action, three bytes at RU_CUR, which it steps past."""
+    b.label("RU_DO")
+    b.ld_hl_mem_label("RU_CUR")
+    b.ld_a_hl()
+    b.ld_mem_label_a("RU_OP")
+    b.inc_hl()
+    b.ld_a_hl()
+    b.ld_mem_label_a("RU_ARG")
+    b.inc_hl()
+    b.ld_a_hl()
+    b.ld_mem_label_a("RU_ARG2")
+    b.inc_hl()
+    b.ld_mem_label_hl("RU_CUR")
+
+    b.ld_a_mem_label("RU_OP")
+    b.cp_n(libworld.A_SET)
+    b.jr_nz("RD_CLEAR")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("FLAGPTR")
+    b.ld_a_n(1)
+    b.ld_hl_a()
+    b.ret()
+
+    b.label("RD_CLEAR")
+    b.cp_n(libworld.A_CLEAR)
+    b.jr_nz("RD_PRINT")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("FLAGPTR")
+    b.xor_a()
+    b.ld_hl_a()
+    b.ret()
+
+    b.label("RD_PRINT")
+    b.cp_n(libworld.A_PRINT)
+    b.jr_nz("RD_GOTO")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("MSGROW")
+    b.call("PRWRAP")
+    b.jp("PRNL")
+
+    b.label("RD_GOTO")
+    b.cp_n(libworld.A_GOTO)
+    b.jr_nz("RD_MOVE")
+    b.ld_a_mem_label("RU_ARG")
+    b.ld_mem_label_a("HERE")
+    b.jp("DESCRIBE")
+
+    b.label("RD_MOVE")
+    b.cp_n(libworld.A_MOVE)
+    b.ret_nz()
+    b.ld_a_mem_label("RU_ARG")
+    b.call("WHEREPTR")
+    b.ld_a_mem_label("RU_ARG2")
+    b.ld_hl_a()
+    b.ret()
+
+
+def _emit_rule_state(b: EZ80Builder, world: World) -> None:
+    """Flags, the fired markers, the carried count, and message lookup.
+
+    A byte a flag rather than a bit. Bits would be eight times smaller and
+    need a shift and a mask at four call sites; there are 517,068 bytes of
+    SRAM unused, so the trade is not close.
+    """
+    b.label("FLAGPTR")
+    b.ld_hl_label("FLAGS")
+    b.ld_de_nn(0)
+    b.ld_e_a()
+    b.add_hl_de()
+    b.ret()
+
+    b.label("FIREDP")
+    b.ld_hl_label("FIRED")
+    b.ld_de_nn(0)
+    b.ld_a_c()
+    b.ld_e_a()
+    b.add_hl_de()
+    b.ld_a_hl()
+    b.ret()
+
+    b.label("MARKFIRED")
+    b.ld_hl_label("FIRED")
+    b.ld_de_nn(0)
+    b.ld_a_c()
+    b.ld_e_a()
+    b.add_hl_de()
+    b.ld_a_n(1)
+    b.ld_hl_a()
+    b.ret()
+
+    b.label("COUNTHELD")
+    b.xor_a()
+    b.ld_mem_label_a("RU_CNT")
+    if world.things:
+        b.ld_hl_label("WHERE")
+        b.ld_b_n(len(world.things))
+        b.label("CH_LP")
+        b.ld_a_hl()
+        b.cp_n(CARRIED)
+        b.jr_nz("CH_NX")
+        b.ld_a_mem_label("RU_CNT")
+        b.inc_a()
+        b.ld_mem_label_a("RU_CNT")
+        b.label("CH_NX")
+        b.inc_hl()
+        b.djnz("CH_LP")
+    b.ld_a_mem_label("RU_CNT")
+    b.ret()
+
+    b.label("MSGROW")
+    b.ld_hl_nn(0)
+    b.ld_l_a()
+    b.push_hl()
+    b.pop_de()
+    b.add_hl_hl()
+    b.add_hl_de()                    # x3, a pointer apiece
+    b.ld_de_label("MSGTAB")
+    b.add_hl_de()
+    b.jp("LDPTR")
+
+
 MESSAGES: dict[str, str] = {
     "BANNER": "Silo 18. You are somewhere, and it is dark outside.",
     "PROMPT": "> ",
@@ -675,6 +973,35 @@ def _emit_tables(b: EZ80Builder, world: World,
     _emit_word_table(b, "VERBS", verbs)
     _emit_word_table(b, "NOUNS", nouns)
 
+    if world.rules:
+        b.label("RULETAB")
+        for rule in world.rules:
+            length = 4 + 2 * len(rule.when) + 3 * len(rule.then)
+            if length > 0xFF:
+                raise ValueError(f"a rule of {length} bytes does not fit its "
+                                 f"one-byte length; split it")
+            b.db(length)
+            b.db(1 if rule.once else 0)
+            b.db(len(rule.when))
+            b.db(len(rule.then))
+            for op, arg in rule.when:
+                b.db(op)
+                b.db(arg)
+            for op, arg, arg2 in rule.then:
+                b.db(op)
+                b.db(arg)
+                b.db(arg2)
+        b.db(0)                      # the table ends with a zero length
+
+    if world.messages:
+        b.label("MSGTAB")
+        for index in range(len(world.messages)):
+            b.fixup_word(f"RMSG{index}")
+        for index, text in enumerate(world.messages):
+            b.label(f"RMSG{index}")
+            b.ascii(text)
+            b.db(0)
+
     for index, room in enumerate(world.rooms):
         b.label(f"RNAME{index}")
         b.ascii(room.name)
@@ -711,14 +1038,17 @@ def _emit_ram(b: EZ80Builder, world: World, org: int) -> None:
     b.label("WHERE")
     b.ds(max(1, len(world.things)))
     b.label("FLAGS")
-    b.ds((world.flags + 7) // 8)
+    b.ds(world.flags)
+    b.label("FIRED")
+    b.ds(max(1, len(world.rules)))
 
     # Everything below is scratch that does not outlive a turn.
     for name in ("VERB", "W1LEN", "W2LEN", "LKLEN", "WRAPCOL",
-                 "INPLEN", "NCARRIED"):
+                 "INPLEN", "NCARRIED", "RU_ONCE", "RU_NC", "RU_NA",
+                 "RU_OP", "RU_ARG", "RU_ARG2", "RU_CNT"):
         b.label(name)
         b.db(0)
-    for name in ("PTMP", "LKPTR"):
+    for name in ("PTMP", "LKPTR", "RULEPTR", "RU_CUR"):
         b.label(name)
         b.d24(0)
 
@@ -739,7 +1069,7 @@ def overlay_at(builder: EZ80Builder, world: World) -> tuple[int, int]:
     emitted with the rest of save and restore rather than here.
     """
     start = builder.labels["HERE"]
-    end = builder.labels["FLAGS"] + (world.flags + 7) // 8
+    end = builder.labels["FIRED"] + max(1, len(world.rules))
     return start, end - start
 
 

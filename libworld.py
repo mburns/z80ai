@@ -74,12 +74,62 @@ class Thing:
     portable: bool = True
 
 
+#: Condition opcodes. Every condition in a rule must hold, which is the point:
+#: `data/silo/README.md` sets out that a graph path composes and then stops at
+#: conjunction, and a list of conditions ANDed together is the smallest thing
+#: that does not.
+C_AT = 0        # the player is in room `arg`
+C_HAVE = 1      # the player is carrying thing `arg`
+C_HERE = 2      # thing `arg` is in the room the player is in
+C_FLAG = 3      # flag `arg` is set
+C_NFLAG = 4     # flag `arg` is clear
+C_CARRYING = 5  # the player is carrying at least `arg` things
+
+#: Action opcodes. `A_MOVE` takes two bytes because it names a thing and a
+#: destination; everything else takes one.
+A_SET = 0       # set flag `arg`
+A_CLEAR = 1     # clear flag `arg`
+A_PRINT = 2     # print message `arg`
+A_GOTO = 3      # move the player to room `arg`
+A_MOVE = 4      # move thing `arg` to `arg2`
+
+CONDITION_NAMES = {C_AT: "AT", C_HAVE: "HAVE", C_HERE: "HERE", C_FLAG: "FLAG",
+                   C_NFLAG: "NFLAG", C_CARRYING: "CARRYING"}
+ACTION_NAMES = {A_SET: "SET", A_CLEAR: "CLEAR", A_PRINT: "PRINT",
+                A_GOTO: "GOTO", A_MOVE: "MOVE"}
+
+
+@dataclass
+class Rule:
+    """`when all of these, do all of those`, checked after every turn.
+
+    Flat on purpose. There is no `or`, no nesting and no arithmetic beyond a
+    count, because the question this answers is what the *smallest* step past
+    a path buys - and the answer turns out to be three of the four things a
+    path cannot express rather than all four. See `IF.md`.
+    """
+
+    #: (opcode, argument) pairs, all of which must hold.
+    when: list[tuple[int, int]]
+    #: (opcode, argument, argument) triples. The second argument is 0 unless
+    #: the opcode is `A_MOVE`.
+    then: list[tuple[int, int, int]]
+    #: Fire at most once. Most rules are events rather than standing facts,
+    #: and a rule that printed its message every turn would be a bug that
+    #: looks like a design decision.
+    once: bool = True
+
+
 @dataclass
 class World:
     rooms: list[Room]
     things: list[Thing]
     #: Room the player starts in.
     start: int = 0
+    #: Rules, checked in order after every turn that did something.
+    rules: list[Rule] = field(default_factory=list)
+    #: Messages rules print, by index.
+    messages: list[str] = field(default_factory=list)
     #: How many one-bit propositions the world reserves. Costs one byte per
     #: eight and nothing else, so the number is a guess that can be generous.
     flags: int = 64
@@ -126,14 +176,64 @@ class World:
             raise ValueError("two things share a name, and the parser resolves "
                              "a noun to exactly one")
 
+        self._check_rules()
+
+    def _check_rules(self) -> None:
+        """Every argument, against what it indexes.
+
+        A rule with a bad argument is the worst kind of bug this can have: it
+        fires on the wrong thing, or never, and the game merely feels wrong.
+        """
+        for number, rule in enumerate(self.rules):
+            if not rule.when:
+                raise ValueError(f"rule {number} has no conditions, so it "
+                                 f"fires on the first turn and every turn")
+            for op, arg in rule.when:
+                if op not in CONDITION_NAMES:
+                    raise ValueError(f"rule {number}: no condition {op}")
+                self._check_arg(number, CONDITION_NAMES[op], op, arg)
+            for op, arg, arg2 in rule.then:
+                if op not in ACTION_NAMES:
+                    raise ValueError(f"rule {number}: no action {op}")
+                self._check_arg(number, ACTION_NAMES[op], op, arg, arg2)
+
+    def _check_arg(self, number: int, name: str, op: int, arg: int,
+                   arg2: int = 0) -> None:
+        rooms, things = len(self.rooms), len(self.things)
+        if (name in ("AT", "GOTO") and not 0 <= arg < rooms):
+            raise ValueError(f"rule {number}: {name} {arg}, and there are "
+                             f"{rooms} rooms")
+        if name in ("HAVE", "HERE", "MOVE") and not 0 <= arg < things:
+            raise ValueError(f"rule {number}: {name} {arg}, and there are "
+                             f"{things} things")
+        if name == "MOVE" and not (0 <= arg2 < rooms or arg2 == CARRIED):
+            raise ValueError(f"rule {number}: MOVE to {arg2}, which is neither "
+                             f"a room nor CARRIED")
+        if name in ("FLAG", "NFLAG", "SET", "CLEAR") and not 0 <= arg < self.flags:
+            raise ValueError(f"rule {number}: {name} {arg}, and the world "
+                             f"reserves {self.flags} flags")
+        if name == "PRINT" and not 0 <= arg < len(self.messages):
+            raise ValueError(f"rule {number}: PRINT {arg}, and there are "
+                             f"{len(self.messages)} messages")
+        if name == "CARRYING" and not 0 <= arg <= things:
+            raise ValueError(f"rule {number}: CARRYING {arg}, and there are "
+                             f"only {things} things to carry")
+
     @property
     def overlay_bytes(self) -> int:
         """RAM the world needs to be *mutable*, which is the whole save file.
 
-        One byte a thing for where it is, one bit a flag, and one byte for the
-        room the player is in.
+        One byte a thing for where it is, one a flag, one a one-shot rule that
+        has already fired, and one for the room the player is in.
+
+        A byte a flag rather than a bit. Bits would be eight times smaller and
+        need a shift and a mask at four call sites; a world binary has half a
+        megabyte of SRAM spare, so the trade is not close - and a restore that
+        replayed every event the player had already seen would be the bug that
+        packing them saved sixty bytes to earn.
         """
-        return len(self.things) + (self.flags + 7) // 8 + 1
+        return (1 + max(1, len(self.things)) + self.flags
+                + max(1, len(self.rules)))
 
     def reachable(self) -> set[int]:
         """Rooms reachable from the start, for the check nobody runs by hand."""

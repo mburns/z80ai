@@ -37,6 +37,16 @@ def play(game, *commands: str) -> tuple[str, AgonHost]:
     return host.run(game, max_cycles=50_000_000), host
 
 
+def said(out: str, phrase: str) -> bool:
+    """Whether the game said this, ignoring where `PRWRAP` broke the lines.
+
+    A sentence longer than 76 columns arrives with a newline somewhere in the
+    middle of it, and which word that lands on is the wrapper's business
+    rather than the assertion's.
+    """
+    return " ".join(phrase.split()) in " ".join(out.split())
+
+
 # --- the claim ----------------------------------------------------------------
 
 
@@ -156,6 +166,124 @@ def test_an_empty_line_is_not_a_turn(game):
     assert "The Cafeteria" in out
 
 
+# --- rules, which are the step past a path ------------------------------------
+#
+# `data/silo/README.md` names four shapes a graph path cannot express:
+# aggregation, ranking, set intersection, and a count around a ring. A flat
+# list of ANDed conditions closes three of them and not the fourth, and that
+# is the finding rather than a gap to be apologised for - see IF.md.
+
+
+def test_a_count_over_a_set_fires(game):
+    """Aggregation. `CARRYING 2` is a question about a set rather than about
+    any one thing, which is the first of the four."""
+    out, _ = play(game, "down", "take ledger", "down", "take badge")
+    assert said(out, "Your hands are full.")
+
+
+def test_a_count_does_not_fire_below_its_threshold(game):
+    out, _ = play(game, "down", "take ledger")
+    assert not said(out, "Your hands are full.")
+
+
+def test_a_conjunction_of_two_particular_things_fires(game):
+    """Intersection. Not two things - *these* two, which no single path
+    reaches and no single condition states."""
+    out, _ = play(game, "down", "down", "take badge", "down", "down",
+                  "take wrench")
+    assert said(out, "look like a story you would rather not have to tell")
+
+
+def test_a_conjunction_needs_both(game):
+    out, _ = play(game, "down", "down", "take badge")
+    assert not said(out, "tell a deputy")
+
+
+def test_a_flag_set_in_one_room_is_read_in_another(game):
+    """State that outlives the turn that made it, which is what a flag is for
+    and what a stateless card cannot have at all."""
+    out, _ = play(game, "down", "down", "down", "down", "up", "up", "up", "up")
+    assert said(out, "you know what makes it")
+
+
+def test_the_flag_rule_does_not_fire_before_its_flag(game):
+    out, _ = play(game, "down", "up")
+    assert not said(out, "you know what makes it")
+
+
+def test_a_once_rule_fires_once(game):
+    """Most rules are events. One that printed every turn would be a bug that
+    reads as a design decision."""
+    out, _ = play(game, "down", "take ledger", "down", "take badge", "look",
+                  "look")
+    assert out.count("Your hands are full.") == 1
+
+
+def test_rules_cost_no_card_reads_either(game):
+    _out, host = play(game, "down", "take ledger", "down", "take badge")
+    assert host.io_bytes == 0
+
+
+# --- rules, before anything is emitted ----------------------------------------
+
+
+def rules_world(**kwargs) -> World:
+    return World(rooms=[Room("A", "a", {"NORTH": 1}), Room("B", "b")],
+                 things=[Thing("key", "k", 0)], messages=["hello"], **kwargs)
+
+
+def test_a_rule_with_no_conditions_is_refused():
+    """It fires on the first turn and every turn, which is never intended."""
+    world = rules_world(rules=[libworld.Rule(when=[], then=[])])
+    with pytest.raises(ValueError, match="no conditions"):
+        world.check()
+
+
+def test_a_rule_naming_a_room_that_does_not_exist_is_refused():
+    world = rules_world(rules=[libworld.Rule(when=[(libworld.C_AT, 9)],
+                                             then=[])])
+    with pytest.raises(ValueError, match="AT 9"):
+        world.check()
+
+
+def test_a_rule_naming_a_thing_that_does_not_exist_is_refused():
+    world = rules_world(rules=[libworld.Rule(when=[(libworld.C_HAVE, 4)],
+                                             then=[])])
+    with pytest.raises(ValueError, match="HAVE 4"):
+        world.check()
+
+
+def test_a_rule_printing_a_message_that_does_not_exist_is_refused():
+    world = rules_world(rules=[
+        libworld.Rule(when=[(libworld.C_AT, 0)],
+                      then=[(libworld.A_PRINT, 7, 0)])])
+    with pytest.raises(ValueError, match="PRINT 7"):
+        world.check()
+
+
+def test_a_rule_counting_past_what_exists_is_refused():
+    """`CARRYING 5` in a world of one thing never fires, and a rule that can
+    never fire is a typo rather than a decision."""
+    world = rules_world(rules=[
+        libworld.Rule(when=[(libworld.C_CARRYING, 5)], then=[])])
+    with pytest.raises(ValueError, match="only 1 things"):
+        world.check()
+
+
+def test_a_rule_setting_a_flag_the_world_does_not_reserve_is_refused():
+    world = rules_world(flags=4, rules=[
+        libworld.Rule(when=[(libworld.C_AT, 0)],
+                      then=[(libworld.A_SET, 9, 0)])])
+    with pytest.raises(ValueError, match="SET 9"):
+        world.check()
+
+
+def test_an_unknown_opcode_is_refused():
+    world = rules_world(rules=[libworld.Rule(when=[(99, 0)], then=[])])
+    with pytest.raises(ValueError, match="no condition 99"):
+        world.check()
+
+
 # --- the world, before anything is emitted ------------------------------------
 
 
@@ -209,11 +337,15 @@ def test_a_carried_thing_may_start_carried():
 # --- what a saved game would be -----------------------------------------------
 
 
-def test_the_overlay_is_one_byte_a_thing_and_one_bit_a_flag():
+def test_the_overlay_is_a_byte_apiece():
+    """Flags were bits first. Bits are eight times smaller and want a shift
+    and a mask at four call sites, and a world binary has half a megabyte of
+    SRAM spare - so the sixty bytes are not worth the four places to be
+    wrong."""
     world = World(rooms=[Room("A", "a")],
                   things=[Thing(f"t{i}", "x", 0) for i in range(10)],
                   flags=64)
-    assert world.overlay_bytes == 10 + 8 + 1
+    assert world.overlay_bytes == 1 + 10 + 64 + 1
 
 
 def test_the_overlay_is_one_contiguous_run():

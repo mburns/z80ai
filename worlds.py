@@ -14,7 +14,8 @@ top to 144 at the bottom, `Up Top` is 1-20, `The Mids` 21-120 and `Down Deep`
 
 from __future__ import annotations
 
-from libworld import Room, Thing, World
+import libworld
+from libworld import Room, Rule, Thing, World
 
 #: Room indices, named so the exits below read as something other than digits.
 LANDING, CAFETERIA, STAIR_MID, IT_OFFICE, STAIR_DEEP, GENERATOR = range(6)
@@ -65,4 +66,32 @@ def silo() -> World:
               STAIR_MID),
     ]
 
-    return World(rooms=rooms, things=things, start=LANDING)
+    # The four shapes `data/silo/README.md` says a path cannot express, as far
+    # as a flat condition list gets: conjunction, a bounded count, and a state
+    # that persists. Ranking is not here because this cannot do it - see IF.md.
+    messages = [
+        "Your hands are full. Whatever else you find down here is going to "
+        "have to wait, or something you already have is going down the stair "
+        "without you.",
+        "The badge and the wrench together look like a story you would rather "
+        "not have to tell a deputy.",
+        "You have been to the bottom and back, and the hum is different now "
+        "you know what makes it.",
+    ]
+
+    rules = [
+        # A count over a set: two things at once, which a path cannot ask.
+        Rule(when=[(libworld.C_CARRYING, 2)],
+             then=[(libworld.A_PRINT, 0, 0)]),
+        # Conjunction: two particular things, not merely two things.
+        Rule(when=[(libworld.C_HAVE, 3), (libworld.C_HAVE, 0)],
+             then=[(libworld.A_PRINT, 1, 0), (libworld.A_SET, 0, 0)]),
+        # A flag remembering somewhere you have been, tested somewhere else.
+        Rule(when=[(libworld.C_AT, GENERATOR)],
+             then=[(libworld.A_SET, 1, 0)]),
+        Rule(when=[(libworld.C_AT, LANDING), (libworld.C_FLAG, 1)],
+             then=[(libworld.A_PRINT, 2, 0)]),
+    ]
+
+    return World(rooms=rooms, things=things, start=LANDING,
+                 rules=rules, messages=messages)
