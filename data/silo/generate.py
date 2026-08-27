@@ -66,12 +66,19 @@ property of the graph and not of the question. This corpus adds three:
     in_silo           located_in, until a silo
     founding_father   father_is, until a founder
 
-The last one runs into `CLIMB_LIMIT`, which is 6 and counts the values a climb
-may *examine* - one more than the hops it may take. Generation g is exactly g
-hops from its founder, so a limit of 6 buys generations 1 to 5 and generation 6
-falls one short. That is not a bug to be worked around; it is what the limit
-costs, on a corpus where the true answer is known for all 10,000 - and
-`buildcard.py --climb-limit 7` is what buys the seventh.
+The last one used to run into `CLIMB_LIMIT`, which counts the values a climb may
+*examine* - one more than the hops it may take. Generation g is exactly g hops
+from its founder, so the limit of 6 this corpus was built against bought
+generations 1 to 5 and generation 6 fell one short. That was not a bug to be
+worked around; it was what the limit cost, on a corpus where the true answer is
+known for all 10,000.
+
+The limit is 8 now, for reasons that have nothing to do with this corpus -
+Wikipedia's containment chains grew when Wikidata supplied them - and every
+generation here answers. What that measurement bought is written down below:
+raising it cost nothing on the climbs that never reached it, and *saved* on the
+one it newly answered, because failing a climb falls back to reading article
+text and that is dearer than the walk. The hop limit was never buying speed.
 """
 
 from __future__ import annotations

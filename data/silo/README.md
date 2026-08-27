@@ -145,24 +145,35 @@ The 2% that "what is X's spouse's trade" misses is the remarried:
 `libgraph.CLIMB` repeats a relation until the value has a given type — what
 *"what country was X born in"* really asks, since the number of hops is a
 property of the graph and not of the question. This corpus adds three, and one
-of them runs into the limit:
+of them used to run into the limit:
 
 ```
-generation      asked  hops needed   reached
-1                 234            1    100.0%
-2                 290            2    100.0%
-3                 299            3    100.0%
-4                 299            4    100.0%
-5                 324            5    100.0%
-6                 307            6      0.0%
+generation      asked  hops needed   reached at 6   reached at 8
+1                 234            1         100.0%         100.0%
+2                 290            2         100.0%         100.0%
+3                 299            3         100.0%         100.0%
+4                 299            4         100.0%         100.0%
+5                 324            5         100.0%         100.0%
+6                 307            6           0.0%         100.0%
 ```
 
-`CLIMB_LIMIT` is 6 and counts the values a climb may *examine* rather than the
-hops it may take, so it buys five hops: generation 5 reaches its founder on the
-last one it is allowed and generation 6 falls exactly one short. Nothing is
-wrong; that is the price of a walk that must not loop forever, and it is only
-visible on a corpus where the true answer is known. `--climb-limit 7` buys the
-seventh — see [below](#the-limit-counts-values-examined-not-hops).
+`CLIMB_LIMIT` counts the values a climb may *examine* rather than the hops it
+may take, so a limit of n buys n − 1 hops. At 6 this corpus stopped one short of
+its deepest generation, and that was the price of a walk that must not loop
+forever — visible here and nowhere else, because this is the corpus where the
+true answer is known.
+
+**It is 8 now, and this corpus no longer reaches it.** The reason came from
+somewhere else entirely: Wikidata supplied Simple English Wikipedia's
+containment, and the chains it added were longer than the ones it replaced —
+`Cannes` reaches France through an arrondissement, a department, a region and
+`Metropolitan France`. 4,643 answers went past a limit that had one step of
+spare. Eight recovers them and nine buys nothing, and seven generations happens
+to be exactly what eight covers.
+
+What that cost on the machine is [measured below](#the-hop-limit-on-the-actual-machine),
+and the answer is nothing: the climbs that never reach the limit are
+byte-identical, and the one it newly answers got *cheaper*.
 
 ### A set, reached through an inverse hop
 
@@ -637,6 +648,9 @@ position now hashes differently.
 
 ### The hop limit, on the actual machine
 
+Measured when `CLIMB_LIMIT` was 6, which is why generation 6 fails here. It is
+8 now, and this is the measurement that said raising it was safe:
+
 ```
   hops   instructions      +/-  card bytes    +/-  answered
      1        366,655   19,950       4,701    161     20/20
@@ -647,7 +661,7 @@ position now hashes differently.
      6        384,938   26,845       9,419    175      0/20  <- past the hop limit
 ```
 
-Generation 6 needs a sixth hop and `CLIMB_LIMIT` of 6 allows five. On the eZ80
+Generation 6 needs a sixth hop and a `CLIMB_LIMIT` of 6 allows five. On the eZ80
 that is not an error message: the walk returns nothing, the program falls back
 to listing articles, and the card bytes double because a fallback reads article
 text and a graph answer does not.
@@ -678,10 +692,16 @@ tells you they match, not that they are right, and this is the failure mode that
 argument has.
 
 So **a limit of n buys n − 1 hops.** Generation g is exactly g hops from its
-founder, measured over all 10,000 people, so a limit of 6 buys generations 1 to
-5 and generation 6 falls one short. Three separate files reached that correct
-conclusion through a backwards explanation, and `tests/test_silo.py` asserted
-`range(1, CLIMB_LIMIT)` and was right for a reason nobody had written down.
+founder, measured over all 10,000 people, so the limit of 6 this was written
+against bought generations 1 to 5 and generation 6 fell one short. Three
+separate files reached that correct conclusion through a backwards explanation,
+and `tests/test_silo.py` asserted `range(1, CLIMB_LIMIT)` and was right for a
+reason nobody had written down.
+
+At 8 it buys seven hops and this corpus has seven generations, so the limit is
+no longer what stops anything here. The test that demonstrated it now lowers the
+limit to do so, rather than relying on the default to bite — otherwise the only
+test of the bound would be one that passes because nothing exercises it.
 
 ### Which makes it worth choosing
 
