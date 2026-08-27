@@ -422,9 +422,20 @@ MOS_LOAD = AGON_MOS_LOAD
 MOS_FOPEN = 0x0A        # HL=filename, C=mode -> A=handle (0 = failed)
 MOS_FCLOSE = 0x0B       # C=handle
 MOS_FREAD = 0x1A        # C=handle, HL=buffer, DE=count -> DE=bytes read
+MOS_FWRITE = 0x1B       # C=handle, HL=buffer, DE=count -> DE=bytes written
 MOS_FLSEEK = 0x1C       # C=handle, HL=offset (low 24 bits), E=high byte
 
+#: FatFs open modes, which is what MOS passes straight through.
+#:
+#: Saving needs two of these and not one: `mos_fwrite` is the call issue #62
+#: named, but a handle opened `FA_READ` cannot take it, so `mos_fopen` has to
+#: learn a mode it has never been given. Everything on the card until now has
+#: been read-only by construction.
 FA_READ = 0x01
+FA_WRITE = 0x02
+FA_CREATE_NEW = 0x04
+FA_CREATE_ALWAYS = 0x08
+FA_OPEN_ALWAYS = 0x10
 
 #: Agon SRAM. A load outside this window would be discarded by the hardware or
 #: land in flash; the emulator's memory is a plain bytearray that would happily
@@ -491,6 +502,23 @@ class AgonHost(_StdinKeys):
         self.cpu.mem[addr:end] = data
         self.io_bytes += len(data)
 
+    def read_block(self, addr: int, count: int) -> bytes:
+        """Copy ``count`` bytes out of emulated RAM, with the same bounds check.
+
+        The mirror of `write_block`, and out of bounds is the same mistake read
+        the other way: a save written from a wrong address would put plausible
+        bytes on the card and lose whatever the program meant to keep.
+        """
+        end = addr + count
+        if addr < AGON_RAM_LO or end > AGON_RAM_HI:
+            raise Z80Error(
+                f"store of {count} bytes from {addr:06X} leaves Agon SRAM "
+                f"({AGON_RAM_LO:06X}-{AGON_RAM_HI - 1:06X})")
+        if end > len(self.cpu.mem):
+            raise Z80Error(f"store from {addr:06X} past the end of memory")
+        self.io_bytes += count
+        return bytes(self.cpu.mem[addr:end])
+
     # --- MOS entry points ----------------------------------------------------
 
     def _out_char(self, cpu: Z80) -> bool:
@@ -515,13 +543,25 @@ class AgonHost(_StdinKeys):
 
     def _fopen(self, cpu: Z80) -> bool:
         name = self.read_cstring(cpu.hl).upper()
-        if (cpu.c & FA_READ) == 0:
-            raise Z80Error(f"mos_fopen mode {cpu.c:02X}: only reading is emulated")
+        mode = cpu.c
+        if mode & ~(FA_READ | FA_WRITE | FA_CREATE_NEW | FA_CREATE_ALWAYS
+                    | FA_OPEN_ALWAYS):
+            raise Z80Error(f"mos_fopen mode {mode:02X} is not emulated")
+
+        writing = bool(mode & FA_WRITE)
+        creates = bool(mode & (FA_CREATE_NEW | FA_CREATE_ALWAYS
+                               | FA_OPEN_ALWAYS))
+        if mode & FA_CREATE_NEW and name in self.files:
+            cpu.a = 0                       # FR_EXIST
+            return True
+        if mode & FA_CREATE_ALWAYS or (creates and name not in self.files):
+            self.files[name] = b""
         if name not in self.files:
             cpu.a = 0
             return True
+
         handle = next(i for i in range(1, 256) if i not in self.handles)
-        self.handles[handle] = [name, 0]
+        self.handles[handle] = [name, 0, writing]
         cpu.a = handle
         return True
 
@@ -537,11 +577,34 @@ class AgonHost(_StdinKeys):
         entry = self.handles.get(cpu.c)
         if entry is None:
             raise Z80Error(f"mos_fread on unopened handle {cpu.c}")
-        name, pos = entry
+        name, pos = entry[0], entry[1]
         chunk = self.files[name][pos:pos + cpu.de]
         self.write_block(cpu.hl, chunk)
         entry[1] = pos + len(chunk)
         cpu.de = len(chunk)
+        return True
+
+    def _fwrite(self, cpu: Z80) -> bool:
+        """C=handle, HL=buffer, DE=count -> DE=bytes written.
+
+        The card is a dict of bytes, so a write splices rather than appends:
+        seeking back over a save file and rewriting part of it has to behave
+        the way FatFs would, and a file that only ever grew would hide that.
+        """
+        entry = self.handles.get(cpu.c)
+        if entry is None:
+            raise Z80Error(f"mos_fwrite on unopened handle {cpu.c}")
+        name, pos, writing = entry[0], entry[1], entry[2]
+        if not writing:
+            raise Z80Error(f"mos_fwrite on {name}, which was opened for reading")
+
+        data = self.read_block(cpu.hl, cpu.de)
+        current = self.files[name]
+        if pos > len(current):
+            current += b"\0" * (pos - len(current))
+        self.files[name] = current[:pos] + data + current[pos + len(data):]
+        entry[1] = pos + len(data)
+        cpu.de = len(data)
         return True
 
     def _flseek(self, cpu: Z80) -> bool:
@@ -560,6 +623,7 @@ class AgonHost(_StdinKeys):
         MOS_FOPEN: _fopen,
         MOS_FCLOSE: _fclose,
         MOS_FREAD: _fread,
+        MOS_FWRITE: _fwrite,
         MOS_FLSEEK: _flseek,
     }
 
