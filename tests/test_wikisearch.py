@@ -586,6 +586,63 @@ def test_an_article_at_the_limit_still_reaches_the_screen(tmp_path):
     assert "".join(lead.split()) in printed
 
 
+# --- word wrap, which nothing needed while a lead was 300 characters ----------
+
+
+def wrapped_lines(card, query: str) -> list[str]:
+    """The lines a terminal would show, from the character stream itself.
+
+    `AgonHost` models no screen - it collects what `RST 10h` was given - which
+    is the right level to assert at: the program is what has to decide where a
+    line ends, because nothing here ever emits a VDU sequence to ask.
+    """
+    return run_query(card, query).replace("\r", "").split("\n")
+
+
+def test_no_line_runs_past_the_wrap_width(tmp_path):
+    lead = (PROSE * 6)[:1200]
+    card = one_article_card(tmp_path, lead)
+    for line in wrapped_lines(card, "incident"):
+        assert len(line) <= buildwikibin.WRAP_WIDTH, repr(line)
+
+
+def test_no_word_is_broken_across_a_line(tmp_path):
+    """The failure this exists for. A character-at-a-time print lets the
+    terminal break wherever the column runs out, which lands mid-word about
+    once a line on prose this long."""
+    lead = (PROSE * 6)[:1200]
+    card = one_article_card(tmp_path, lead)
+    shown = " ".join(wrapped_lines(card, "incident")).split()
+
+    # The lead's words, in order and unbroken, somewhere in what was printed.
+    # A break mid-word leaves two fragments and neither matches, so this fails
+    # on exactly the thing it is named for.
+    want = lead.split()
+    start = shown.index(want[0])
+    assert shown[start:start + len(want)] == want
+
+
+def test_a_paragraph_break_the_author_wrote_survives(tmp_path):
+    """`authored.py` keeps blank lines as one newline because they are the only
+    formatting that reaches the screen. The wrapper has to honour them rather
+    than treat them as another space."""
+    lead = "first paragraph here\nsecond paragraph here"
+    card = one_article_card(tmp_path, lead)
+    lines = [ln for ln in wrapped_lines(card, "incident") if ln.strip()]
+    assert "first paragraph here" in lines
+    assert "second paragraph here" in lines
+
+
+def test_a_word_longer_than_a_line_still_gets_out(tmp_path):
+    """Measured up to the width, so it never fits and starts a line of its own
+    rather than looping or being dropped."""
+    long_word = "z" * (buildwikibin.WRAP_WIDTH + 20)
+    card = one_article_card(tmp_path, f"short {long_word} tail")
+    shown = " ".join(wrapped_lines(card, "incident"))
+    assert long_word in shown.split()
+    assert "tail" in shown.split()
+
+
 def test_the_reference_reads_what_the_device_reads(tmp_path):
     """`article` used to read 4096 packed bytes against the device's 2048, so a
     card the machine could not finish was one the reference finished fine - and
