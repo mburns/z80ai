@@ -660,6 +660,48 @@ prefix quarter, which did not move: it is 19.6% of misses at 128 and 23.9% at
 512 — fewer in absolute terms because there are fewer misses, but a larger
 share of what remains. That is a different problem and it is still open.
 
+### The prefix quarter, repaired lexically
+
+Buckets did not touch the prefix confusions, so they got the treatment the
+diagnosis actually implied. Not more wordings — *different* ones. Six paths,
+the three pairs that lost to each other, twelve new wordings each chosen to say
+the same thing **without the token the pair shares**: *gran*, *nan*, *granny*
+where every existing wording said "grandmother"; *schoolfellow* and *taught
+with* where they all said "class"; terse forms like `{s}'s dad` for the one-hop
+paths that were losing upward.
+
+At 256 buckets, seed 0, three wordings held out:
+
+| | 12 wordings | +12 on six paths |
+|---|---:|---:|
+| misses | 47.5% | **43.5%** |
+| of those, prefix confusions | 20.7% | **15.2%** |
+| `class_is class_is_of` → `class_is` | **71** | out of the top sixteen |
+| `mother_is mother_is` → `mother_is` | 64 | **41** |
+| `father_is father_is` → `father_is` | 61 | out of the top sixteen |
+
+**The worst pair in the phrasebook stopped being a pair.** And the mechanism
+predicted it: remove the shared token and the encoder can separate what the
+words already distinguished.
+
+Two things stop this being a clean win.
+
+**The confusion partly reversed rather than vanishing.** `class_is` now loses
+to `class_is class_is_of` 46 times and `father_is` to `father_is father_is` 32.
+The pairs are still confusable; what changed is which of the two wins. Half the
+repair was aimed at the one-hop paths for exactly this reason and it was not
+enough.
+
+**The overall number is not a fair comparison and is not claimed as one.** Six
+paths now have twice the wordings while still holding out three, so their
+held-out set has more neighbours to learn from — `tools/phrasebook_diversity.py`
+measures novelty falling from 0.188 to 0.100 on `mother_is`. Some of 47.5% →
+43.5% is that, not the disambiguation. The prefix *share* is the honest column,
+because it is a ratio within misses.
+
+Extending every path to twenty-four and holding out six would settle it. That
+is the measurement this section is short of.
+
 ### What the width costs on the card
 
 Measured on a real silo card, same corpus and same 128,96 hidden layers:

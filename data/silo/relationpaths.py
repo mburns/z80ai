@@ -37,6 +37,33 @@ Twelve phrasings per path is few enough that the held-out three are a quarter
 of the grammar rather than a rounding error, which is deliberate: the failure
 this is trying to catch is a classifier that has memorised "grandfather" and
 falls over on "father's father".
+
+## Six paths have twenty-four, and it is not because they were short
+
+Three pairs lost to each other far more than anything else did, always in the
+same shape - a two-hop path answered as its own one-hop prefix:
+
+    class_is class_is_of  ->  class_is           71
+    mother_is mother_is   ->  mother_is          64
+    father_is father_is   ->  father_is          61
+
+The cause is lexical. "grandmother" *contains* "mother" - five of the six
+trigrams in the shorter word are inside the longer one - and almost every
+wording of the longer path used it. The word that was supposed to distinguish
+them was mostly the word they shared.
+
+So those six paths have twelve more wordings apiece, chosen to say the same
+thing **without the shared token**: *gran*, *nan*, *granny* for the grandmother
+path, *schoolfellow* and *taught with* for the classmate one, and terse forms
+like "{s}'s dad" for the one-hop paths that were losing upward. That is a
+hypothesis about the encoder rather than a stylistic preference, and
+`data/silo/README.md` reports what it was worth: the prefix share of misses
+fell from 20.7% to 15.2% and the worst pair left the table entirely.
+
+`tools/phrasebook_diversity.py` is the check that they broadened rather than
+padded - mean self-similarity within those six paths fell, which is what
+adding genuinely different wordings looks like and what adding more of the
+same would not.
 """
 
 from __future__ import annotations
@@ -76,6 +103,17 @@ PATHS: dict[str, tuple[str, ...]] = {
         "tell me {s}'s father", "{s} is the child of which man",
         "whose son or daughter is {s} on the father's side",
         "who is the male parent of {s}",
+        # Twelve more, and the other half of the same repair: this path loses
+        # *into* `father_is father_is` 38 times, so it wants wordings a
+        # grandparent question would never use. Short ones especially - a
+        # terse query shares little with a long one whatever the words.
+        "{s}'s dad", "father of {s}", "{s} dad", "dad of {s}",
+        "who is dad to {s}", "name the dad of {s}",
+        "who is {s}'s papa", "{s} was raised by which man",
+        "the man on {s}'s birth record",
+        "look up the father for {s}",
+        "which man is entered as {s}'s parent",
+        "{s} is son or daughter to whom",
     ),
     "mother_is": (
         "who is {s}'s mother", "who was {s}'s mother", "name {s}'s mother",
@@ -84,6 +122,14 @@ PATHS: dict[str, tuple[str, ...]] = {
         "tell me {s}'s mother", "{s} is the child of which woman",
         "who bore {s}", "who is the female parent of {s}",
         "{s} was mothered by whom",
+        # Twelve more, the mirror of the `father_is` additions.
+        "{s}'s mum", "mother of {s}", "{s} mum", "mum of {s}",
+        "who is mum to {s}", "name the mum of {s}",
+        "who is {s}'s mama", "{s} was carried by which woman",
+        "the woman on {s}'s birth record",
+        "look up the mother for {s}",
+        "which woman is entered as {s}'s parent",
+        "{s} is son or daughter to which woman",
     ),
     "spouse_of": (
         "who did {s} marry", "who is {s} married to", "who is {s}'s wife",
@@ -140,6 +186,16 @@ PATHS: dict[str, tuple[str, ...]] = {
         "tell me {s}'s class", "which class list has {s} on it",
         "what class did {s} sit in", "{s} was schooled with which class",
         "which nursery class was {s} in", "what cohort did {s} study with",
+        # Twelve more that ask for a *name* rather than for people, which is
+        # the distinction `class_is class_is_of` kept losing.
+        "{s}'s class", "class of {s}", "{s} class",
+        "name the year group {s} belonged to",
+        "what was {s} taught in", "under which teacher was {s} taught",
+        "which room did {s} learn in", "{s}'s year group",
+        "look up the class for {s}",
+        "what is entered as {s}'s schooling",
+        "name the cohort {s} was registered to",
+        "{s} was registered to which group",
     ),
     "crew_is": (
         "which crew is {s} on", "what crew does {s} serve on",
@@ -158,6 +214,18 @@ PATHS: dict[str, tuple[str, ...]] = {
         "who is grandad to {s}", "{s} is the grandchild of which man",
         "who is the father of the father of {s}",
         "name the man whose son fathered {s}",
+        # Twelve more without "father" in them, for the reason set out under
+        # `mother_is mother_is`.
+        "who is {s}'s grandad", "who is {s}'s grandpa",
+        "name {s}'s grandpa", "{s}'s grandad is who",
+        "who is grandpa to {s}",
+        "which man is {s}'s parent's parent on the male side",
+        "name the older man {s} descends from through the men",
+        "{s} is grandchild to which man",
+        "who is two above {s} on the male line",
+        "the man whose son sired {s}",
+        "{s} calls which man grandad",
+        "name the elder man on {s}'s paternal line",
     ),
     "mother_is mother_is": (
         "who is {s}'s grandmother", "who is {s}'s maternal grandmother",
@@ -168,6 +236,25 @@ PATHS: dict[str, tuple[str, ...]] = {
         "who is granny to {s}", "{s} is the grandchild of which woman",
         "who is the mother of the mother of {s}",
         "name the woman whose daughter bore {s}",
+        # Twelve more that do not contain "mother" at all.
+        #
+        # This path loses to `mother_is` more often than any other pair loses
+        # to anything, and the reason is lexical rather than grammatical:
+        # "grandmother" *contains* "mother", so most of the twelve above are
+        # the shorter path's word with a prefix stuck on it. Five of the six
+        # trigrams in "mother" are inside "grandmother", and 128 buckets could
+        # not tell them apart at all. These say the same thing without sharing
+        # the token, which is a hypothesis about the encoder and not a stylistic
+        # preference - see `data/silo/README.md`.
+        "who is {s}'s gran", "who is {s}'s nan", "name {s}'s granny",
+        "{s}'s gran is who", "who is nana to {s}",
+        "which woman is {s}'s parent's parent on the female side",
+        "name the older woman {s} descends from through the women",
+        "{s} is grandchild to which woman",
+        "who is two above {s} on the female line",
+        "the woman whose daughter gave birth to {s}",
+        "{s} calls which woman gran",
+        "name the elder woman on {s}'s maternal line",
     ),
     "father_is works_in": (
         "which department does {s}'s father work in",
@@ -251,6 +338,19 @@ PATHS: dict[str, tuple[str, ...]] = {
         "which children learned beside {s}",
         "who shared a class list with {s}",
         "{s} went to school with whom",
+        # Twelve more without "class" in them. This pair is the worst in the
+        # phrasebook - 71 misses to `class_is` - and the two questions are
+        # genuinely near-identical on the surface: one asks *which class*, the
+        # other asks *who was in it*, and both said "class" in almost every
+        # wording. The distinguishing word was carrying the whole burden.
+        "who were {s}'s schoolfellows", "name a schoolmate of {s}",
+        "who sat beside {s} at school", "which children were taught with {s}",
+        "who shared a teacher with {s}", "name somebody {s} learned beside",
+        "who was in the same year as {s}", "which pupils knew {s} at school",
+        "name a child schooled at the same time as {s}",
+        "who grew up in the nursery with {s}",
+        "{s} learned to read beside whom",
+        "name one of the children taught alongside {s}",
     ),
     "lives_at next_along lives_at_of": (
         "who lives next door to {s}", "name a neighbour of {s}",
