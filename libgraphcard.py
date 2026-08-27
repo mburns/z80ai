@@ -93,6 +93,13 @@ REFUSE = 0xFF
 #: The phrase label that means it. Written in the training data beside the
 #: paths, so a refusal is a class the classifier learns rather than a
 #: confidence threshold nothing here has.
+#:
+#: **One label, and it was nearly four.** Splitting it by question shape looked
+#: like the fix when the class fell from 56.7% to 30.0% on two classes being
+#: added elsewhere. Measured, the split is worth nothing: one class holding the
+#: same forty-eight wordings scores 77.2% and four classes holding them score
+#: 73.7%. What the class was short of was wordings, not coherence - the same
+#: answer `data/questions/relations.py` reached about the chain classes.
 REFUSE_PATH = "refuse"
 
 #: Set on a step's relation byte to walk the reverse table instead: "who was
