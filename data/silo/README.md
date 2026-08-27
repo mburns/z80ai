@@ -925,13 +925,63 @@ vocabulary with `how many cousins does X have`, yet they are the same class.
 Adding *any* vocabulary gives those questions somewhere new to land; counting
 was the occasion, not the cause.
 
-Which makes the fix a different change from the one this was going to be:
-**split `refuse` by shape.** Four labels that all encode to `libgraphcard.REFUSE`
-cost the card nothing — the step table only needs to know a phrase is a
-refusal, not which kind — and each would be a class with a coherent region
-instead of a grab bag. Until that is done and measured, counting stays a graph
-capability that the card cannot be asked for, and the eZ80 routine to walk one
-is not worth writing.
+### The split was the obvious fix, and it is worth nothing
+
+So `refuse` was split by shape — four labels all encoding to
+`libgraphcard.REFUSE`, which costs the card nothing because the step table only
+needs to know a phrase *is* a refusal — and each was written twelve wordings,
+the same as every answerable class.
+
+It works. It is also not why it works, and the control is the whole story:
+
+| | classes | refusal recall | answerable |
+|---|---:|---:|---:|
+| one class, 12 wordings *(what shipped)* | 21 | 56.7% | 44.6% |
+| **one class, all 48 wordings** | 21 | **77.2%** | 42.2% |
+| four classes, the same 48 wordings | 24 | 73.7% | 42.5% |
+
+Refusal is scored as **did it refuse at all**, not as did it pick the right one
+of four, because that is the only distinction the eZ80 can make.
+
+**One class holding forty-eight wordings beats four classes holding the same
+forty-eight.** The split contributes nothing; the wordings contribute
+everything. The diagnosis above — that the class had no coherent region — was
+wrong, or at least was not the binding constraint. It was short of grammar, which
+is the same answer [#63](../../pull/63) reached about the chain classes and the
+same one the [phrasing curve](#it-is-short-of-grammar-not-short-of-data) reached
+about everything else. Three wordings per shape was simply too few.
+
+So the shipped arrangement is one class with forty-eight wordings, and the four
+labels are gone.
+
+### What it costs, in the currency this repository cares about
+
+| | refusal recall | answerable | **answerable questions refused** |
+|---|---:|---:|---:|
+| 12 wordings | 56.7% | 44.6% | 3.2% |
+| 48 wordings | **77.2%** | 42.2% | **10.0%** |
+
+It catches twenty more points of the questions it should decline, and wrongly
+declines seven more points of the ones it could answer. That is a judgement
+rather than a measurement, and the judgement is that it is worth it: a wrong
+refusal is visible and unhelpful, a missed refusal is a confident wrong answer
+with nothing on the screen to say so, and this file has argued from the start
+that a machine with gaps that says so beats one that is merely unreliable.
+
+### And it makes counting affordable
+
+The count classes cost the old arrangement twenty-seven points of refusal. They
+cost this one fourteen, and land it **above where it started**:
+
+| | classes | refusal recall | answerable |
+|---|---:|---:|---:|
+| 12 wordings, no counts *(what shipped)* | 21 | 56.7% | 44.6% |
+| 48 wordings, plus two count classes | 23 | **63.1%** | 43.3% |
+
+Same answerable accuracy, better refusal, and two capabilities that were not
+there. Counting is no longer blocked by the classifier — what remains is card
+support for a count step and the eZ80 routine to walk one, which is
+[scoped](#counting-was-not-an-aggregate-after-all) and not built.
 
 ## Using it as an oracle for authored fiction
 
