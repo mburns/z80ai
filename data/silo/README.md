@@ -885,6 +885,54 @@ class converts about half of these questions from a confident wrong answer into
 a refusal. It does not convert them all, and the ones it misses are the ones
 that look most like questions this corpus can answer.
 
+### And the class is fragile to anything else being added
+
+Counting became a walkable step, so the obvious next move was to teach the
+classifier to ask for one. Measured first, three seeds, before writing a line
+of it into the vocabulary:
+
+| | classes | held out | `refuse` | the counts | refusals answered as a count |
+|---|---:|---:|---:|---:|---:|
+| as shipped | 21 | 44.9% | **56.7%** | — | 0 |
+| with two count classes | 23 | 45.7% | **30.0%** | 73.3% | 8.7 |
+
+The count classes work — 73.3%, well above the 45.7% mean. **They cost the
+refusal class twenty-seven points**, which is why they are not in
+`relationpaths.PATHS` and why the card still cannot be asked for a count.
+
+The prediction that motivated the measurement was **wrong**, and being wrong is
+what makes it worth writing down. The expected collision was between `how many
+people live on {s}'s floor`, which is refused, and `how many people were born
+on {s}'s level`, which is now answerable — two sentences a word apart, one
+reachable and one not. That is not what happened. Breaking the leak down by
+shape, at one seed:
+
+| refusals answered instead of refused | 21 classes | 23 classes |
+|---|---:|---:|
+| `which of {s}'s crew is eldest` → `crew_is` | 32 | 32 |
+| `is {s} any relation to the sheriff` → *seven different classes* | 26 | 57 |
+| total, of 120 | 63 | 89 |
+
+The `crew_is` leak is **identical in both** — it is the pre-existing one
+measured above and counting did not touch it. Every one of the twenty-six extra
+failures is the *intersection* shape, which simply found new places to go, and
+twenty of them went to a count.
+
+So the fault is not a wording collision. **`refuse` is four unrelated question
+shapes under one label, and the intersection shape has no stable region in
+trigram space** — `is X any relation to the sheriff` shares almost no
+vocabulary with `how many cousins does X have`, yet they are the same class.
+Adding *any* vocabulary gives those questions somewhere new to land; counting
+was the occasion, not the cause.
+
+Which makes the fix a different change from the one this was going to be:
+**split `refuse` by shape.** Four labels that all encode to `libgraphcard.REFUSE`
+cost the card nothing — the step table only needs to know a phrase is a
+refusal, not which kind — and each would be a class with a coherent region
+instead of a grab bag. Until that is done and measured, counting stays a graph
+capability that the card cannot be asked for, and the eZ80 routine to walk one
+is not worth writing.
+
 ## Using it as an oracle for authored fiction
 
 Everything above measures the card. This is what an author of a Silo-like

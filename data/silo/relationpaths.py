@@ -302,6 +302,12 @@ def resolve(word: str, have: set[str]) -> tuple[str, bool]:
     `main`, because two readings of a path vocabulary that drift apart produce
     a card whose path table is silently inert.
     """
+    if word.startswith(libgraph.COUNT):
+        # "How many children does X have" counts `child_of` records pointing at
+        # X, so the people worth asking it about are the *objects* of that
+        # relation - the parents - which is the same direction an inverse hop
+        # reads.
+        return resolve(word[len(libgraph.COUNT):], have)[0], True
     if word in libgraph.CLIMB:
         return libgraph.CLIMB[word][0], False
     if word in have:

@@ -80,6 +80,32 @@ def planted(tmp_path_factory):
     return anomalies, db
 
 
+def test_a_count_label_names_the_end_the_subjects_come_from(silo):
+    """`resolve` decides who a question is worth asking about, and a count runs
+    backwards: "how many children does X have" counts `child_of` records
+    pointing *at* X, so X has to be an object of that relation rather than a
+    subject of it.
+
+    `libgraph.COUNT` exists and nothing in `relationpaths.PATHS` uses it yet -
+    two count classes cost the refusal class twenty-seven points, so they are
+    measured and not shipped. This pins the reading so the vocabulary can carry
+    one the day that is settled.
+    """
+    import sys
+
+    if str(REPO / "data" / "silo") not in sys.path:  # pragma: no cover
+        sys.path.insert(0, str(REPO / "data" / "silo"))
+    import relationpaths
+
+    import libgraph
+
+    have = {"child_of", "born_on"}
+    assert relationpaths.resolve("count_child_of", have) == ("child_of", True)
+    assert relationpaths.resolve("child_of", have) == ("child_of", False)
+    assert relationpaths.resolve("count_born_on", have) == ("born_on", True)
+    assert libgraph.COUNT == "count_"
+
+
 def test_planting_is_off_unless_asked_for(silo):
     """Every measurement in `data/silo/README.md` was taken on a corpus with
     none of this in it."""
