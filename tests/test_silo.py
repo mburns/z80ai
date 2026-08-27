@@ -327,18 +327,8 @@ def test_a_class_list_and_a_class_edge_say_the_same_thing(silo):
         (schema.SOURCE,)).fetchone()[0] == 0
 
 
-def test_the_climb_reaches_a_founder_until_the_hop_limit_stops_it(silo):
-    """Seven generations against a limit of six hops.
-
-    Generation 5 reaches its founder on the last hop it is allowed and
-    generation 6 falls exactly one short. This is asserted rather than avoided:
-    the limit is a real cost of running on a machine that must not loop
-    forever, and a corpus with a known answer is the only place it is visible.
-    """
-    import libgraph
-
-    _, schema, db = silo
-    assert libgraph.CLIMB["founding_father"] == ("father_is", "founder")
+def founders_reached(libgraph, schema, db) -> dict[int, set[bool]]:
+    """Which generations reach their founder, at whatever limit is in force."""
     reached: dict[int, set[bool]] = {}
     for row in db.execute(
             "SELECT name, generation FROM person WHERE source = ? "
@@ -346,15 +336,47 @@ def test_the_climb_reaches_a_founder_until_the_hop_limit_stops_it(silo):
         answer = libgraph.follow(db, schema.SOURCE, row["name"],
                                  ["founding_father"])
         reached.setdefault(row["generation"], set()).add(answer.complete)
-    # A limit of n examines n values and so permits n - 1 hops: the type is
-    # tested at the top of the loop, and the value the last hop reached is
-    # never tested. Generation g is exactly g hops from its founder, so the
-    # deepest that answers is CLIMB_LIMIT - 1. This read `range(1, CLIMB_LIMIT)`
-    # and was right for a reason nobody had written down.
-    deepest = libgraph.CLIMB_LIMIT - 1
-    for generation in range(1, deepest + 1):
+    return reached
+
+
+def test_every_generation_now_reaches_its_founder(silo):
+    """Seven cohorts, and a limit of eight examines enough to answer them all.
+
+    This used to stop at generation 5 and assert that 6 fell one short. The
+    limit went to 8 because importing Wikidata's containment made *Wikipedia's*
+    chains longer, and this corpus came along for the ride: generation g is
+    exactly g hops from its founder, so eight covers every generation there is.
+    """
+    import libgraph
+
+    _, schema, db = silo
+    assert libgraph.CLIMB["founding_father"] == ("father_is", "founder")
+    reached = founders_reached(libgraph, schema, db)
+    assert reached, "no generations to check"
+    for generation, complete in sorted(reached.items()):
+        assert complete == {True}, generation
+    # A limit of n examines n values and permits n - 1 hops, so this corpus no
+    # longer reaches it. That is worth asserting rather than assuming: if the
+    # generator ever grows an eighth cohort, this is what says so.
+    assert max(reached) <= libgraph.CLIMB_LIMIT - 1
+
+
+def test_the_hop_limit_is_still_what_stops_a_climb(silo, monkeypatch):
+    """The limit is a real cost of running where a loop must terminate.
+
+    It stopped being visible in this corpus when it was raised, so it is
+    demonstrated at a limit rather than at *the* limit - otherwise the only
+    test of it would be one that passes because nothing exercises it.
+    """
+    import libgraph
+
+    _, schema, db = silo
+    deepest = max(founders_reached(libgraph, schema, db))
+    monkeypatch.setattr(libgraph, "CLIMB_LIMIT", deepest)
+    reached = founders_reached(libgraph, schema, db)
+    for generation in range(1, deepest):
         assert reached[generation] == {True}, generation
-    assert reached[deepest + 1] == {False}
+    assert reached[deepest] == {False}
 
 
 def test_the_generator_stops_long_before_the_card_does(silo):
