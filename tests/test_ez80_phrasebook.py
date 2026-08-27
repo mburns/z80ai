@@ -208,3 +208,93 @@ def test_the_character_builds_are_untouched(guess_model_path):
                                       max_output_len=1)
     assert builder.phrase_blob == b""
     assert builder.phrases_file is None
+
+
+# --- how many buckets, which was 128 and never asked --------------------------
+#
+# `tools/bucket_sweep.py` swept it: on `data/silo/`'s phrasebook, 256 buckets
+# is worth 7.5 points of held-out accuracy over 128, because 859 distinct
+# trigrams into 128 buckets leaves 85% of them sharing one. It is flat past
+# 256, and 256 is also the most the device can address - the tokenizer masks
+# the hash's low byte and the index has to fit in one register.
+#
+# The count is a property of the model now, so what has to be pinned is that
+# the card tokenizes at the width the model was trained at rather than at the
+# width the module happens to default to.
+
+
+def wide_phrasebook(tmp_path, buckets: int, hidden: int = 24) -> str:
+    rng = np.random.default_rng(3)
+    sizes = [buckets, hidden, len(PHRASES)]
+    weights, biases = [], []
+    for a, b in itertools.pairwise(sizes):
+        weights.append(rng.choice([-2, -1, 0, 1], size=(b, a),
+                                  p=[0.05, 0.15, 0.65, 0.15]).astype(np.int32))
+        biases.append(rng.integers(-40, 40, size=b).astype(np.int32))
+    model = libinfer.Model(weights=weights, biases=biases, charset="\x00",
+                           phrases=PHRASES, accum_bits=24, num_buckets=buckets)
+    path = str(tmp_path / f"wide{buckets}.npz")
+    model.save_npz(path)
+    return path
+
+
+def test_the_bucket_count_survives_the_model_file(tmp_path):
+    """A card built at one width and tokenized at another scores something
+    meaningless rather than failing, so the width travels with the weights."""
+    path = wide_phrasebook(tmp_path, 256)
+    assert libinfer.Model.load(path).num_buckets == 256
+    assert libinfer.load_for_build(path, report_io=False).num_buckets == 256
+
+
+def test_a_model_at_the_default_width_writes_no_key(tmp_path):
+    """Every model trained before this field existed was trained at 128, and
+    its `.npz` should not grow a key saying so - which is also why none of the
+    shipped artifacts moved when the field was added."""
+    path = wide_phrasebook(tmp_path, libinfer.NUM_BUCKETS)
+    assert "num_buckets" not in libinfer.Model.load(path).architecture()
+
+
+@pytest.mark.parametrize("kernel", KERNELS)
+def test_a_wide_model_tokenizes_at_its_own_width(tmp_path, kernel):
+    """The two implementations, at 256. `INBUF` is twice as long and every
+    trigram has to land where the reference put it - a card that masked to 127
+    would still run, and would answer from half the vector."""
+    path = wide_phrasebook(tmp_path, 256)
+    builder = buildez80.build_autoreg(path, kernel=kernel)
+    query = "WHAT IS THE WEATHER"
+
+    host = AgonHost(stdin=[query, "!"],
+                    files={"PHRASES.DAT": builder.phrase_blob})
+    cpu = host.cpu
+    cpu.load(host.LOAD_ADDR, builder.build())
+    cpu.pc = host.LOAD_ADDR
+    cpu.run(max_cycles=400_000_000, stop_pc=builder.labels["PRINT_PHRASE"])
+
+    at = builder.labels["INBUF"]
+    got = np.array([cpu.peek_word(at + 3 * i, 3) for i in range(256)])
+    np.testing.assert_array_equal(got, libinfer.trigram_encode(query, 256))
+
+
+@pytest.mark.parametrize("kernel", KERNELS)
+def test_a_wide_model_answers_what_the_reference_answers(tmp_path, kernel):
+    path = wide_phrasebook(tmp_path, 256)
+    builder = buildez80.build_autoreg(path, kernel=kernel)
+    reference = libinfer.Model.load(path)
+    for query in QUERIES:
+        host = AgonHost(stdin=[query, "!"],
+                        files={"PHRASES.DAT": builder.phrase_blob})
+        cpu = host.cpu
+        cpu.load(host.LOAD_ADDR, builder.build())
+        cpu.pc = host.LOAD_ADDR
+        cpu.run(max_cycles=400_000_000, stop_pc=builder.labels["PRINT_PHRASE"])
+        assert cpu.peek_word(builder.labels["RESULT"], 3) == \
+            libinfer.classify_index(reference, query, accum_bits=24)
+
+
+def test_more_buckets_than_a_byte_can_index_is_refused(tmp_path):
+    """512 would need nine bits of index, in the tokenizer and in the scan.
+    The sweep says there is nothing there to want - 51.7% at 512 against
+    52.5% at 256 - so the limit is stated rather than engineered around."""
+    path = wide_phrasebook(tmp_path, 512)
+    with pytest.raises(ValueError, match="256 is the most"):
+        buildez80.build_autoreg(path, kernel="compact")

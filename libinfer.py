@@ -123,6 +123,16 @@ class Model:
     #: model because a build that tokenizes differently from training produces
     #: confident nonsense rather than an error.
     position_bands: int = FLAT
+    #: Trigram buckets the query encoder was trained with, carried for the same
+    #: reason and read back the same way - a model built at one width and
+    #: tokenized at another scores something meaningless rather than failing.
+    #:
+    #: 128 was the value from the first commit and is the default so that every
+    #: model trained before this field existed still loads as what it is. It is
+    #: not the best value: on `data/silo/`'s phrasebook it costs 7.5 points of
+    #: held-out accuracy against 256, because 859 distinct trigrams into 128
+    #: buckets leaves 85% of them sharing one. See `tools/bucket_sweep.py`.
+    num_buckets: int = NUM_BUCKETS
     #: The libdata.split_pairs seed this model was held out from, if it recorded
     #: one. Scoring against a different split silently counts training pairs as
     #: held-out; data/baseline.py warns when the two disagree.
@@ -163,13 +173,15 @@ class Model:
                     position_bands: int = FLAT,
                     split_seed: int | None = None,
                     phrases: list[str] | None = None,
-                    accum_bits: int = 16) -> Model:
+                    accum_bits: int = 16,
+                    num_buckets: int = NUM_BUCKETS) -> Model:
         names = layer_names(params)
         return cls(
             weights=[np.asarray(params[f"{n}_weight"], dtype=np.int32) for n in names],
             biases=[np.asarray(params[f"{n}_bias"], dtype=np.int32) for n in names],
             charset=charset,
             position_bands=position_bands,
+            num_buckets=num_buckets,
             split_seed=split_seed,
             phrases=phrases,
             accum_bits=accum_bits,
@@ -184,7 +196,8 @@ class Model:
                                arch.get("position_bands", FLAT),
                                arch.get("split_seed"),
                                arch.get("phrases"),
-                               arch.get("accum_bits", 16))
+                               arch.get("accum_bits", 16),
+                               arch.get("num_buckets", NUM_BUCKETS))
 
     def architecture(self) -> Arch:
         sizes = self.layer_sizes
@@ -202,6 +215,8 @@ class Model:
         # split seed, accumulates in 16 bits and spells its own replies is
         # every model that existed before phrasebooks, and its .npz should not
         # grow three keys saying so.
+        if self.num_buckets != NUM_BUCKETS:
+            arch["num_buckets"] = self.num_buckets
         if self.split_seed is not None:
             arch["split_seed"] = self.split_seed
         if self.accum_bits != 16:
@@ -212,7 +227,8 @@ class Model:
 
     def encode_query(self, text: str) -> np.ndarray:
         """Tokenize a query the way this model was trained to expect."""
-        return trigram_encode(text, position_bands=self.position_bands)
+        return trigram_encode(text, self.num_buckets,
+                             position_bands=self.position_bands)
 
     def save_npz(self, path: str) -> None:
         out: dict[str, np.ndarray] = {}
@@ -380,6 +396,10 @@ class BuildInputs:
     position_bands: int
     names: list[str]
     layer_sizes: list[int]
+    #: Trigram buckets, for the same reason and with the same consequence.
+    #: Defaulted so that a caller constructing one by hand - the tests do -
+    #: gets what every model before this field existed was trained with.
+    num_buckets: int = NUM_BUCKETS
     #: Replies this model selects between, when it is a phrasebook classifier
     #: rather than a character decoder.  None means the latter, and that
     #: ``charset`` is what decodes its output.
@@ -474,6 +494,7 @@ def load_for_build(model_path: str, report_io: bool = True) -> BuildInputs:
         position_bands=arch.get("position_bands", FLAT),
         names=names,
         layer_sizes=layer_sizes,
+        num_buckets=arch.get("num_buckets", NUM_BUCKETS),
         phrases=phrases,
     )
 

@@ -618,7 +618,8 @@ def _emit_argmax(b: EZ80Builder) -> None:
 
 
 def _emit_tokenizer_helpers(b: EZ80Builder, plat: libnn.Platform,
-                            position_bands: int) -> None:
+                            position_bands: int,
+                            num_buckets: int = NUM_BUCKETS) -> None:
     """LOWER, BUCKET_ADD, TOKENIZE, TOK_HASH and the two hash steps.
 
     The eZ80's own rather than libnn's, because an activation is three
@@ -689,7 +690,11 @@ def _emit_tokenizer_helpers(b: EZ80Builder, plat: libnn.Platform,
     b.ld_a_mem_label('TOKC3')
     b.call('HASH_ADD')
     b.ld_a_l()
-    b.and_n(NUM_BUCKETS - 1)
+    # The bucket index comes out of the hash's low byte, so `and` is one
+    # instruction and the index fits in one register. That is what caps the
+    # count at 256: past it the index needs nine bits and this stops being a
+    # mask. 256 is also where `tools/bucket_sweep.py` stops improving.
+    b.and_n(num_buckets - 1)
     b.ld_hl_label('INBUF')
     b.call('BUCKET_ADD')
     b.pop_de()
@@ -756,11 +761,18 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     # activations pays per pass, which is all the column kernel needs.
     # The input scan then covers the whole input vector (SCAN_IN), because
     # there is no context half to split off.
-    if phrasebook and model.input_size != NUM_BUCKETS:
+    if phrasebook and model.input_size != model.num_buckets:
         raise ValueError(
-            f"a phrasebook takes {NUM_BUCKETS} query buckets, not "
+            f"a phrasebook takes {model.num_buckets} query buckets, not "
             f"{model.input_size}: there is no context to encode when the "
             f"whole answer is chosen in one pass")
+    # One byte holds the bucket index, in the tokenizer and in the scan. A
+    # wider count would need a wider index everywhere it is used, which is a
+    # different change from this one.
+    if model.num_buckets > 256:
+        raise ValueError(
+            f"{model.num_buckets} buckets: the tokenizer masks the hash's low "
+            f"byte, so 256 is the most it can address")
 
     # The decode table is sized by the charset or the phrase list and ARGMAX by
     # the weight shapes, and nothing ever compared them. Disagreeing, PRINTCH
@@ -906,7 +918,7 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
     # === ARGMAX ==============================================================
     _emit_argmax(b)
 
-    _emit_tokenizer_helpers(b, plat, position_bands)
+    _emit_tokenizer_helpers(b, plat, position_bands, model.num_buckets)
 
     # === CLEAR_CTX / UPDATE_CTX / ENCODE_CTX =================================
     # Identical on both machines - the context window is eight bytes wide
@@ -986,11 +998,11 @@ def build_autoreg(model_path: str = 'command_model_autoreg.pt',
         if phrasebook:
             # One input, one pass: scan the whole vector, terminate on layer
             # 1's epilogue. No query half to hoist, so no SCAN_QUERY or PREQ.
-            _emit_input_scan(b, 'SCAN_IN', range(NUM_BUCKETS), 'LEPI1')
+            _emit_input_scan(b, 'SCAN_IN', range(model.num_buckets), 'LEPI1')
         else:
-            _emit_input_scan(b, 'SCAN_QUERY', range(NUM_BUCKETS), 'QEPI')
+            _emit_input_scan(b, 'SCAN_QUERY', range(model.num_buckets), 'QEPI')
             _emit_input_scan(b, 'SCAN_CTX',
-                             range(NUM_BUCKETS, layer_sizes[0]), 'LEPI1')
+                             range(model.num_buckets, layer_sizes[0]), 'LEPI1')
         _emit_layers_column(b, model, phrasebook=phrasebook)
 
     # === DATA ================================================================
