@@ -46,10 +46,12 @@ QUANT_LOSS_WEIGHT = 0.10
 OVERFLOW_LOSS_WEIGHT = 0.03
 
 
-def encode(queries: list[str], position_bands: int = libinfer.FLAT) -> torch.Tensor:
+def encode(queries: list[str], position_bands: int = libinfer.FLAT,
+           num_buckets: int = libinfer.NUM_BUCKETS) -> torch.Tensor:
     """Query buckets, scaled the way the QAT layers expect to see them."""
     vecs = np.array(
-        [libinfer.trigram_encode(q, position_bands=position_bands) for q in queries],
+        [libinfer.trigram_encode(q, num_buckets, position_bands)
+         for q in queries],
         dtype=np.float32,
     )
     return torch.from_numpy(vecs / libinfer.BUCKET_WEIGHT)
@@ -57,7 +59,8 @@ def encode(queries: list[str], position_bands: int = libinfer.FLAT) -> torch.Ten
 
 def quantized_model(net: QATCommandClassifier, phrases: list[str],
                     split_seed: int, accum_bits: int,
-                    position_bands: int) -> libinfer.Model:
+                    position_bands: int,
+                    num_buckets: int = libinfer.NUM_BUCKETS) -> libinfer.Model:
     """The integer model the Agon would actually run."""
     params = net.get_quantized_params()
     return libinfer.Model.from_params(
@@ -67,6 +70,7 @@ def quantized_model(net: QATCommandClassifier, phrases: list[str],
         # "this model decodes through phrases, not characters" unambiguously.
         charset="\x00",
         position_bands=position_bands,
+        num_buckets=num_buckets,
         split_seed=split_seed,
         phrases=phrases,
         accum_bits=accum_bits,
@@ -99,7 +103,9 @@ def class_weights(pairs: list[libdata.Pair],
 def train(pairs: list[libdata.Pair], hidden_sizes: list[int], epochs: int,
           lr: float, seed: int, split_seed: int, val_frac: float,
           accum_bits: int, position_bands: int, quiet: bool = False,
-          balance: bool = False) -> tuple[libinfer.Model, float, float]:
+          balance: bool = False,
+          num_buckets: int = libinfer.NUM_BUCKETS,
+          ) -> tuple[libinfer.Model, float, float]:
     torch.manual_seed(seed)
 
     train_pairs, val_pairs = libdata.split_pairs(pairs, val_frac, split_seed)
@@ -112,10 +118,10 @@ def train(pairs: list[libdata.Pair], hidden_sizes: list[int], epochs: int,
     phrases = sorted({r for _, r in pairs})
     index = {phrase: i for i, phrase in enumerate(phrases)}
 
-    x = encode([q for q, _ in train_pairs], position_bands)
+    x = encode([q for q, _ in train_pairs], position_bands, num_buckets)
     y = torch.tensor([index[r] for _, r in train_pairs], dtype=torch.long)
 
-    net = QATCommandClassifier(libinfer.NUM_BUCKETS, hidden_sizes, len(phrases))
+    net = QATCommandClassifier(num_buckets, hidden_sizes, len(phrases))
     # An eZ80 accumulates in 24 bits and cannot wrap for any plausible layer
     # width, so the penalty that keeps a Z80 model inside int16 is pure
     # regularization tax here. Raising the ceiling makes it stop firing on its
@@ -146,7 +152,7 @@ def train(pairs: list[libdata.Pair], hidden_sizes: list[int], epochs: int,
         if epoch % 10 == 0 or epoch == epochs - 1:
             net.eval()
             candidate = quantized_model(net, phrases, split_seed, accum_bits,
-                                        position_bands)
+                                        position_bands, num_buckets)
             overall, macro = evaluate(candidate, val_pairs, accum_bits)
             if macro > best_macro:
                 best, best_macro, best_overall, best_epoch = (
@@ -183,6 +189,12 @@ def main() -> None:
                         help='24 for eZ80 (the default: a phrasebook is an Agon '
                              'shape), 16 to keep the model Z80-compatible')
     parser.add_argument('--position-bands', type=int, default=libinfer.FLAT)
+    parser.add_argument('--buckets', type=int, default=libinfer.NUM_BUCKETS,
+                        help="Trigram buckets the encoder hashes into. The "
+                             "device takes the bucket index from one byte, so "
+                             "256 is the most it can address without a wider "
+                             "tokenizer - and 256 is where the accuracy stops "
+                             "improving anyway. See tools/bucket_sweep.py")
     parser.add_argument('--balance', action='store_true',
                         help='Weight the loss by inverse class frequency. Use '
                              'it when classes differ in size by more than a '
@@ -200,13 +212,13 @@ def main() -> None:
     hidden_sizes = [int(n) for n in args.hidden_sizes.split(',') if n.strip()]
     phrases = sorted({r for _, r in pairs})
     print(f"{len(pairs):,} pairs, {len(phrases)} phrases, "
-          f"{libinfer.NUM_BUCKETS}->{'->'.join(map(str, hidden_sizes))}"
+          f"{args.buckets}->{'->'.join(map(str, hidden_sizes))}"
           f"->{len(phrases)}, {args.accum_bits}-bit accumulator")
 
     model, overall, macro = train(
         pairs, hidden_sizes, args.epochs, args.lr, args.seed, args.split_seed,
         args.val_frac, args.accum_bits, args.position_bands, args.quiet,
-        args.balance,
+        args.balance, args.buckets,
     )
     model.save_npz(args.output)
 
