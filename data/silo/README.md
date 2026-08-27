@@ -1013,6 +1013,69 @@ chain, never the middle.** `cousin` was originally written in terms of the
 `GROUP BY`, and the whole query fell off a cliff. Both `aunt_or_uncle` and
 `cousin` are now written as chains of `child_of` for that reason.
 
+## Something to find
+
+```bash
+python data/silo/generate.py --plant 12     # and data/silo.key.json beside it
+```
+
+A corpus where everything is consistent is a phone book. Every query returns a
+fact, no fact is more interesting than another, and the only reason to ask a
+second question is that you wanted to know a second thing. That is the right
+shape for measuring a machine and the wrong shape for using one.
+
+`--plant N` seeds contradictions and writes down exactly what it seeded. **Off
+by default** — every number above was measured without them, and a flag that
+quietly changed the data under a measurement would be worse than no flag.
+
+| kind | what is wrong |
+|---|---|
+| `impossible_father` | a father recorded as dying before his child was born |
+| `purge` | a committee whose members were all sent to clean, within three years |
+| `altered_parentage` | the `fact` table and the graph name different fathers |
+
+Each inverts an invariant `tests/test_silo.py` already asserted, which is the
+design rather than a coincidence: a corpus is interesting exactly where it
+violates something a reader assumes, and the assumptions were already written
+down as tests. The test that says *no parent died before their child was born*
+is the detector.
+
+The third is the one worth having. `libgraph` walks edges and the `person` view
+reads facts, and everywhere else they are written from one pass and **cannot**
+disagree. Here they do, for a handful of people — which is what a falsified
+record looks like from the inside: the card answers confidently, the database
+answers differently, and neither is malfunctioning.
+
+```
+[impossible_father] Dylan W. Torres is recorded as dying in year 119,
+                    1 year before Steven A. Torres was born.
+[altered_parentage] The record gives Rachel W. Mathews's father as
+                    John O. Wilson; the relations still lead to Eric T. Mathews.
+```
+
+### The machine cannot find any of it, and that is the point
+
+Finding an impossible father means asking when someone died, asking when their
+child was born, and *noticing*. Three steps, of which the card does two. This
+repository has argued from the start that comprehension is out of reach on the
+hardware; a planted corpus turns that from a limitation into a division of
+labour.
+
+Two things the planter learned the hard way, both now pinned by tests. Moving a
+death earlier makes **every** child born after it impossible, so aiming at a
+random child planted three contradictions and created ten — it aims at the
+youngest now, and stops short of the one before. And the purge moved deaths
+earlier too, manufacturing four more impossible fathers indistinguishable from
+the planted ones; it respects its victims' children now.
+
+One consequence is left in deliberately. A purged member who sat on a second
+committee thins that one as well, so counting cleanings per committee finds
+more clusters than were planted. A corpus where only the planted thing is
+findable would teach a player to stop looking.
+
+The key is a file beside the database rather than a table inside it, for the
+obvious reason.
+
 ## Reproducing it
 
 The database is not in git — 39 MB of derived data that three seconds rebuilds
@@ -1037,6 +1100,7 @@ The card is seven files in this directory, in the order they run:
 | `authored.py` | written entries, into the same tables — optional, and re-run after `generate.py` |
 | `questions.py` | what a graph walk can reach, against ground truth |
 | `relationpaths.py` | templated questions, labelled with the path they mean |
+| `plant.py` | contradictions to find, and the key that says which |
 | `buildcard.py` | classifier and card — the one place that knows the order |
 | `benchcard.py` | the emulator, and what a hop costs |
 

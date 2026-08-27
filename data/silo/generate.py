@@ -80,6 +80,7 @@ import argparse
 import sqlite3
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from random import Random
@@ -88,6 +89,7 @@ from typing import TYPE_CHECKING
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import plant
 import schema
 from schema import BEARING_STEP, BEARINGS, RINGS, SOURCE
 
@@ -234,6 +236,12 @@ class Person:
     school: str = ""
     crew: str = ""
     seats: list[tuple[str, int, int | None]] = field(default_factory=list)
+    #: Set only by `plant.py`, and only for a handful of people: the name the
+    #: `fact` table gives as this person's father, when it is not the man the
+    #: `father_is` edge leads to. Everywhere else the two are written from one
+    #: pass and cannot disagree, which is exactly why a disagreement is worth
+    #: being able to plant.
+    recorded_father: str | None = None
 
     @property
     def name(self) -> str:
@@ -791,7 +799,10 @@ def _facts(world: World, p: Person) -> Iterator[tuple[str, int, str, str, float 
     yield "department", 0, p.department, "text", None
     yield "shift", 0, p.shift, "text", None
     if p.father is not None:
-        yield "father", 0, world.people[p.father].name, "text", None
+        # `recorded_father` is None for everybody the planter did not touch,
+        # so this reads as `world.people[p.father].name` in the ordinary case.
+        yield ("father", 0, p.recorded_father or world.people[p.father].name,
+               "text", None)
     if p.mother is not None:
         yield "mother", 0, world.people[p.mother].name, "text", None
     for ordinal, spouse in enumerate(p.spouses):
@@ -863,7 +874,8 @@ PROPERTY_RELATION: dict[str, str | None] = {
 }
 
 
-def write(db: sqlite3.Connection, world: World, seed: int) -> dict[str, int]:
+def write(db: sqlite3.Connection, world: World, seed: int,
+          planted: int = 0) -> dict[str, int]:
     """Everything, in one transaction."""
     cohorts = world.cohorts
     for table in ("residence", "membership", "apartment", "cohort", "edge",
@@ -967,7 +979,8 @@ def write(db: sqlite3.Connection, world: World, seed: int) -> dict[str, int]:
          (f"{SOURCE}.people", str(len(world))),
          (f"{SOURCE}.now", str(NOW)),
          (f"{SOURCE}.schema_version", str(schema.SCHEMA_VERSION)),
-         (f"{SOURCE}.generations", str(len(GENERATIONS)))])
+         (f"{SOURCE}.generations", str(len(GENERATIONS))),
+         (f"{SOURCE}.planted", str(planted))])
     db.commit()
     return {"articles": len(articles), "facts": len(facts), "edges": len(edges),
             "categories": len(filings), "dwellings": len(world.dwellings)}
@@ -1080,6 +1093,14 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=18)
     ap.add_argument("--stats", action="store_true",
                     help="report on an existing database and exit")
+    ap.add_argument("--plant", type=int, default=0, metavar="N",
+                    help="Plant N contradictions and write the key beside the "
+                         "database. Off by default: every number in the README "
+                         "was measured without them, and a flag that quietly "
+                         "changed the data under a measurement would be worse "
+                         "than no flag. See plant.py")
+    ap.add_argument("--key", type=Path,
+                    help="Where the answers go (default: <db>.key.json)")
     args = ap.parse_args()
 
     if args.stats:
@@ -1089,12 +1110,25 @@ def main() -> None:
         return
 
     started = time.monotonic()
-    world = populate(Random(args.seed), args.seed, args.people)
+    rng = Random(args.seed)
+    world = populate(rng, args.seed, args.people)
+    anomalies: list[plant.Anomaly] = []
+    if args.plant:
+        # After the simulation and before it is written, so the anomalies are
+        # in the corpus rather than a layer over it - a player querying the
+        # card must not be able to tell which rows were edited.
+        anomalies = plant.plant(rng, world, args.plant)
     db = schema.connect(args.db, migrate=True)
-    counts = write(db, world, args.seed)
+    counts = write(db, world, args.seed, planted=len(anomalies))
     print(f"{args.db}: {len(world):,} people, {counts['articles']:,} articles, "
           f"{counts['facts']:,} facts, {counts['edges']:,} edges, "
           f"{counts['dwellings']:,} dwellings in {time.monotonic() - started:.1f}s")
+    if anomalies:
+        key = args.key or args.db.with_suffix(".key.json")
+        plant.write_key(key, anomalies, args.seed)
+        kinds = Counter(a.kind for a in anomalies)
+        print(f"{key}: {len(anomalies)} planted - "
+              + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items())))
 
 
 if __name__ == "__main__":
