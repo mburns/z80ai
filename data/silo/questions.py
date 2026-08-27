@@ -336,17 +336,36 @@ def questions(a: Archive) -> list[Question]:
                       "and a class of 26 is the one answer set here big enough "
                       "for the reverse read to be worth its own table"),
 
+        Question("how many children does X have", "value",
+                 lambda a, x: {str(len(a.children[x]))},
+                 ["count_child_of"], asks=lambda a, x: bool(a.children[x]),
+                 note="one step. The reverse table is sorted, so every record "
+                      "for one object is contiguous and a count is a binary "
+                      "search then a scan - a loop and a counter, not an "
+                      "aggregate. This was listed here as unreachable"),
+        Question("how many people were born on X's level", "value",
+                 lambda a, x: {str(sum(1 for lvl in a.birth_level.values()
+                                       if lvl == a.birth_level[x]))},
+                 ["born_on", "count_born_on"],
+                 asks=lambda a, x: x in a.birth_level,
+                 note="a hop to the level, then count what points back at it"),
         Question("how many cousins does X have", "none",
                  lambda a, x: set(), asks=lambda a, x: True,
-                 note="four hops of which two are inverses, then a count - and "
-                      "a count is an aggregate, not a value at the end of a path"),
+                 note="four hops of which two are inverses, and the count has "
+                      "to be of the *union* over two parents' siblings - a "
+                      "single scan tallies one relation, not a set built from "
+                      "several"),
         Question("who is the oldest person on X's crew", "none",
                  lambda a, x: set(), asks=lambda a, x: x in a.crew,
                  note="a maximum over a set the walk can enumerate but not rank"),
-        Question("is X related to Y", "none", lambda a, x: set(),
-                 note="an intersection of two ancestor sets; the `ancestor` view "
-                      "is a recursive CTE and there is no such thing as a "
-                      "recursive path"),
+        Question("is X related to Y, on any line", "none",
+                 lambda a, x: set(),
+                 note="an intersection of two ancestor sets, and the `ancestor` "
+                      "view is a recursive CTE. The *paternal* line is a "
+                      "different question and `libgraph.common` answers it - "
+                      "see the pair table below - by climbing from both ends "
+                      "and comparing. What is out of reach is 'any line', "
+                      "which needs the sets rather than their tops"),
         Question("how many people live on X's floor", "none",
                  lambda a, x: set(), asks=lambda a, x: x in a.home,
                  note="an aggregate over a ring the walk can circle in 24 hops, "
@@ -486,6 +505,89 @@ def report(db: sqlite3.Connection, a: Archive, subjects: list[str],
             print(f"      {q.note}")
 
     _climb_by_generation(db, a, subjects)
+    _pairs(db, a, subjects)
+
+
+def _pairs(db: sqlite3.Connection, a: Archive, subjects: list[str]) -> None:
+    """Questions about two people, which is what an investigation asks.
+
+    `libgraph.common` walks one path from both ends and compares. Ground truth
+    comes from the Archive as everywhere else here, and the baseline is the
+    thing worth printing: **most pairs are not connected**, so "always say no"
+    is a very strong guess and an accuracy figure on its own would be
+    meaningless. What matters is recall on the pairs that *are*.
+    """
+    rng = Random(1)
+
+    def paternal_line(name: str) -> str | None:
+        here, seen = name, 0
+        while here in a.father and seen < 40:
+            here, seen = a.father[here], seen + 1
+        return here if a.generation.get(here) == 0 else None
+
+    def by(key: Callable[[str], str | None]) -> list[tuple[str, str]]:
+        """Pairs that genuinely share whatever `key` returns.
+
+        Drawn on purpose rather than at random: two people picked out of ten
+        thousand share a crew about once in two thousand tries, and recall
+        measured on nine cases is not measured.
+        """
+        groups: dict[str, list[str]] = defaultdict(list)
+        for name in a.people:
+            value = key(name)
+            if value:
+                groups[value].append(name)
+        out = []
+        for members in groups.values():
+            if len(members) > 1:
+                for _ in range(min(4, len(members))):
+                    x, y = rng.sample(members, 2)
+                    out.append((x, y))
+        rng.shuffle(out)
+        return out[:400]
+
+    tests: list[tuple[str, list[str], Callable[[str], str | None]]] = [
+        ("share a founding father", ["founding_father"], paternal_line),
+        ("are on the same crew", ["crew_is"], lambda n: a.crew.get(n)),
+        ("were in the same class", ["class_is"], lambda n: a.school.get(n)),
+    ]
+    apart = [(rng.choice(a.people), rng.choice(a.people)) for _ in range(1500)]
+    def hits(pairs: list[tuple[str, str]], path: list[str]) -> int:
+        return sum(1 for x, y in pairs
+                   if libgraph.common(db, SOURCE, x, y, path) is not None)
+
+    print("\nTwo subjects, not one - `libgraph.common` walks the same path "
+          "from both\nends and compares, which is two walks and one comparison "
+          "of two ids")
+    print(f"  {'':<28}{'pairs':>7}{'found':>8}{'missed':>8}"
+          f"{'false, 1,500 apart':>20}")
+    for label, path, key in tests:
+        together = by(key)
+        found = hits(together, path)
+        false = sum(1 for x, y in apart if x != y and key(x) != key(y)
+                    and libgraph.common(db, SOURCE, x, y, path) is not None)
+        print(f"  {label:<28}{len(together):>7}{found:>8}"
+              f"{len(together) - found:>8}{false:>20}")
+    print("  Two people drawn at random are almost never connected, so "
+          "\"always say no\"\n  scores above 99% and means nothing. These are "
+          "pairs chosen because they\n  *are* connected, so the column that "
+          "matters is `missed`.")
+
+    # Whatever `founding_father` misses should be the hop limit rather than the
+    # comparison, and the way to show that is to lift the limit and look again.
+    line = by(paternal_line)
+    was = libgraph.CLIMB_LIMIT
+    at_limit = hits(line, ["founding_father"])
+    try:
+        libgraph.CLIMB_LIMIT = was + 2
+        lifted = hits(line, ["founding_father"])
+    finally:
+        libgraph.CLIMB_LIMIT = was
+    print(f"\n  The founder misses are the climb, not the comparison: at "
+          f"CLIMB_LIMIT {was} it finds\n  {at_limit}/{len(line)} of those pairs "
+          f"and at {was + 2} it finds {lifted}. A pair fails when *either* of "
+          f"them\n  is a generation too deep to reach a founder, so one walk "
+          f"running out costs\n  the answer for two people.")
 
 
 def _coverage(db: sqlite3.Connection, a: Archive) -> None:

@@ -983,6 +983,97 @@ it gets.
 It is an oracle you query, not a world you are inside. There is no state, no
 turn loop, no parser for verbs, and nothing here writes to the card. Those are
 the second half of [#62](../../issues/62) and none of them exist.
+## Counting was not an aggregate after all
+
+"How many children does X have" was listed here as a question no path could
+express. That was right about `follow` and **wrong about the graph**. The
+reverse table is sorted, so every record for one object is contiguous: a count
+is a binary search followed by a scan — a loop and a counter, not an aggregate.
+
+> **This sits next to the `refuse` class above, and somebody should measure the
+> seam before counting reaches the card.** Checked rather than assumed: none of
+> the twelve `refuse` phrasings is a count over a single relation. They are
+> counts of a *union* ("how many cousins"), a maximum, an intersection, and a
+> count around the ring — all still out of reach, so the class is exactly as
+> defensible as it was.
+>
+> The hazard is trigram distance, not logic. `how many people live on {s}'s
+> floor` is trained as a refusal and `how many people were born on X's level`
+> is now answerable, and those two share almost every term. That is the same
+> near-neighbour misrouting the section above measures, where 32 of 63 missed
+> refusals landed on `crew_is` for exactly this reason.
+>
+> It is only a hazard so far: these count questions are in `questions.py`,
+> which measures the graph, and **not** in `relationpaths.PATHS`, which is what
+> the classifier learns. The card cannot ask them yet and so cannot confuse
+> them yet. Adding them is the point at which this has to be measured.
+
+`libgraph.COUNT` makes it a step. `count_child_of` is "how many children";
+`born_on count_born_on` hops to a level and counts what points back at it.
+
+| | steps | walk |
+|---|---:|---:|
+| how many children does X have | 1 | 100% |
+| how many people were born on X's level | 2 | 100% |
+
+A count ends the walk, because a number has no edges — there is nowhere to hop
+from three.
+
+What is genuinely out of reach is narrower than "aggregates", and worth stating
+precisely now that one of them has moved:
+
+- **a maximum** — "who is the oldest on X's crew" needs the values compared
+  rather than tallied, and the card reads ids, not birth years.
+- **a count of a union** — "how many cousins" tallies the children of *two*
+  parents' siblings, and one scan tallies one relation.
+- **"related on any line"** — the paternal line is answered below; any line
+  needs the ancestor sets rather than their tops.
+
+**The eZ80 does not carry counting yet**, and what it needs is specific: a
+routine beside `GW_HOP` that scans from the record `GW_FIND` lands on instead
+of returning it, one of the spare `kind` bytes in the step encoding to mark the
+step, and something that can print a decimal number — the program has only ever
+printed titles it read off the card.
+
+## Two subjects, not one
+
+Every question above names one person. An investigation asks about pairs —
+*is X related to Y*, *did X and Y work together*, *were they at school
+together* — and a lookup is what you do once you already know whose record to
+open.
+
+`libgraph.common` is the smallest mechanism that answers them: **walk the same
+path from both ends and compare the answers.** `founding_father` climbs a male
+line until it reaches a founder, so running it twice and comparing settles
+descent with no `sibling` table, no ancestor set and no join. Two walks and one
+comparison of two 24-bit ids — and the walk is 1% of a query, so there is room
+for a second one.
+
+| | pairs | found | missed | false, over 1,500 unrelated |
+|---|---:|---:|---:|---:|
+| share a founding father | 400 | 341 | 59 | 0 |
+| are on the same crew | 400 | 400 | 0 | 0 |
+| were in the same class | 400 | 400 | 0 | 0 |
+
+The pairs are drawn *because* they are connected. Two people picked out of ten
+thousand share a crew about once in two thousand tries, so "always say no"
+scores above 99% here and means nothing — the column that matters is `missed`.
+
+**And the misses are the climb limit, not the comparison.** At `CLIMB_LIMIT` 6
+it finds 342 of 400; at 8 it finds all 400. A pair fails when *either* person is
+a generation too deep to reach a founder, so **one walk running out costs the
+answer for two people** — the hop limit is twice as expensive on a pair question
+as on a single one.
+
+It also answers something narrower than "related", and the narrowness is the
+honest part: a shared `founding_father` is a shared *paternal* line. Two people
+with the same mother's mother do not have one, and this says they are unrelated.
+
+**The card cannot ask this yet**, and the blocker is not the graph. The search
+resolves one document and the classifier emits one path, so a question naming
+two people has nowhere to put the second. That is a pipeline change — two
+searches, two walks, one comparison — rather than a new capability, and the
+capability is what the table above measures.
 
 ## What SQLite is doing
 
