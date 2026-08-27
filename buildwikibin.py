@@ -1492,7 +1492,8 @@ def _emit_classifier(b: EZ80Builder, spec: OracleSpec) -> None:
     # buildez80's tokenizer, not libnn's: an activation is three bytes
     # here and libnn's writes two, which is what Platform.activation_size
     # documents as the boundary of what these two machines can share.
-    buildez80._emit_tokenizer_helpers(b, plat, libinfer.FLAT)
+    buildez80._emit_tokenizer_helpers(b, plat, libinfer.FLAT,
+                                      model.num_buckets)
 
     # The compact kernel, not the column one. Column unrolls a block per
     # input and runs ~24x faster, and on a resident model that is the right
@@ -1531,7 +1532,6 @@ def _emit_classifier_data(b: EZ80Builder, spec: OracleSpec) -> None:
     """Buffers the borrowed emitters address by name."""
     import buildez80
     import buildgraphwalk
-    import libinfer
 
     assert spec.model is not None
 
@@ -1552,11 +1552,17 @@ def _emit_classifier_data(b: EZ80Builder, spec: OracleSpec) -> None:
 
     # INBUF and CTXBUF must stay adjacent: layer 1 reads a single vector
     # through the INBUF label, and a phrasebook only fills the first half.
+    #
+    # Sized from the model rather than from `libinfer.NUM_BUCKETS`, because the
+    # bucket count is now a property of the model that was trained rather than
+    # of the module that trained it - see `tools/bucket_sweep.py`, where 256
+    # buys 7.5 points over the 128 this was for years.
+    wide = model.num_buckets
     b.label("INBUF")
-    b.ds(libinfer.NUM_BUCKETS * 3)
+    b.ds(wide * 3)
     b.label("CTXBUF")
-    b.ds(libinfer.NUM_BUCKETS * 3)
-    assert b.labels["CTXBUF"] == b.labels["INBUF"] + libinfer.NUM_BUCKETS * 3
+    b.ds(wide * 3)
+    assert b.labels["CTXBUF"] == b.labels["INBUF"] + wide * 3
 
     hidden = layer_sizes[1:-1] or [layer_sizes[-1]]
     # The compact kernel pops one activation past the last weight, so every

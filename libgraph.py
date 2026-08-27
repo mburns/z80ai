@@ -94,7 +94,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 
 import libgraphcard
@@ -433,20 +433,33 @@ def country_codes(db: sqlite3.Connection, source: str,
 
 def build(db: sqlite3.Connection, source: str,
           report: Callable[[str], None] = lambda _m: None,
-          derived: str | None = None) -> tuple[int, int]:
+          derived: str | Sequence[str] | None = None,
+          replace: Collection[tuple[str, str]] = ()) -> tuple[int, int]:
     """Populate ``edge`` for one source from its facts. Returns (edges, dropped).
 
-    ``derived`` names a method in the `derived` table - "regex" - and admits
-    its rows as edges. **Off by default and deliberately so.** Everything else
-    here comes from something a Wikipedia author tabulated or filed; those come
-    from `birthplaces.py` reading a sentence, and a card built with them
-    asserts things no infobox states. The flag is what makes that a decision
-    somebody takes rather than one that happens.
+    ``derived`` names methods in the `derived` table - "regex", "wikidata" -
+    and admits their rows as edges, in the order given. **Off by default and
+    deliberately so.** Everything else here comes from something a Wikipedia
+    author tabulated or filed; those come from reading a sentence or from
+    another database, and a card built with them asserts things no infobox
+    states. The flag is what makes that a decision somebody takes rather than
+    one that happens.
+
+    Several methods rather than one because two extractors now write here, and
+    admitting only the last one to run would leave the other's rows in
+    `derived` while they silently vanished from `edge` - a card quietly missing
+    half of what somebody asked for, with nothing anywhere reading as wrong.
 
     They fill gaps only. `birthplaces.py` asks about people who have no
     birthplace, so a derived row cannot contradict an infobox - but it is
     written last and skips any subject already carrying the relation, so that
     holds even if the table is stale.
+
+    ``replace`` is the one exception and it is narrow: (subject, relation)
+    pairs a caller has *proved* it may overrule. `wikidata.py` earns it one row
+    at a time by showing the new value lies inside the old one - `Carrollton,
+    Mississippi` inside `Mississippi` - and that the finer answer still reaches
+    a country. Nothing takes this by asserting it is a better source.
     """
     titles = {t for (t,) in db.execute(
         "SELECT title FROM article WHERE source = ?", (source,))}
@@ -590,9 +603,11 @@ def build(db: sqlite3.Connection, source: str,
     # wrote down, and skipping any subject that already has the relation, so a
     # sentence can fill a gap and can never overrule a table.
     read = 0
-    if derived:
-        read = _from_derived(db, source, derived)
-        report(f"  {read:,} more read out of leads, method {derived!r}")
+    methods = [derived] if isinstance(derived, str) else list(derived or ())
+    for method in methods:
+        admitted = _from_derived(db, source, method, replace)
+        read += admitted
+        report(f"  {admitted:,} more from `derived`, method {method!r}")
 
     # All of them, because the caller writes this into `meta` as what the
     # database holds. Returning only the infobox edges recorded 163,807 against
@@ -601,8 +616,15 @@ def build(db: sqlite3.Connection, source: str,
     return len(rows) + len(filed) + read, dropped
 
 
-def _from_derived(db: sqlite3.Connection, source: str, method: str) -> int:
-    """Admit one method's rows from `derived`, for subjects with no such edge."""
+def _from_derived(db: sqlite3.Connection, source: str, method: str,
+                  replace: Collection[tuple[str, str]] = ()) -> int:
+    """Admit one method's rows from `derived`, for subjects with no such edge.
+
+    ``replace`` names the pairs allowed to overrule what is already there. The
+    old edges go first, so a refinement leaves one answer rather than two -
+    `Mississippi` and `Carrollton, Mississippi` on the same person is not more
+    precise, it is ambiguous.
+    """
     try:
         rows = db.execute(
             "SELECT subject, relation, object FROM derived "
@@ -610,11 +632,21 @@ def _from_derived(db: sqlite3.Connection, source: str, method: str) -> int:
     except sqlite3.OperationalError:
         return 0               # a database written before schema 8 has none
 
+    allowed = set(replace)
     held = {(s, r) for s, r in db.execute(
         "SELECT subject, relation FROM edge WHERE source = ?", (source,))}
-    fresh = [(source, s, r, o) for s, r, o in rows if (s, r) not in held]
+    fresh = [(source, s, r, o) for s, r, o in rows
+             if (s, r) not in held or (s, r) in allowed]
+    superseded = [(src, s, r) for src, s, r, _o in fresh if (s, r) in held]
+    db.executemany(
+        "DELETE FROM edge WHERE source = ? AND subject = ? AND relation = ?",
+        superseded)
     db.executemany("INSERT OR REPLACE INTO edge VALUES (?, ?, ?, ?)", fresh)
-    return len(fresh)
+    # How many the table *gained*, not how many were written: a replacement
+    # takes a row out and puts one back. The caller writes this into `meta` as
+    # what the database holds, and a provenance number that disagrees with the
+    # thing it is provenance for is worse than not having one.
+    return len(fresh) - len(superseded)
 
 
 #: The infobox field whose values name a type, per type. `country = France` is

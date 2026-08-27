@@ -129,12 +129,29 @@ def _capture(main: Callable[[], None], argv: list[str], handle: TextIO) -> None:
 #: than a model too small to learn.
 HIDDEN_SIZES = "128,96"
 
+#: Trigram buckets the encoder hashes into. 128 was the repository default from
+#: its first commit and was never swept; `tools/bucket_sweep.py` did, and it is
+#: worth **7.5 points** of held-out accuracy here - 45.0% to 52.5%, with
+#: three-seed spreads that do not overlap.
+#:
+#: The cause is collision rather than capacity. This phrasebook uses 859
+#: distinct trigrams, and 128 buckets leaves 85% of them sharing one with
+#: something else, so a trigram that distinguishes two paths arrives on top of
+#: six that do not.
+#:
+#: 256 and not more for two reasons that agree: the sweep is flat past it
+#: (51.7% at 512, 51.2% at 1,024), and the device takes the bucket index from
+#: the hash's low byte, so 256 is the most it can address without a wider
+#: tokenizer everywhere.
+BUCKETS = 256
 
-def train_model(train: Path, model: Path, hidden: str = HIDDEN_SIZES) -> None:
+
+def train_model(train: Path, model: Path, hidden: str = HIDDEN_SIZES,
+                buckets: int = BUCKETS) -> None:
     subprocess.run(
         [sys.executable, str(REPO / "classify.py"), "--file", str(train),
          "-o", str(model), "--accum-bits", "24", "--balance", "--quiet",
-         "--hidden-sizes", hidden],
+         "--hidden-sizes", hidden, "--buckets", str(buckets)],
         check=True, cwd=REPO)
 
 
