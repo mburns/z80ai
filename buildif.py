@@ -61,6 +61,10 @@ V_TAKE = V_LOOK + 1
 V_DROP = V_TAKE + 1
 V_INVENTORY = V_DROP + 1
 V_QUIT = V_INVENTORY + 1
+#: Sit down at the archive terminal, where a different parser is listening.
+#: Only the merged build can act on it; the standalone world says there is no
+#: terminal here, which is true of every room in it.
+V_USE = V_QUIT + 1
 
 #: Stack margin below the top of SRAM, matching every other Agon build here.
 STACK_MARGIN = 0x1000
@@ -82,7 +86,8 @@ def _words(world: World) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
               ("TAKE", V_TAKE), ("GET", V_TAKE),
               ("DROP", V_DROP), ("PUT", V_DROP),
               ("INVENTORY", V_INVENTORY), ("I", V_INVENTORY),
-              ("QUIT", V_QUIT), ("Q", V_QUIT)]
+              ("QUIT", V_QUIT), ("Q", V_QUIT),
+              ("USE", V_USE), ("CONSULT", V_USE), ("ASK", V_USE)]
 
     nouns = [(thing.name.upper(), index)
              for index, thing in enumerate(world.things)]
@@ -111,13 +116,12 @@ def build(world: World, org: int = AGON_LOAD_ADDR) -> EZ80Builder:
 
     b = EZ80Builder(org=org)
     agon_header(b, "START")
-    verbs, nouns = _words(world)
 
     b.label("START")
     b.ld_a_n(world.start)
     b.ld_mem_label_a("HERE")
     _emit_reset_things(b, world)
-    b.ld_hl_label("BANNER")
+    b.ld_hl_label("WBANNER")
     b.call("PRWRAP")
     b.call("PRNL")
     b.call("DESCRIBE")
@@ -126,13 +130,37 @@ def build(world: World, org: int = AGON_LOAD_ADDR) -> EZ80Builder:
     b.label("TURN")
     b.call("RULES_RUN")              # the world reacts before it asks again
     b.call("PRNL")
-    b.ld_hl_label("PROMPT")
+    b.ld_hl_label("WPROMPT")
     b.call("PRSTR")
     b.call("READ_INPUT")
+    emit_dispatch(b, quit_label="BYE")
+    emit_world_routines(b, world)
+
+    b.label("BYE")
+    b.ld_hl_label("MSGBYE")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.ld_hl_nn(0)
+    b.ret()
+
+    libagonio.emit_console(b, MAX_INPUT_LEN)
+    emit_world_tables(b, world)
+    emit_world_ram(b, world)
+    return b
+
+
+def emit_dispatch(b: EZ80Builder, quit_label: str) -> None:
+    """A line already in INPBUF -> the verb it means, acted on.
+
+    Split from the loop around it so that the oracle binary can call the same
+    dispatch when its mode byte says the player is walking rather than at the
+    screen. Everything here jumps to `TURN` when it is done, and what `TURN`
+    is depends on which program emitted it.
+    """
     b.call("SPLIT")                  # INPBUF -> W1LEN/W1, W2LEN/W2
     b.ld_a_mem_label("W1LEN")
     b.or_a()
-    b.jr_z("TURN")                   # an empty line is not a turn
+    b.jp_z("TURN")                   # an empty line is not a turn
 
     b.ld_hl_label("VERBS")
     b.ld_de_label("W1")
@@ -142,7 +170,7 @@ def build(world: World, org: int = AGON_LOAD_ADDR) -> EZ80Builder:
     b.ld_mem_label_a("VERB")
 
     b.cp_n(V_QUIT)
-    b.jp_z("BYE")
+    b.jp_z(quit_label)
     b.cp_n(V_LOOK)
     b.jr_z("DO_LOOK")
     b.cp_n(V_INVENTORY)
@@ -151,11 +179,13 @@ def build(world: World, org: int = AGON_LOAD_ADDR) -> EZ80Builder:
     b.jp_z("DO_TAKE")
     b.cp_n(V_DROP)
     b.jp_z("DO_DROP")
+    b.cp_n(V_USE)
+    b.jp_z("DO_USE")
     b.jp("DO_GO")                    # below LOOK: the id is a direction
 
     b.label("DO_LOOK")
     b.call("DESCRIBE")
-    b.jr("TURN")
+    b.jp("TURN")
 
     b.label("BADVERB")
     b.ld_hl_label("MSGVERB")
@@ -165,8 +195,22 @@ def build(world: World, org: int = AGON_LOAD_ADDR) -> EZ80Builder:
     b.call("PRWORD")
     b.ld_hl_label("MSGQUOTE")
     b.call("PRSTR")
-    b.jr("TURN")
+    b.jp("TURN")
 
+
+def emit_reset(b: EZ80Builder, world: World) -> None:
+    """Put every thing back where it starts. Exposed for the merged build."""
+    _emit_reset_things(b, world)
+
+
+def emit_world_routines(b: EZ80Builder, world: World) -> None:
+    """Everything a turn needs, and nothing about how the program starts.
+
+    Split out so the oracle binary can hold a world as well. That direction
+    round is the one that fits: the world is 4,050 bytes and the oracle 38,912,
+    so a terminal standing in a room is the small thing inside the large one
+    rather than the other way about - which is not how issue #62 pictured it.
+    """
     _emit_go(b, world)
     _emit_take_drop(b, world)
     _emit_describe(b, world)
@@ -181,17 +225,23 @@ def build(world: World, org: int = AGON_LOAD_ADDR) -> EZ80Builder:
     _ldptr(b)
     _emit_rules(b, world)
 
-    b.label("BYE")
-    b.ld_hl_label("MSGBYE")
-    b.call("PRWRAP")
-    b.call("PRNL")
-    b.ld_hl_nn(0)
-    b.ret()
 
-    libagonio.emit_console(b, MAX_INPUT_LEN)
+def emit_world_tables(b: EZ80Builder, world: World) -> None:
+    """Rooms, things, words and text - none of which change."""
+    verbs, nouns = _words(world)
     _emit_tables(b, world, verbs, nouns)
-    _emit_ram(b, world, org)
-    return b
+
+
+def emit_world_ram(b: EZ80Builder, world: World,
+                   shared_console: bool = False) -> None:
+    """The overlay and the turn's scratch.
+
+    `shared_console` leaves `INPBUF`, `INPLEN` and `WRAPCOL` to the host
+    program. Sharing the input buffer is not a compromise: it is the point.
+    Two parsers reading one line is what "the two input paths can coexist"
+    means, and they can because both only ever read it.
+    """
+    _emit_ram(b, world, shared_console)
 
 
 def _ldptr(b: EZ80Builder) -> None:
@@ -582,6 +632,30 @@ def _emit_take_drop(b: EZ80Builder, world: World) -> None:
     b.call("PRNL")
     b.jp("TURN")
 
+    # DO_USE: sit down at the terminal, if there is one here.
+    #
+    # `TERMROOM` is 0xFF in the standalone world, which has no card to consult,
+    # and the room the archive terminal stands in when the oracle binary
+    # carries a world. The whole of the switch is one byte: from here the
+    # classifier reads the same INPBUF the word table just did.
+    b.label("DO_USE")
+    b.ld_a_mem_label("HERE")
+    b.ld_hl_label("TERMROOM")
+    b.cp_hl()
+    b.jr_z("USE_YES")
+    b.ld_hl_label("MSGNOTERM")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("TURN")
+
+    b.label("USE_YES")
+    b.ld_a_n(1)
+    b.ld_mem_label_a("ATTERM")
+    b.ld_hl_label("MSGSITDOWN")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("TURN")
+
     b.label("DO_INV")
     if not world.things:
         b.ld_hl_label("MSGEMPTY")
@@ -926,8 +1000,8 @@ def _emit_rule_state(b: EZ80Builder, world: World) -> None:
 
 
 MESSAGES: dict[str, str] = {
-    "BANNER": "Silo 18. You are somewhere, and it is dark outside.",
-    "PROMPT": "> ",
+    "WBANNER": "Silo 18. You are somewhere, and it is dark outside.",
+    "WPROMPT": "> ",
     "MSGSEE": "You can see ",
     "MSGCARRY": "You are carrying ",
     "MSGDOT": ".",
@@ -944,6 +1018,10 @@ MESSAGES: dict[str, str] = {
     "MSGFIXED": "That is not something you can carry.",
     "MSGEMPTY": "You are empty-handed.",
     "MSGBYE": "Goodbye.",
+    "MSGNOTERM": "There is no terminal here.",
+    "MSGSITDOWN": "The screen wakes. Type a name to look it up, or LEAVE to "
+                  "stand up again.",
+    "TERMPROMPT": "archive> ",
 }
 
 
@@ -1022,8 +1100,13 @@ def _emit_tables(b: EZ80Builder, world: World,
         b.ascii(text)
         b.db(0)
 
+    # Which room the archive terminal stands in, or 0xFF for a world with no
+    # card behind it. One byte, and it is the whole of the wiring.
+    b.label("TERMROOM")
+    b.db(NOWHERE if world.terminal is None else world.terminal)
 
-def _emit_ram(b: EZ80Builder, world: World, org: int) -> None:
+
+def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> None:
     """The mutable half, and it is small.
 
     `HERE`, `WHERE` and `FLAGS` are the saved game. Everything else here is
@@ -1043,9 +1126,12 @@ def _emit_ram(b: EZ80Builder, world: World, org: int) -> None:
     b.ds(max(1, len(world.rules)))
 
     # Everything below is scratch that does not outlive a turn.
-    for name in ("VERB", "W1LEN", "W2LEN", "LKLEN", "WRAPCOL",
-                 "INPLEN", "NCARRIED", "RU_ONCE", "RU_NC", "RU_NA",
-                 "RU_OP", "RU_ARG", "RU_ARG2", "RU_CNT"):
+    scratch = ["VERB", "W1LEN", "W2LEN", "LKLEN", "NCARRIED", "RU_ONCE",
+               "RU_NC", "RU_NA", "RU_OP", "RU_ARG", "RU_ARG2", "RU_CNT",
+               "ATTERM"]
+    if not shared_console:
+        scratch += ["WRAPCOL", "INPLEN"]
+    for name in scratch:
         b.label(name)
         b.db(0)
     for name in ("PTMP", "LKPTR", "RULEPTR", "RU_CUR"):
@@ -1056,8 +1142,9 @@ def _emit_ram(b: EZ80Builder, world: World, org: int) -> None:
     b.ds(MAX_WORD_LEN + 1)
     b.label("W2")
     b.ds(MAX_WORD_LEN + 1)
-    b.label("INPBUF")
-    b.ds(MAX_INPUT_LEN + 1)
+    if not shared_console:
+        b.label("INPBUF")
+        b.ds(MAX_INPUT_LEN + 1)
 
 
 def overlay_at(builder: EZ80Builder, world: World) -> tuple[int, int]:

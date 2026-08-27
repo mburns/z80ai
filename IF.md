@@ -153,11 +153,63 @@ call sites, and there is half a megabyte of SRAM spare — the sixty bytes are
 not worth four places to be wrong, and a restore that replayed every event the
 player had already seen would be the bug that saved them.
 
+## The card, standing in a room
+
+```bash
+python buildwikisearch.py --db data/silo.db --source silo --out dist/SILO
+# and a binary that carries the world as well as the card:
+#   buildwikibin.build(num_docs, world=worlds.silo())
+```
+
+```
+> east
+IT, Level 34
+Racks of machines behind glass, and a bench where a screen sits with its
+back off.
+
+> use
+The screen wakes. Type a name to look it up, or LEAVE to stand up again.
+
+archive> cistern pump failure
+Incident Report 214-11: Cistern Pump Failure, Level 142
+At approximately 0340 on the eleventh day of...
+
+archive> leave
+IT, Level 34
+```
+
+**It goes the other way round from how #62 pictured it.** The issue described a
+world with a terminal inside it. The world is 4,050 bytes and the oracle
+program is 38,912, so the terminal is not the small thing — the world is, and
+`buildwikibin.build(..., world=...)` is what carries it. A world costs the
+oracle binary under 5 KB.
+
+### What "the two input paths can coexist" turned out to mean
+
+Not that both fit. They share `INPBUF`: one line, read by whichever parser a
+mode byte selects, and neither writes to it. `ATTERM` is that byte, and the
+whole of the switch.
+
+What nearly went wrong is narrower and worth recording. `Z80Builder.label`
+assigns into a dict:
+
+```python
+def label(self, name: str) -> None:
+    self.labels[name] = self.addr()
+```
+
+A name defined twice resolves to whichever was emitted last, and **nothing says
+so**. Both programs had a `PROMPT` and a `BANNER`, so the merged binary printed
+the oracle's `?` while the player was walking about — a bug with no error, in a
+build that otherwise worked. `test_the_two_programs_define_no_label_twice`
+spies on `label` during a merged build and asserts the count, because that is
+the only way to see it.
+
 ## What it does not do yet
 
 No daemons, no containers, no ranking, and no save and restore on the device -
 `mos_fwrite` is in `libhost` and tested, and the eZ80 side is not written. No
-screen mode and no status line. The world is not wired to the silo card either,
-so the oracle terminal that ought to be standing in the IT office is not there.
+screen mode and no status line: `PRWRAP` decides where a line ends, and nothing
+here has ever told the terminal anything.
 
-Those are the rest of #62's second scope.
+Those are what is left of #62's second scope.

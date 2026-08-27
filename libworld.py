@@ -126,6 +126,10 @@ class World:
     things: list[Thing]
     #: Room the player starts in.
     start: int = 0
+    #: Which room the archive terminal stands in, or None for a world with no
+    #: card behind it. `buildwikibin` is what puts one there; the standalone
+    #: `buildif` binary has no card to consult and says so.
+    terminal: int | None = None
     #: Rules, checked in order after every turn that did something.
     rules: list[Rule] = field(default_factory=list)
     #: Messages rules print, by index.

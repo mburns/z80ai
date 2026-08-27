@@ -284,6 +284,119 @@ def test_an_unknown_opcode_is_refused():
         world.check()
 
 
+# --- one binary, two parsers --------------------------------------------------
+#
+# The last item of #62's second scope: wire the card in as a terminal found in
+# the world, and check the two input paths can coexist. They do, and what that
+# turned out to mean is narrower and more interesting than "both fit" - see
+# `test_the_two_programs_define_no_label_twice`.
+
+
+@pytest.fixture(scope="module")
+def merged(tmp_path_factory):
+    """The oracle program carrying a world, over a tiny two-article card."""
+    import buildwikibin
+    import libsearch
+
+    out = tmp_path_factory.mktemp("merged")
+    titles = ["Pump Failure", "Filler"]
+    leads = ["The cistern pump on Level 142 stopped without warning.", "x"]
+    index = libsearch.build(titles, leads, {})
+    libsearch.write_index(index, out / "W.IDX")
+    libsearch.write_text(index, out / "W.DAT")
+
+    world = worlds.silo()
+    world.terminal = 3                       # the IT office
+    builder = buildwikibin.build(index.num_docs, index_name="W.IDX",
+                                 text_name="W.DAT", world=world)
+    return builder.build(), {
+        "W.IDX": (out / "W.IDX").read_bytes(),
+        "W.DAT": (out / "W.DAT").read_bytes()}
+
+
+def visit(merged, *commands: str) -> str:
+    game, files = merged
+    host = AgonHost(stdin=[*commands, "!"], files=files)
+    return host.run(game, max_cycles=2_000_000_000)
+
+
+def test_the_two_programs_define_no_label_twice():
+    """The hazard, and it is silent. `Z80Builder.label` assigns into a dict,
+    so a name defined twice resolves to whichever was emitted last and nothing
+    says so. Both programs had a `PROMPT` and a `BANNER`, and the merged build
+    printed the oracle's prompt while the player was walking about."""
+    import collections
+
+    import buildwikibin
+    import libez80
+
+    seen: collections.Counter[str] = collections.Counter()
+    original = libez80.EZ80Builder.label
+
+    def spy(self, name: str) -> None:
+        seen[name] += 1
+        original(self, name)
+
+    libez80.EZ80Builder.label = spy
+    try:
+        world = worlds.silo()
+        world.terminal = 3
+        buildwikibin.build(600, world=world)
+    finally:
+        libez80.EZ80Builder.label = original
+
+    assert [name for name, n in seen.items() if n > 1] == []
+
+
+def test_walking_uses_the_word_table(merged):
+    out = visit(merged, "down", "down", "east")
+    assert "IT, Level 34" in out
+
+
+def test_the_terminal_is_only_in_the_room_it_stands_in(merged):
+    out = visit(merged, "use")
+    assert said(out, "There is no terminal here.")
+
+
+def test_sitting_down_switches_which_parser_listens(merged):
+    out = visit(merged, "down", "down", "east", "use")
+    assert said(out, "The screen wakes.")
+    assert "archive>" in out
+
+
+def test_the_card_answers_at_the_terminal(merged):
+    """The other input path, on the same `INPBUF` the word table just read."""
+    out = visit(merged, "down", "down", "east", "use", "pump")
+    assert "Pump Failure" in out
+
+
+def test_leaving_gives_the_world_back(merged):
+    out = visit(merged, "down", "down", "east", "use", "leave", "take screen")
+    assert said(out, "That is not something you can carry.")
+
+
+def test_walking_still_reads_nothing_from_the_card(merged):
+    """The card is open the whole time. A move must still not touch it."""
+    game, files = merged
+    host = AgonHost(stdin=["down", "down", "up", "up", "!"], files=files)
+    host.run(game, max_cycles=2_000_000_000)
+    before = host.io_bytes
+
+    host2 = AgonHost(stdin=["!"], files=files)
+    host2.run(game, max_cycles=2_000_000_000)
+    assert before == host2.io_bytes          # four moves cost nothing extra
+
+
+def test_a_world_costs_the_oracle_what_it_says(merged):
+    import buildwikibin
+
+    world = worlds.silo()
+    world.terminal = 3
+    plain = len(buildwikibin.build(600).code)
+    carried = len(buildwikibin.build(600, world=world).code)
+    assert carried - plain < 5_000           # the world is the small half
+
+
 # --- the world, before anything is emitted ------------------------------------
 
 
