@@ -20,6 +20,7 @@ seven generations, same shape, about a fifth of a second.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from random import Random
@@ -50,6 +51,88 @@ def silo(tmp_path_factory, request):
     generate.write(db, world, SEED)
     db.row_factory = sqlite3.Row
     return generate, schema, db
+
+
+@pytest.fixture(scope="session")
+def planted(tmp_path_factory):
+    """The same corpus with contradictions in it, and the key that says which.
+
+    A separate fixture rather than a flag on the one above, because every other
+    test in this file asserts the corpus is coherent and they all have to keep
+    passing - planting is off by default for exactly that reason.
+    """
+    import sys
+
+    for path in (str(REPO), str(REPO / "data" / "silo")):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    import generate
+    import plant
+    import schema
+
+    rng = Random(SEED)
+    world = generate.populate(rng, SEED, PEOPLE)
+    anomalies = plant.plant(rng, world, 3)
+    db_path = tmp_path_factory.mktemp("planted") / "silo.db"
+    db = schema.connect(db_path, migrate=True)
+    generate.write(db, world, SEED, planted=len(anomalies))
+    db.row_factory = sqlite3.Row
+    return anomalies, db
+
+
+def test_planting_is_off_unless_asked_for(silo):
+    """Every measurement in `data/silo/README.md` was taken on a corpus with
+    none of this in it."""
+    _, _, db = silo
+    assert db.execute("SELECT value FROM meta WHERE key = 'silo.planted'"
+                      ).fetchone()[0] == "0"
+
+
+def test_an_impossible_father_is_planted_exactly_once_each(planted):
+    """The invariant `test_no_parent_died_before_their_child_was_born` asserts
+    is the detector, and the count has to match the key exactly.
+
+    It did not at first, twice. Moving a death earlier makes every child born
+    after it impossible, so aiming at a random child planted three and created
+    ten; and the purge moved deaths earlier too, which made four more that were
+    indistinguishable from the planted ones.
+    """
+    anomalies, db = planted
+    want = {a.subject for a in anomalies if a.kind == "impossible_father"}
+    found = {r["name"] for r in db.execute(
+        "SELECT c.name FROM edge e "
+        "JOIN person c ON c.source = e.source AND c.name = e.subject "
+        "JOIN person p ON p.source = e.source AND p.name = e.object "
+        "WHERE e.relation = 'father_is' AND p.died IS NOT NULL "
+        "AND p.died < c.born")}
+    assert found == want
+
+
+def test_an_altered_record_disagrees_with_the_graph_and_nothing_else_does(planted):
+    """The `fact` table and the `edge` table are written from one pass, so they
+    cannot disagree unless somebody made them - which is what a falsified
+    record looks like from the inside."""
+    anomalies, db = planted
+    want = {a.subject for a in anomalies if a.kind == "altered_parentage"}
+    found = {r["name"] for r in db.execute(
+        "SELECT p.name FROM person p JOIN edge e "
+        "ON e.source = 'silo' AND e.subject = p.name AND e.relation = 'father_is' "
+        "WHERE p.father <> e.object")}
+    assert found == want
+
+
+def test_the_key_is_beside_the_database_and_not_in_it(planted, tmp_path):
+    """Answers in the corpus would be answers a player could query for."""
+    import plant
+
+    anomalies, db = planted
+    key = tmp_path / "silo.key.json"
+    plant.write_key(key, anomalies, SEED)
+    assert json.loads(key.read_text())["planted"] == len(anomalies)
+
+    tables = {r[0] for r in db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert not any("anomal" in t or "planted" in t or "key" in t for t in tables)
 
 
 def test_the_database_is_internally_consistent(silo):
