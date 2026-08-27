@@ -43,9 +43,9 @@ falls over on "father's father".
 Three pairs lost to each other far more than anything else did, always in the
 same shape - a two-hop path answered as its own one-hop prefix:
 
-    class_is class_is_of  ->  class_is           71
-    mother_is mother_is   ->  mother_is          64
-    father_is father_is   ->  father_is          61
+    class_is class_is_of  ->  class_is           70
+    mother_is mother_is   ->  mother_is          51
+    father_is           ->  father_is father_is  35
 
 The cause is lexical. "grandmother" *contains* "mother" - five of the six
 trigrams in the shorter word are inside the longer one - and almost every
@@ -57,8 +57,8 @@ thing **without the shared token**: *gran*, *nan*, *granny* for the grandmother
 path, *schoolfellow* and *taught with* for the classmate one, and terse forms
 like "{s}'s dad" for the one-hop paths that were losing upward. That is a
 hypothesis about the encoder rather than a stylistic preference, and
-`data/silo/README.md` reports what it was worth: the prefix share of misses
-fell from 20.7% to 15.2% and the worst pair left the table entirely.
+`data/silo/README.md` reports what it was worth: prefix confusions fell from
+261 questions to 153, and the worst pair left the table entirely.
 
 `tools/phrasebook_diversity.py` is the check that they broadened rather than
 padded - mean self-similarity within those six paths fell, which is what
@@ -339,7 +339,7 @@ PATHS: dict[str, tuple[str, ...]] = {
         "who shared a class list with {s}",
         "{s} went to school with whom",
         # Twelve more without "class" in them. This pair is the worst in the
-        # phrasebook - 71 misses to `class_is` - and the two questions are
+        # phrasebook - 70 misses to `class_is` - and the two questions are
         # genuinely near-identical on the surface: one asks *which class*, the
         # other asks *who was in it*, and both said "class" in almost every
         # wording. The distinguishing word was carrying the whole burden.

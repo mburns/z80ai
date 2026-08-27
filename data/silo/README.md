@@ -681,33 +681,40 @@ where every existing wording said "grandmother"; *schoolfellow* and *taught
 with* where they all said "class"; terse forms like `{s}'s dad` for the one-hop
 paths that were losing upward.
 
-At 256 buckets, seed 0, three wordings held out:
+At 256 buckets, seed 0, three wordings held out, both arms on identical code:
 
 | | 12 wordings | +12 on six paths |
 |---|---:|---:|
-| misses | 47.5% | **43.5%** |
-| of those, prefix confusions | 20.7% | **15.2%** |
-| `class_is class_is_of` → `class_is` | **71** | out of the top sixteen |
-| `mother_is mother_is` → `mother_is` | 64 | **41** |
-| `father_is father_is` → `father_is` | 61 | out of the top sixteen |
+| misses | 48.9% | **40.9%** |
+| of those, prefix confusions | 21.2% | **14.8%** |
+| prefix misses, in questions | 261 | **153** |
+| `class_is class_is_of` → `class_is` | **70** | off the table |
+| `father_is` → `father_is father_is` | 35 | **19** |
+| `mother_is mother_is` → `mother_is` | 51 | 46 |
 
-**The worst pair in the phrasebook stopped being a pair.** And the mechanism
-predicted it: remove the shared token and the encoder can separate what the
-words already distinguished.
+**The worst pair in the phrasebook stopped being a pair**, and prefix misses
+fell by two in five. The mechanism predicted it: remove the shared token and
+the encoder can separate what the words already distinguished.
+
+(The first version of this section reported 20.7% → 15.2%, measured before
+[#82](../../pull/82) took the refusal class from twelve wordings to
+forty-eight. That changes the class balance every other number is drawn from,
+so both arms were re-run against the phrasebook that ships. The finding held;
+the figures moved.)
 
 Two things stop this being a clean win.
 
 **The confusion partly reversed rather than vanishing.** `class_is` now loses
-to `class_is class_is_of` 46 times and `father_is` to `father_is father_is` 32.
-The pairs are still confusable; what changed is which of the two wins. Half the
-repair was aimed at the one-hop paths for exactly this reason and it was not
-enough.
+to `class_is class_is_of` 46 times, up from 40 — the one direction that got
+*worse*. The pairs are still confusable; what mostly changed is which of the
+two wins. Half the repair was aimed at the one-hop paths for exactly this
+reason, and it worked for `father_is` (35 → 19) and not for `class_is`.
 
 **The overall number is not a fair comparison and is not claimed as one.** Six
 paths now have twice the wordings while still holding out three, so their
 held-out set has more neighbours to learn from — `tools/phrasebook_diversity.py`
-measures novelty falling from 0.188 to 0.100 on `mother_is`. Some of 47.5% →
-43.5% is that, not the disambiguation. The prefix *share* is the honest column,
+measures novelty falling from 0.188 to 0.100 on `mother_is`. Some of 48.9% →
+40.9% is that, not the disambiguation. The prefix *share* is the honest column,
 because it is a ratio within misses.
 
 Extending every path to twenty-four and holding out six would settle it. That
@@ -1012,14 +1019,20 @@ A twenty-first class costs 165 bytes and nothing else. Both accuracy columns
 move less than the seed-to-seed noise this file has already documented, so the
 class is free in the only budget that was in question.
 
-Held out, **`refuse` scores 47.5%** — above the 44.3% mean and mid-table among
+Held out, **`refuse` scored 47.5%** — above the 44.3% mean and mid-table among
 the twenty-one. Two caveats, and the second is the interesting one.
 
-Its number is not comparable to the others. For a path, twelve phrasings are
-twelve ways of asking one question; for `refuse` they are three ways each of
-asking four *different* questions, so holding out three at random can remove a
-whole shape rather than a wording of a familiar one. It is a harder split, not
-a better classifier.
+Its number was not comparable to the others. For a path, twelve phrasings are
+twelve ways of asking one question; for `refuse` they were three ways each of
+asking four *different* questions, so holding out three at random could remove
+a whole shape rather than a wording of a familiar one. A harder split, not a
+better classifier.
+
+> Superseded by [#82](../../pull/82), which is the answer to that caveat:
+> the class was short of *wordings* rather than short of coherence. It holds
+> forty-eight now and scores 77.2%, and splitting it four ways by question
+> shape — the obvious repair, and the one this paragraph implies — is worth
+> nothing at all. The 47.5% below is what twelve wordings bought.
 
 And **when a refusal is missed it goes where the words point**: 32 of the 63
 misses land on `crew_is`, because "who is the oldest person on X's crew" shares
