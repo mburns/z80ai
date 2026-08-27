@@ -56,6 +56,7 @@ import generate  # noqa: F401  - registers the silo's climbs into libgraph.CLIMB
 from schema import SOURCE
 
 import libgraph
+import libgraphcard
 import liboracle
 
 DB_PATH = Path(__file__).resolve().parent.parent / "silo.db"
@@ -263,6 +264,30 @@ PATHS: dict[str, tuple[str, ...]] = {
         "who lives thirty minutes round the ring from {s}",
         "who is {s}'s nearest neighbour along the ring",
     ),
+    # Not a path, and not a path that this corpus happens to be missing edges
+    # for: `data/silo/README.md` sets out why composition stops at aggregation,
+    # ranking and set intersection, and these are the four shapes it stops at.
+    #
+    # Without a class of their own they are not refused, they are *misrouted* -
+    # every one of them lands on some path, every path completes on a corpus
+    # with no gaps, and the machine answers a different question fluently. That
+    # is the failure this class exists to convert into a "no".
+    libgraphcard.REFUSE_PATH: (
+        # a count over a set: four hops, two inverted, then an aggregate
+        "how many cousins does {s} have", "count {s}'s cousins",
+        "how many first cousins has {s} got",
+        # a maximum over a set the walk can enumerate but not rank
+        "who is the oldest person on {s}'s crew",
+        "which of {s}'s crew is eldest",
+        "name the youngest on {s}'s shift",
+        # an intersection of two recursive ancestor sets
+        "is {s} related to me", "are {s} and i related",
+        "is {s} any relation to the sheriff",
+        # a count around the ring: a program rather than a query
+        "how many people live on {s}'s floor",
+        "count the residents of {s}'s level",
+        "how many live on the same level as {s}",
+    ),
 }
 
 #: How many questions to write per phrasing. Twelve phrasings times this is the
@@ -295,6 +320,16 @@ def subjects(db: sqlite3.Connection, path: str, have: set[str], wanted: int,
     a subject is drawn from the entities that actually carry the path's first
     relation.
     """
+    if path == libgraphcard.REFUSE_PATH:
+        # No first relation to draw from, and none wanted: a question the
+        # machine must refuse is one it must refuse about anybody, so the
+        # subjects come from the whole corpus rather than from the entities
+        # that carry some relation.
+        rows = [r for (r,) in db.execute(
+            "SELECT name FROM person WHERE source = ?", (SOURCE,))]
+        rng.shuffle(rows)
+        return [rows[i % len(rows)] for i in range(wanted)]
+
     relation, inverse = resolve(path.split()[0], have)
     column = "object" if inverse else "subject"
     rows = [r for (r,) in db.execute(
@@ -435,6 +470,8 @@ def main() -> None:
     # becomes an empty row in the path table and a question the machine
     # classifies correctly and then answers with silence.
     for path in PATHS:
+        if path == libgraphcard.REFUSE_PATH:
+            continue                 # a refusal is not a path to check
         for word in path.split():
             resolve(word, have)
 

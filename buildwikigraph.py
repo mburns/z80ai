@@ -65,7 +65,7 @@ def corpus(db: sqlite3.Connection, source: str,
 
 
 def paths_for(phrases: list[str], relations: list[str],
-              types: list[str]) -> list[list[tuple[int, int]]]:
+              types: list[str]) -> list[list[tuple[int, int]] | None]:
     """Turn the model's phrase list into a step list per phrase.
 
     A phrase is a path written out - "BORN_IN IN_COUNTRY" - and each word is
@@ -74,9 +74,17 @@ def paths_for(phrases: list[str], relations: list[str],
     `born_in_of` is "who was born here": the same row from the other end, which
     the card already holds sorted the other way. It costs a flag on the step's
     relation byte, and without it a third of this vocabulary is inert.
+
+    `refuse` is not a path and returns `None`. An empty list would have been
+    the obvious encoding and is already taken: it means "no edges for this",
+    which sends the machine to the article list rather than to an answer of
+    "I do not know that one".
     """
-    out: list[list[tuple[int, int]]] = []
+    out: list[list[tuple[int, int]] | None] = []
     for phrase in phrases:
+        if phrase.lower() == libgraphcard.REFUSE_PATH:
+            out.append(None)
+            continue
         steps: list[tuple[int, int]] = []
         for word in phrase.lower().split():
             if word in libgraph.CLIMB:

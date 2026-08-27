@@ -786,6 +786,67 @@ at all — and the one failure the machine *can* report is the hop limit.
 Completeness takes away the machine's ability to say it does not know. That is
 worth having measured before wishing a corpus were denser.
 
+### Giving it back, as a class rather than a threshold
+
+`libinfer.classify` is a bare argmax. There is no score, no margin and nowhere
+to put a confidence cut-off, so the only way this machine can decline is to be
+*taught* declining — the way `examples/smalltalk` carries CLINC's out-of-scope
+utterances as an `IDK` class rather than as a rule.
+
+`relationpaths.PATHS` now holds a twenty-first label, `refuse`, with twelve
+phrasings covering the four shapes above: a count over a set, a maximum over
+one, an intersection of two ancestor sets, and a count around the ring.
+
+On the card it needs its own step count. Zero was already taken — it means "no
+edges for this phrase", which sends the machine to the article list — so
+`libgraphcard.REFUSE` is 0xFF and the walk routine jumps to a message instead
+of a walk. `None` and `[]` are different things all the way from `paths_for`
+through the `.GRF` to the eZ80.
+
+```
+? how many cousins does amanda m wilson have
+I do not know that one.
+
+? who is amanda m wilson's father
+Larry O. Wilson.
+```
+
+**A refusal is the cheapest thing the card does** — 2,573 card bytes against
+4,663 for an answer, because it reads no article text and walks no graph.
+
+### What the class costs, and what it does not fix
+
+| | 20 paths | 21 with `refuse` |
+|---|---:|---:|
+| binary | 39,865 | 40,030 |
+| trained phrasings | 95.6% | 95.4% |
+| **phrasings never seen** | **44.5%** | **44.3%** |
+| steady phrasings | 114/240 | 116/252 |
+
+A twenty-first class costs 165 bytes and nothing else. Both accuracy columns
+move less than the seed-to-seed noise this file has already documented, so the
+class is free in the only budget that was in question.
+
+Held out, **`refuse` scores 47.5%** — above the 44.3% mean and mid-table among
+the twenty-one. Two caveats, and the second is the interesting one.
+
+Its number is not comparable to the others. For a path, twelve phrasings are
+twelve ways of asking one question; for `refuse` they are three ways each of
+asking four *different* questions, so holding out three at random can remove a
+whole shape rather than a wording of a familiar one. It is a harder split, not
+a better classifier.
+
+And **when a refusal is missed it goes where the words point**: 32 of the 63
+misses land on `crew_is`, because "who is the oldest person on X's crew" shares
+almost every term with "who is on X's crew". The rest scatter over `father_is
+father_is`, `job_is` and `works_in located_in`.
+
+That is exactly the misrouting the class exists to prevent, still happening on
+the wordings where an answerable path is a near neighbour in trigram space. The
+class converts about half of these questions from a confident wrong answer into
+a refusal. It does not convert them all, and the ones it misses are the ones
+that look most like questions this corpus can answer.
+
 ## What SQLite is doing
 
 Not decoration — each of these earns its place:

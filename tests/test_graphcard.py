@@ -233,3 +233,22 @@ def test_forward_and_inverse_are_the_same_edge(card, db):
         assert doc[subject] in graph.subjects(doc[obj], rid[relation])
         answer, _w, _m = graph.follow(doc[obj], back)
         assert answer is not None
+
+
+# --- a refusal, which is not a path and not an absent one -----------------------
+
+
+def test_a_refusal_round_trips_as_none(tmp_path):
+    """`None` and `[]` have to survive the card as different things: one means
+    the machine should decline, the other that it should offer articles."""
+    graph = libgraphcard.build(
+        ["A", "B"], [(0, 0, 1)], ["r"], {},
+        paths=[[(0, libgraphcard.PLAIN)], [], None])
+    path = tmp_path / "W.GRF"
+    libgraphcard.write(graph, path)
+
+    read = libgraphcard.CardGraph(path)
+    try:
+        assert read.paths == [[(0, libgraphcard.PLAIN)], [], None]
+    finally:
+        read.close()

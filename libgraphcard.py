@@ -67,12 +67,33 @@ STEP = struct.Struct("<BB")
 #: `buildgraphwalk` emits - and until it did, all three held their own literal
 #: `6` with a comment in one of them pointing at a constant that did not exist.
 #:
-#: Six is a containment depth. It is *not* a pedigree depth: a climb counts
-#: hops rather than nodes, so a corpus seven generations deep needs seven, and
-#: `data/silo/` has spent its whole life reporting generation 6 as unanswerable
-#: for that reason. What bounds it at all is a cycle - two places each inside
-#: the other - which must terminate whatever the data says.
+#: It counts the values a climb may *examine*, which is one more than the hops
+#: it may take: both walkers test the type at the top of the loop, so the value
+#: the last hop reached is never tested. A limit of n buys n - 1 hops.
+#:
+#: Six is a containment depth, from Wikipedia's `in_country`. It is *not* a
+#: pedigree depth: generation g in `data/silo/` is exactly g hops from its
+#: founder, so six buys generations 1 to 5 and that corpus has spent its whole
+#: life reporting generation 6 as unanswerable. What bounds it at all is a
+#: cycle - two places each inside the other - which must terminate whatever the
+#: data says.
 CLIMB_LIMIT = 6
+
+#: A step count meaning "this phrase is a refusal, not a path" - the machine
+#: says it does not know rather than walking anywhere.
+#:
+#: It needs its own number because a count of zero already means something
+#: else: a phrase whose path this corpus has no edges for, which falls back to
+#: listing articles. Three different situations used to arrive at that same
+#: fallback, and a corpus with no gaps never reached it at all - every walk it
+#: was asked for completed, so a misrouted question came back fluent, confident
+#: and wrong with nothing on the screen to say so.
+REFUSE = 0xFF
+
+#: The phrase label that means it. Written in the training data beside the
+#: paths, so a refusal is a class the classifier learns rather than a
+#: confidence threshold nothing here has.
+REFUSE_PATH = "refuse"
 
 #: Set on a step's relation byte to walk the reverse table instead: "who was
 #: born in Edinburgh" is the born_in row read from the other end.
@@ -124,13 +145,17 @@ class Graph:
     relations: list[str]
     #: type id -> (name, sorted doc ids)
     types: list[tuple[str, list[int]]]
-    #: phrase index -> the path it means, as (relation_id, kind) steps
-    paths: list[list[tuple[int, int]]]
+    #: phrase index -> the path it means, as (relation_id, kind) steps.
+    #: `None` is a refusal: a phrase the machine should decline rather than
+    #: walk, which an empty list cannot say because it already means
+    #: "no edges for this, show articles instead".
+    paths: list[list[tuple[int, int]] | None]
 
 
 def build(titles: list[str],
           edges: Iterable[tuple[int, int, int]], relations: list[str],
-          types: dict[str, list[int]], paths: list[list[tuple[int, int]]]) -> Graph:
+          types: dict[str, list[int]],
+          paths: list[list[tuple[int, int]] | None]) -> Graph:
     return Graph(
         num_docs=len(titles),
         digest=corpus_digest(titles),
@@ -162,6 +187,9 @@ def write(graph: Graph, path: Path) -> dict[str, int]:
     path_table = bytearray()
     for steps in graph.paths:
         path_table += struct.pack("<I", len(path_body))
+        if steps is None:
+            path_body += bytes([REFUSE])
+            continue
         path_body += bytes([len(steps)])
         for relation, kind in steps:
             path_body += STEP.pack(relation, kind)
@@ -225,10 +253,13 @@ class CardGraph:
         count = struct.unpack("<I", self.fh.read(4))[0]
         offsets = [struct.unpack("<I", self.fh.read(4))[0] for _ in range(count)]
         body_at = self.fh.tell()
-        self.paths = []
+        self.paths: list[list[tuple[int, int]] | None] = []
         for offset in offsets:
             self.fh.seek(body_at + offset)
             steps = self.fh.read(1)[0]
+            if steps == REFUSE:
+                self.paths.append(None)
+                continue
             self.paths.append([STEP.unpack(self.fh.read(2)) for _ in range(steps)])
 
     def _names(self, count: int) -> list[str]:
