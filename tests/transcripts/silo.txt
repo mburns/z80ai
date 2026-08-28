@@ -1,0 +1,108 @@
+# world: worlds:silo
+Silo 18. You are somewhere, and it is dark outside.
+Level 1 Landing
+The top of the stair. A sealed hatch above you has not been opened in living
+memory, and the light through the screen is the colour of dust.
+
+> down
+The Cafeteria
+Long tables, and the great screen along the far wall showing the hills
+outside. Nobody sits at the tables nearest it.
+You can see ledger.
+
+> take ledger
+Taken.
+
+> down
+The Mids Stair
+A landing halfway down, where the stair widens enough for two people to
+pass. Somebody has chalked a number on the rail and somebody else has half
+rubbed it out.
+You can see badge.
+
+> take badge
+Taken.
+Your hands are full. Whatever else you find down here is going to have to
+wait, or something you already have is going down the stair without you.
+
+> east
+IT, Level 34
+Racks of machines behind glass, and a bench where a screen sits with its
+back off. A standing order on the wall says a screen is fitted by two people
+and never by one.
+You can see screen.
+
+> use
+There is no terminal here.
+
+> west
+The Mids Stair
+A landing halfway down, where the stair widens enough for two people to
+pass. Somebody has chalked a number on the rail and somebody else has half
+rubbed it out.
+
+> down
+Down Deep Stair
+The air is warmer here and the rail is worn smooth. The hum from below is
+the sort you stop hearing after a week.
+
+> down
+Generator Three
+Level 140, and the machine that carries the base load. The outboard bearing
+runs hot in the summer months and has done since year 211.
+You can see wrench.
+
+> take wrench
+Taken.
+The badge and the wrench together look like a story you would rather not
+have to tell a deputy.
+
+> i
+You are carrying wrench.
+You are carrying ledger.
+You are carrying badge.
+
+> up
+Down Deep Stair
+The air is warmer here and the rail is worn smooth. The hum from below is
+the sort you stop hearing after a week.
+
+> up
+The Mids Stair
+A landing halfway down, where the stair widens enough for two people to
+pass. Somebody has chalked a number on the rail and somebody else has half
+rubbed it out.
+
+> up
+The Cafeteria
+Long tables, and the great screen along the far wall showing the hills
+outside. Nobody sits at the tables nearest it.
+
+> up
+Level 1 Landing
+The top of the stair. A sealed hatch above you has not been opened in living
+memory, and the light through the screen is the colour of dust.
+You have been to the bottom and back, and the hum is different now you know
+what makes it.
+
+> xyzzy
+I do not know the word 'XYZZY'.
+
+> take zorkmid
+I do not know the word 'ZORKMID'.
+
+> take
+What do you want to do that to?
+
+> drop ledger
+Dropped.
+
+> i
+You are carrying wrench.
+You are carrying badge.
+
+> north
+You cannot go that way.
+
+> quit
+Goodbye.

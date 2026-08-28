@@ -284,6 +284,166 @@ def test_an_unknown_opcode_is_refused():
         world.check()
 
 
+# --- the key behind the door it opens -----------------------------------------
+#
+# Every check above is about an argument that indexes nothing. These are about
+# arguments that all index something and still cannot happen, which is the bug
+# an author finds ten minutes in rather than at build time - the game runs, and
+# the ending is simply never reached.
+
+
+def test_every_rule_in_the_shipped_world_can_fire():
+    """Dead code with a story attached is still dead code."""
+    assert worlds.silo().dead_rules() == []
+
+
+def test_a_room_behind_no_exit_makes_its_rule_dead():
+    world = World(rooms=[Room("A", "a"), Room("B", "b")],
+                  things=[Thing("key", "k", 0)], messages=["hello"],
+                  rules=[libworld.Rule(when=[(libworld.C_AT, 1)],
+                                       then=[(libworld.A_PRINT, 0, 0)])])
+    assert world.dead_rules() == [(0, "room 1 ('B') cannot be reached")]
+    with pytest.raises(ValueError, match="can never fire"):
+        world.check()
+
+
+def test_a_thing_in_a_room_nobody_reaches_cannot_be_carried():
+    """The locked-key bug in the only shape it can be seen in.
+
+    Room B is where the key is and room B is behind the rule the key opens, so
+    the rule is unreachable *through itself*. Nothing about the emitted binary
+    says so: the tables are consistent and every index is in range.
+    """
+    world = World(rooms=[Room("A", "a"), Room("B", "b", {"SOUTH": 0})],
+                  things=[Thing("key", "k", 1)], messages=["hello"],
+                  rules=[libworld.Rule(when=[(libworld.C_HAVE, 0)],
+                                       then=[(libworld.A_PRINT, 0, 0)])])
+    assert world.dead_rules() == [(0, "thing 0 ('key') cannot be picked up")]
+
+
+def test_scenery_can_be_stood_beside_but_never_held():
+    """A door is a thing and `HAVE` a door is a mistake, not a puzzle."""
+    world = World(rooms=[Room("A", "a")], messages=["hello"],
+                  things=[Thing("door", "d", 0, portable=False)],
+                  rules=[libworld.Rule(when=[(libworld.C_HAVE, 0)],
+                                       then=[(libworld.A_PRINT, 0, 0)])])
+    assert world.dead_rules() == [(0, "thing 0 ('door') is not portable")]
+    assert 0 in world.reach().present
+
+
+def test_a_flag_nothing_sets_makes_its_reader_dead():
+    world = rules_world(rules=[
+        libworld.Rule(when=[(libworld.C_AT, 0), (libworld.C_FLAG, 3)],
+                      then=[(libworld.A_PRINT, 0, 0)])])
+    assert world.dead_rules() == [(0, "flag 3 is never set")]
+
+
+def test_a_rule_reached_only_through_another_rule_is_live():
+    """The fixpoint has to iterate, and this is what it is iterating for.
+
+    Rule 1 needs a flag only rule 0 sets. A single pass over the rules in
+    order would find it live and the reverse order would find it dead, so the
+    answer must not depend on the order they are written in.
+    """
+    chained = [
+        libworld.Rule(when=[(libworld.C_FLAG, 0)],
+                      then=[(libworld.A_PRINT, 0, 0)]),
+        libworld.Rule(when=[(libworld.C_AT, 0)],
+                      then=[(libworld.A_SET, 0, 0)]),
+    ]
+    assert rules_world(rules=chained).dead_rules() == []
+    assert rules_world(rules=chained[::-1]).dead_rules() == []
+
+
+def test_a_rule_that_teleports_opens_the_rooms_behind_it():
+    """`A_GOTO` is an exit that no room's table lists, and it counts as one."""
+    rooms = [Room("A", "a"), Room("B", "b"), Room("C", "c", {"NORTH": 1})]
+    world = World(rooms=rooms, things=[Thing("key", "k", 0)],
+                  messages=["hello"], rules=[
+        libworld.Rule(when=[(libworld.C_AT, 0)],
+                      then=[(libworld.A_GOTO, 2, 0)]),
+        libworld.Rule(when=[(libworld.C_AT, 1)],
+                      then=[(libworld.A_PRINT, 0, 0)])])
+    assert world.reach().rooms == frozenset({0, 1, 2})
+    assert world.dead_rules() == []
+
+
+def test_a_rule_that_moves_a_thing_puts_it_within_reach():
+    """`A_MOVE` is the other way a thing arrives somewhere a player can be."""
+    world = World(rooms=[Room("A", "a"), Room("B", "b")],
+                  things=[Thing("key", "k", 1)], messages=["hello"], rules=[
+        libworld.Rule(when=[(libworld.C_AT, 0)],
+                      then=[(libworld.A_MOVE, 0, 0)]),
+        libworld.Rule(when=[(libworld.C_HAVE, 0)],
+                      then=[(libworld.A_PRINT, 0, 0)])])
+    assert world.dead_rules() == []
+
+
+def test_a_clear_never_makes_a_rule_dead():
+    """The analysis errs upward on purpose, and this is where it shows.
+
+    Rule 1 clears the flag rule 2 reads, and in a real play the order they
+    fire in decides whether rule 2 ever sees it set. `reach` ignores `A_CLEAR`
+    rather than guessing, so rule 2 is reported live. A report of *dead* here
+    would be a false alarm, and an author who has seen one false alarm stops
+    reading the report.
+    """
+    world = rules_world(flags=8, rules=[
+        libworld.Rule(when=[(libworld.C_AT, 0)],
+                      then=[(libworld.A_SET, 0, 0)]),
+        libworld.Rule(when=[(libworld.C_AT, 1)],
+                      then=[(libworld.A_CLEAR, 0, 0)]),
+        libworld.Rule(when=[(libworld.C_FLAG, 0)],
+                      then=[(libworld.A_PRINT, 0, 0)])])
+    assert world.dead_rules() == []
+
+
+def test_a_rule_needing_two_rooms_at_once_is_refused():
+    """Exact rather than approximate: one byte cannot equal two values."""
+    world = rules_world(rules=[
+        libworld.Rule(when=[(libworld.C_AT, 0), (libworld.C_AT, 1)],
+                      then=[])])
+    with pytest.raises(ValueError, match=r"rooms \[0, 1\] at once"):
+        world.check()
+
+
+def test_a_rule_needing_a_flag_set_and_clear_is_refused():
+    world = rules_world(flags=8, rules=[
+        libworld.Rule(when=[(libworld.C_FLAG, 2), (libworld.C_NFLAG, 2)],
+                      then=[])])
+    with pytest.raises(ValueError, match="flag 2 both set and clear"):
+        world.check()
+
+
+def test_a_rule_needing_a_thing_carried_and_in_the_room_is_refused():
+    """`where[thing]` is `CARRIED` or a room, and the two tests are exclusive.
+
+    This one reads as a plausible sentence - "you are holding the key and the
+    key is here" - which is exactly why it wants naming rather than a search.
+    """
+    world = rules_world(rules=[
+        libworld.Rule(when=[(libworld.C_HAVE, 0), (libworld.C_HERE, 0)],
+                      then=[])])
+    with pytest.raises(ValueError, match="carried and in the room"):
+        world.check()
+
+
+def test_a_rule_counting_past_what_can_be_picked_up_is_refused():
+    """Tighter than the count against `len(things)`: scenery does not count."""
+    world = World(rooms=[Room("A", "a")], messages=["hello"], things=[
+        Thing("key", "k", 0), Thing("door", "d", 0, portable=False)],
+        rules=[libworld.Rule(when=[(libworld.C_CARRYING, 2)], then=[])])
+    with pytest.raises(ValueError, match="only 1 of 2 things"):
+        world.check()
+
+
+def test_an_nflag_never_makes_a_rule_dead():
+    """Every flag is clear on turn one, so `NFLAG` holds for any argument."""
+    world = rules_world(flags=8, rules=[
+        libworld.Rule(when=[(libworld.C_NFLAG, 7)], then=[])])
+    assert world.dead_rules() == []
+
+
 # --- one binary, two parsers --------------------------------------------------
 #
 # The last item of #62's second scope: wire the card in as a terminal found in

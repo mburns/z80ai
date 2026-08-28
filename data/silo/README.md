@@ -1238,9 +1238,25 @@ it gets.
 
 ### What this is not
 
-It is an oracle you query, not a world you are inside. There is no state, no
-turn loop, no parser for verbs, and nothing here writes to the card. Those are
-the second half of [#62](../../issues/62) and none of them exist.
+It is an oracle you query, not a world you are inside — and the world you are
+inside is now a separate program, deliberately, because a question costs ~4,600
+card bytes and a move has to cost none. See [`IF.md`](../../IF.md).
+
+**The map for that world comes out of this database.** `apartment`,
+`next_along`, `next_out` and `located_in` are geography stored as edges rather
+than arithmetic, which was done for the card's sake — the eZ80 has no modulo —
+and turns out to be exactly what a turn loop wants:
+
+```bash
+python data/silo/buildworld.py --floors 2 -o SILO.bin
+```
+
+144 landings, 14 departments and one ring of 72 dwellings is 230 rooms, and
+`libworld.NOWHERE` caps it at 255. That, rather than the half-megabyte of free
+SRAM, is what stops a world holding all twenty-nine opened floors.
+
+What is still absent is save and restore on the device, and anything on the
+card that a turn writes.
 ## Counting was not an aggregate after all
 
 "How many children does X have" was listed here as a question no path could
