@@ -328,6 +328,27 @@ PATHS: dict[str, tuple[str, ...]] = {
         "who are the sons and daughters of {s}",
         "which people list {s} as a parent",
     ),
+    # The two counts. A count step is `child_of` read backwards with a tally
+    # instead of a hop, so the subject picker draws parents - the objects of
+    # the relation - exactly as it does for `child_of_of` above.
+    #
+    # These deliberately sit a word away from refusals: "how many children" is
+    # answerable and "how many cousins" is not, "born on {s}'s level" is
+    # answerable and "live on {s}'s floor" is not. The seam was measured before
+    # either was written - see `data/silo/README.md` - and the answer was that
+    # the collision is not where it looked like it would be.
+    "count_child_of": (
+        "how many children does {s} have", "count {s}'s children",
+        "how many kids has {s} got", "what is {s}'s child count",
+        "{s} has how many children",
+        "how many sons and daughters does {s} have",
+        "the number of children {s} has is what",
+        "give me a number for {s}'s children",
+        "how many offspring does {s} have",
+        "tell me how many children {s} has",
+        "how many did {s} raise",
+        "how many births are down to {s}",
+    ),
     "class_is class_is_of": (
         "who was in {s}'s class", "name a classmate of {s}",
         "who was schooled with {s}", "who sat in class with {s}",
@@ -364,6 +385,16 @@ PATHS: dict[str, tuple[str, ...]] = {
         "who lives thirty minutes round the ring from {s}",
         "who is {s}'s nearest neighbour along the ring",
     ),
+    # `born_on count_born_on` - "how many people were born on X's level" - is a
+    # path the card can walk and is deliberately **not** here. It costs the
+    # refusal class 11.7 +/- 5.6 points where `count_child_of` costs 6.9 +/-
+    # 6.8, which is nothing; `data/silo/README.md` has the three arms.
+    #
+    # Not because it steals the refusals: it barely gets any. It displaces
+    # them. Separating "born on {s}'s level" from `refuse`'s "live on {s}'s
+    # floor" pushes the ring-count wordings out of the refusal region
+    # altogether and into `lives_at`, which answers them with an address.
+    #
     # Not a path, and not a path that this corpus happens to be missing edges
     # for: `data/silo/README.md` sets out why composition stops at aggregation,
     # ranking and set intersection, and these are the four shapes it stops at.

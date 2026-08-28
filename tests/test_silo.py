@@ -86,10 +86,12 @@ def test_a_count_label_names_the_end_the_subjects_come_from(silo):
     pointing *at* X, so X has to be an object of that relation rather than a
     subject of it.
 
-    `libgraph.COUNT` exists and nothing in `relationpaths.PATHS` uses it yet -
-    two count classes cost the refusal class twenty-seven points, so they are
-    measured and not shipped. This pins the reading so the vocabulary can carry
-    one the day that is settled.
+    `count_child_of` and `born_on count_born_on` now ship, so this pins the
+    reading rather than reserving it. The walkability test below is what checks
+    they reach the card; this checks they point the right way, which nothing
+    downstream would notice - a count drawn from subjects rather than objects
+    trains the classifier on people who have no children and teaches it the
+    phrasing against an answer of nought.
     """
     import sys
 
