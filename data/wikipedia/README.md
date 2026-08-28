@@ -1116,9 +1116,9 @@ was cut against and the join is redone from `sitelink` every time.
 
 | path | before | after |
 |---|---:|---:|
-| `born_in in_country` | 42,288 startable, 77.7% | **67,510, 86.5%** |
-| `died_in in_country` | 17,277, 82.3% | **33,645, 89.5%** |
-| `in_country` | 49,784, 86.6% | **86,289, 93.3%** |
+| `born_in in_country` | 42,288 startable, 77.7% | **67,510, 88.0%** |
+| `died_in in_country` | 17,277, 82.3% | **33,645, 90.9%** |
+| `in_country` | 49,784, 86.6% | **86,289, 94.5%** |
 | `created_by born_in` | 11,107, 74.3% | **13,406, 93.3%** |
 | subjects on the graph | 37.4% | **62.8%** |
 
@@ -1147,6 +1147,25 @@ marking it as one. 14,680 declined, about ten thousand of them genres.
 provably inside what the corpus already said it replaces it — `Mississippi` to
 `Carrollton, Mississippi`. That is only an improvement if the finer answer still
 reaches a country, so 924 are refused because it would not.
+
+### What a country is, asked rather than voted on
+
+`TYPE_FLOOR` decides a country by counting infobox fields that say `country = X`,
+which is a vote that once elected California and still elects `CA`, `FRA`,
+`Baku` and `World`. Wikidata states it instead, and knows **94 countries this
+corpus did not** — so `wikidata.py` writes them into `derived` under the
+relation `type_is`, and `libgraph.types` reads them.
+
+They are entered *at* the floor rather than above it. A statement is worth more
+than an opinion, but where the two contradict each other the existing
+containment guard should arbitrate on the corpus's own numbers rather than be
+outranked — and it still runs, so a claimed country inside another claimed
+country is demoted exactly as California was. 244 claimed, **217 after
+containment**, against 143 before.
+
+A `type_is` row is never admitted as an edge. "England is a country" belongs in
+`entity_type`; as an edge it would be a hop a walk could take, out of the graph
+and into a word.
 
 ### The cost of a refinement was measured against the wrong graph
 
