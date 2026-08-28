@@ -1448,11 +1448,34 @@ def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
     b.call("GW_FOLLOW")
     b.jp_c("RP_SHOW")                # no fact: hand over the articles instead
 
+    # Did the path end in a count? `GW_FOLLOW` leaves `GW_STEPS` just past the
+    # pair it last read, so the kind byte is the one behind it. That is the
+    # same test `libgraphcard.counts` makes, read off the path rather than
+    # carried back in a flag - there is nowhere in the walk's state to put a
+    # flag that a later step could not overwrite, and the path is the record.
+    # A count always ends the path, so "the last step" and "the step that
+    # answered" are the same step.
+    b.ld_hl_mem_label("GW_STEPS")
+    b.dec_hl()
+    b.ld_a_hl()
+    b.cp_n(libgraphcard.COUNT)
+    b.jp_z("RP_TALLY")
+
     b.call("PRNL")
     b.ld_hl_mem_label("GW_HERE")
     b.call("READ_ARTICLE")
     b.ld_hl_label("TEXTBUF")
     b.call("PRSTR")                  # the title alone: this is an answer
+    b.ld_a_n(ord("."))
+    b.rst(MOS_OUTCHAR)
+    b.jp("PRNL")
+
+    # A number, not a title. Zero is an answer here and prints as one: the walk
+    # reached the subject and found nothing pointing at it, which is different
+    # from not having understood, and RP_SHOW would say the wrong thing.
+    b.label("RP_TALLY")
+    b.call("PRNL")
+    b.call("PRNUM")
     b.ld_a_n(ord("."))
     b.rst(MOS_OUTCHAR)
     b.jp("PRNL")
@@ -1465,6 +1488,61 @@ def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
     b.ld_hl_label("MSGIDK")
     b.call("PRSTR")
     b.jp("PRNL")
+
+    _emit_prnum(b)
+
+
+def _emit_prnum(b: EZ80Builder) -> None:
+    """PRNUM: print GW_TALLY in decimal. Destroys it - it is printed once.
+
+    Repeated subtraction against each power of ten in turn, unrolled. Division
+    is the obvious way and this machine has none; the eZ80's `MLT` multiplies
+    8-bit operands, which does not help.
+
+    Unrolled costs 332 bytes where a table walked with `IX` would cost about
+    ninety, and that is the wrong way round on any machine where the number
+    mattered. Here it does not - the program has 236KB of room - and what the
+    unrolled form buys is that each body is the same six lines with a different
+    constant, so there is no index to get wrong.
+
+    Leading zeros are suppressed through C, which also has to survive the
+    character output call - hence the push. Without the suppression a count of
+    three prints as 00000003, which is the sort of thing that reads as a
+    machine failing rather than a machine answering.
+    """
+    b.label("PRNUM")
+    b.ld_c_n(0)                      # nothing printed yet
+    for power in (10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10):
+        at = f"PRNUM{power}"
+        b.ld_b_n(0)
+        b.label(at)
+        b.ld_hl_mem_label("GW_TALLY")
+        b.ld_de_nn(power)
+        b.or_a()
+        b.sbc_hl_de()
+        b.jp_c(f"{at}_END")
+        b.ld_mem_label_hl("GW_TALLY")
+        b.inc_b()
+        b.jp(at)
+        b.label(f"{at}_END")
+        b.ld_a_b()                   # print it unless it is a leading zero
+        b.or_a()
+        b.jp_nz(f"{at}_OUT")
+        b.ld_a_c()
+        b.or_a()
+        b.jp_z(f"{at}_SKIP")
+        b.label(f"{at}_OUT")
+        b.ld_a_b()
+        b.add_a_n(ord("0"))
+        b.push_bc()
+        b.rst(MOS_OUTCHAR)
+        b.pop_bc()
+        b.ld_c_n(1)
+        b.label(f"{at}_SKIP")
+    b.ld_a_mem_label("GW_TALLY")     # under ten now, and always printed
+    b.add_a_n(ord("0"))
+    b.rst(MOS_OUTCHAR)
+    b.ret()
 
 
 

@@ -47,7 +47,10 @@ FACTS = [
     ("Marie Curie", "birth_place", "Warsaw"),
     ("Warsaw", "country", "Poland"),
 ]
-PHRASES = ["BORN_IN", "BORN_IN IN_COUNTRY", libgraphcard.REFUSE_PATH.upper()]
+#: In the order `classify.train` sorts its labels, which is what makes a phrase
+#: index mean the same thing to the model and to the paths table.
+PHRASES = ["BORN_IN", "BORN_IN IN_COUNTRY", "COUNT_LOCATED_IN",
+           libgraphcard.REFUSE_PATH.upper()]
 
 
 @pytest.fixture(scope="module")
@@ -113,6 +116,13 @@ def binary(card, tmp_path_factory):
         pairs.extend((f.format(who), libgraphcard.REFUSE_PATH.upper()) for f in (
             "how many cousins does {} have", "count the cousins of {}",
             "is {} related to me", "who is the oldest friend of {}"))
+    # A count *is* a path, and shares its wording with the refusals above. The
+    # two classes are only told apart by what is being counted, which is the
+    # seam worth having a binary exercise.
+    for place in ("england", "poland", "hampshire", "france"):
+        pairs.extend((f.format(place), "COUNT_LOCATED_IN") for f in (
+            "how many places are in {}", "count the places in {}",
+            "how many towns are in {}", "number of places in {}"))
 
     model, _o, _m = classify.train(
         pairs, [32], 200, 0.01, seed=0, split_seed=0, val_frac=0.25,
@@ -203,6 +213,25 @@ def test_a_refusal_offers_no_articles(card, binary):
     wrong answer wearing a different hat."""
     out = ask(card, binary, "how many cousins does jane austen have")
     assert "Steventon" not in out and "Hampshire" not in out
+
+
+# --- counting, which prints a number rather than a title ----------------------
+
+
+def test_a_count_is_answered_with_a_number(card, binary):
+    """Hampshire and three fillers. The answer is not an article, so the
+    program has to print it, and printing a number is the whole of the new
+    machinery on this side."""
+    out = ask(card, binary, "how many places are in england")
+    assert "4." in out
+    assert "Hampshire" not in out       # a tally, not the first of them
+
+
+def test_a_count_of_nothing_prints_zero(card, binary):
+    """Nothing is in Jane Austen. Zero is an answer and the article list is
+    not - the walk returns carry clear so the program never reaches it."""
+    out = ask(card, binary, "how many places are in jane austen")
+    assert "0." in out
 
 
 def test_refusing_is_not_what_an_unwalkable_path_does(card, binary):
