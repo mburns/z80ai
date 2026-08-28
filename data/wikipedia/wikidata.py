@@ -89,6 +89,11 @@ PROPERTY = {
 #: is a country from a vote over infoboxes that once elected California.
 CLASS = {5: "human", 6256: "country"}
 
+#: Of those, the ones written into `derived` for `libgraph.types` to read.
+#: `human` is measured and not written: personhood is decided inside `libgraph`
+#: and stored nowhere, so a row asserting it would have no reader.
+TYPED = frozenset({"country"})
+
 #: `instance of`, which is how a class is stated.
 P_INSTANCE_OF = 31
 
@@ -343,7 +348,8 @@ def choose(values: set[int], parents: dict[int, set[int]]) -> int | None:
 #: What a subject/relation pair was decided to be, in the order the outcomes
 #: matter. `refine` is the only one that changes an answer the card already
 #: gives, which is why it is counted apart from `gap`.
-OUTCOMES = ("gap", "refine", "agree", "kept", "declined", "untyped", "coarser")
+OUTCOMES = ("gap", "refine", "agree", "kept", "declined", "untyped",
+            "coarser", "typed")
 
 
 class Plan:
@@ -510,7 +516,7 @@ def corpus_edges(db: sqlite3.Connection, source: str
 
 
 #: Column widths for the report, one per entry in OUTCOMES.
-WIDTHS = (9, 8, 8, 8, 9, 8, 8)
+WIDTHS = (9, 8, 8, 8, 9, 8, 8, 7)
 
 
 def _columns(counts: dict[str, int]) -> str:
@@ -573,6 +579,20 @@ def load(db: sqlite3.Connection, source: str, path: Path
         "SELECT entity FROM entity_type WHERE source = ? AND kind = 'country'",
         (source,))} if _has_entity_type(db) else set()
     drop_unclimbable(plan, existing, countries)
+
+    # What a thing *is*, not where it is. Only `country` crosses: the corpus
+    # decides it by a vote over infobox fields that once elected California,
+    # and 94 of these it does not know about at all. `human` is exported and
+    # not written, because nothing stores personhood - `libgraph` decides it
+    # and a row here would be a fact with no reader.
+    for kind, members in sorted(classes.items()):
+        if kind not in TYPED:
+            continue
+        for qid in sorted(members):
+            if (title := titles.get(qid)) is not None:
+                plan.rows.append((title, libgraph.TYPE_RELATION, kind))
+                plan.note(kind, "typed")
+
     return plan, {"header": header, "classes": classes, "titles": titles}
 
 

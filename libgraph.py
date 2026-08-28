@@ -461,6 +461,10 @@ def build(db: sqlite3.Connection, source: str,
     Mississippi` inside `Mississippi` - and that the finer answer still reaches
     a country. Nothing takes this by asserting it is a better source.
     """
+    # Resolved once, at the top, because two different things need it: `types`
+    # reads what a method *asserts* a thing is, and the admission below reads
+    # what it says a thing is related to.
+    methods = [derived] if isinstance(derived, str) else list(derived or ())
     titles = {t for (t,) in db.execute(
         "SELECT title FROM article WHERE source = ?", (source,))}
     redirects = dict(db.execute(
@@ -566,7 +570,7 @@ def build(db: sqlite3.Connection, source: str,
     #
     # Types come from `fact` rather than `edge`, so this does not care that the
     # category edges are not in yet.
-    kinds = types(db, source, resolve)
+    kinds = types(db, source, resolve, methods)
     db.execute("DELETE FROM entity_type WHERE source = ?", (source,))
     db.executemany("INSERT OR REPLACE INTO entity_type VALUES (?, ?, ?)",
                    [(source, kind, entity) for kind, entity in kinds])
@@ -593,7 +597,7 @@ def build(db: sqlite3.Connection, source: str,
         #
         # Only the demotions can change here, not the claims: a category never
         # says `country = X`. So this re-reads the containment and nothing else.
-        kinds = types(db, source, resolve)
+        kinds = types(db, source, resolve, methods)
         db.execute("DELETE FROM entity_type WHERE source = ?", (source,))
         db.executemany("INSERT OR REPLACE INTO entity_type VALUES (?, ?, ?)",
                        [(source, kind, entity) for kind, entity in kinds])
@@ -603,7 +607,6 @@ def build(db: sqlite3.Connection, source: str,
     # wrote down, and skipping any subject that already has the relation, so a
     # sentence can fill a gap and can never overrule a table.
     read = 0
-    methods = [derived] if isinstance(derived, str) else list(derived or ())
     for method in methods:
         admitted = _from_derived(db, source, method, replace)
         read += admitted
@@ -626,9 +629,13 @@ def _from_derived(db: sqlite3.Connection, source: str, method: str,
     precise, it is ambiguous.
     """
     try:
+        # `type_is` is excluded because it is not a hop. "England is a country"
+        # is read by `types` into `entity_type`; as an edge it would be a step
+        # a walk could take, out of the graph and into a word.
         rows = db.execute(
             "SELECT subject, relation, object FROM derived "
-            "WHERE source = ? AND method = ?", (source, method)).fetchall()
+            "WHERE source = ? AND method = ? AND relation <> ?",
+            (source, method, TYPE_RELATION)).fetchall()
     except sqlite3.OperationalError:
         return 0               # a database written before schema 8 has none
 
@@ -656,13 +663,27 @@ def _from_derived(db: sqlite3.Connection, source: str, method: str,
 TYPE_FIELD = {"country": "country"}
 
 
-def types(db: sqlite3.Connection, source: str,
-          resolve: Resolver) -> list[tuple[str, str]]:
+#: The relation a `derived` row uses to say what something *is* rather than
+#: where it is. It is read by `types` and never admitted as an edge: "England
+#: is a country" belongs in `entity_type`, and an edge saying it would be a hop
+#: a walk could take to nowhere.
+TYPE_RELATION = "type_is"
+
+
+def types(db: sqlite3.Connection, source: str, resolve: Resolver,
+          derived: Sequence[str] = ()) -> list[tuple[str, str]]:
     """(kind, entity) for everything the corpus repeatedly calls a kind.
 
     Collapsing `country` onto `located_in` is what made chaining work, and it
     threw away exactly what "what COUNTRY was X born in" needs. The signal
     survives in the fact table, which still records the field name.
+
+    ``derived`` names methods in `derived` that may *assert* a kind rather than
+    vote for one. A Wikidata statement is not an opinion the way an infobox
+    field is, so it does not need `TYPE_FLOOR` votes to be believed - but it is
+    entered at exactly the floor rather than above it, so that where the two
+    sources contradict each other the existing containment rule arbitrates on
+    the corpus's own numbers instead of this outranking them.
     """
     counts: dict[tuple[str, str], int] = {}
     for kind, field_name in TYPE_FIELD.items():
@@ -672,6 +693,13 @@ def types(db: sqlite3.Connection, source: str,
             target = resolve(value)
             if target:
                 counts[(kind, target)] = counts.get((kind, target), 0) + 1
+    for method in derived:
+        for subject, kind in db.execute(
+                "SELECT subject, object FROM derived WHERE source = ? "
+                "AND relation = ? AND method = ?",
+                (source, TYPE_RELATION, method)):
+            key = (kind, subject)
+            counts[key] = max(counts.get(key, 0), TYPE_FLOOR)
     within = dict(db.execute(
         "SELECT subject, object FROM edge WHERE source = ? AND relation = ?",
         (source, "located_in")))

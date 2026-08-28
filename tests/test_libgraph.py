@@ -337,6 +337,55 @@ def test_the_edge_count_includes_what_was_admitted(db):
     assert reported == held
 
 
+def test_a_derived_type_is_believed_without_the_votes(db):
+    """`TYPE_FLOOR` is a vote count, and a Wikidata statement is not an opinion.
+    Nothing in this graph calls Lyon a country; one asserted row does."""
+    with_derived(db)
+    db.execute("INSERT OR REPLACE INTO derived VALUES "
+               "('w', 'Lyon', 'type_is', 'country', 'wikidata')")
+    libgraph.build(db, "w", derived=("regex", "wikidata"))
+    assert db.execute(
+        "SELECT COUNT(*) FROM entity_type WHERE source = 'w' "
+        "AND kind = 'country' AND entity = 'Lyon'").fetchone()[0] == 1
+
+
+def test_a_type_is_not_a_hop(db):
+    """"England is a country" belongs in `entity_type`. As an edge it would be
+    a step a walk could take, out of the graph and into a word."""
+    with_derived(db)
+    db.execute("INSERT OR REPLACE INTO derived VALUES "
+               "('w', 'Lyon', 'type_is', 'country', 'wikidata')")
+    libgraph.build(db, "w", derived=("regex", "wikidata"))
+    assert db.execute(
+        "SELECT COUNT(*) FROM edge WHERE source = 'w' "
+        "AND relation = 'type_is'").fetchone()[0] == 0
+
+
+def test_an_asserted_type_is_still_demoted_by_containment(db):
+    """The guard that stopped California being a country does not get switched
+    off by a better source: a claimed country inside another claimed country is
+    still the wrong place for a climb to stop."""
+    with_derived(db)
+    db.executemany(
+        "INSERT OR REPLACE INTO derived VALUES ('w', ?, 'type_is', 'country', "
+        "'wikidata')", [("Lyon",), ("France",)])
+    libgraph.build(db, "w", derived=("regex", "wikidata"))
+    typed = {e for (e,) in db.execute(
+        "SELECT entity FROM entity_type WHERE source = 'w' AND kind = 'country'")}
+    assert "France" in typed
+    assert "Lyon" not in typed, "Lyon is inside France and cannot also be one"
+
+
+def test_a_type_from_an_unasked_method_is_not_read(db):
+    with_derived(db)
+    db.execute("INSERT OR REPLACE INTO derived VALUES "
+               "('w', 'Lyon', 'type_is', 'country', 'some-model')")
+    libgraph.build(db, "w", derived="regex")
+    assert db.execute(
+        "SELECT COUNT(*) FROM entity_type WHERE source = 'w' "
+        "AND entity = 'Lyon'").fetchone()[0] == 0
+
+
 def test_a_value_resolves_through_a_redirect(db):
     load(db, ["Alan Turing", "United Kingdom"],
          [("Alan Turing", "birth_place", "Britain")],
