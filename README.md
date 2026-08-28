@@ -135,8 +135,8 @@ the corpus to Wikidata by its sitelink is what moved it:
 
 | | before | after |
 |---|---:|---:|
-| what country was X born in | 77.7% | **86.5%** |
-| what country is X in | 86.6% | **93.3%** |
+| what country was X born in | 77.7% | **88.0%** |
+| what country is X in | 86.6% | **94.5%** |
 | subjects on the graph | 37.4% | **62.8%** |
 | edges | 168,306 | **270,740** |
 

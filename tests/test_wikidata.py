@@ -175,6 +175,26 @@ def test_a_relation_that_is_not_containment_is_still_typed_freely(wikidata):
     assert plan.rows == [("Mount Everest", "born_in", "China")]
 
 
+# --- what a thing is, rather than where it is ---------------------------------
+
+
+def test_a_country_class_is_written_and_a_person_class_is_not(wikidata, corpus):
+    """The corpus decides what a country is by a vote over infobox fields, and
+    Wikidata knows 94 it does not. Personhood it decides in `libgraph` and
+    stores nowhere, so a row asserting it would have no reader."""
+    import libgraph
+
+    path = write_export(
+        Path(str(corpus.execute("PRAGMA database_list").fetchone()[2])).parent
+        / "e.tsv.gz",
+        f"{CARROLLTON}\t31\t6256\n{MISSISSIPPI}\t31\t5\n")
+    plan, _extra = wikidata.load(corpus, "simplewiki", path)
+    typed = [r for r in plan.rows if r[1] == libgraph.TYPE_RELATION]
+    assert typed == [("Carrollton, Mississippi", libgraph.TYPE_RELATION,
+                      "country")]
+    assert plan.counts["country"]["typed"] == 1
+
+
 # --- the file format ----------------------------------------------------------
 
 
