@@ -205,11 +205,102 @@ build that otherwise worked. `test_the_two_programs_define_no_label_twice`
 spies on `label` during a merged build and asserts the count, because that is
 the only way to see it.
 
+## The map was already in the database
+
+`worlds.py` hand-authors six rooms. `data/silo/buildworld.py` reads a world out
+of `data/silo.db` instead, and it is short because the map has been in there
+since the schema was written:
+
+```bash
+python data/silo/buildworld.py --floors 2 -o SILO.bin
+```
+
+| in the corpus | in the world |
+|---|---|
+| `next_along` — thirty minutes clockwise, and it wraps | `EAST`, and `WEST` back |
+| `next_out` — one ring outward, and it does not | `NORTH` out, `SOUTH` in |
+| `located_in` — a dwelling's level, a department's level | the stair, and the door off it |
+| `article.lead` | every room description |
+| `residence.until IS NULL` | the name beside the door |
+
+`data/silo/schema.py` stores those two adjacencies as edges rather than
+arithmetic **because the machine that walks them has no modulo**. A card walks
+them to answer "who lives next door"; a world walks them to go east. Nothing
+here recomputes `(bearing + 30) % 720`, and
+`test_the_geometry_is_read_rather_than_recomputed` is the test that can tell
+the difference — it deletes one edge and checks the exit went with it.
+
+Nothing here writes prose either. Every description is a lead the corpus
+already carries, so editing an article moves a room.
+
+### The wall is the room id, not the memory
+
+The section above measured 505 KB of SRAM free and observed that at 12 bytes a
+room, that is more rooms than anybody will write. It is, and **it is not what
+stops you**: `libworld.NOWHERE` is `0xFF`, so a room id is one byte.
+
+```
+144 landings + 14 departments        158 rooms    12,347 bytes
+one residential floor                 72 rooms    24,492 bytes
+                                     ---
+                                     230 rooms, and 255 is the ceiling
+```
+
+One floor fits and two do not — 302 rooms, refused rather than truncated,
+because a world quietly missing its bottom forty levels walks perfectly well.
+The silo has twenty-nine opened floors. Reaching all of them wants a two-byte
+room id, which costs every exit a byte in the image, or a world that streams
+floors off the card, which costs a turn the one thing a turn must never cost.
+
+A 230-room world still reads nothing: `io_bytes == 0` holds at two hundred
+rooms exactly as it did at six, because a move is a table lookup whatever the
+size of the table.
+
+## Two checks the prose needed
+
+**A whole playthrough, kept.** `tests/test_if.py` asserts phrases — fifty-three
+tests, out of a world that says several thousand words — and is blind to the
+half of an Interactive Fiction that *is* prose. `tools/transcript.py` replays a
+session and compares the lot:
+
+```bash
+python tools/transcript.py                       # replay every one
+python tools/transcript.py --update tests/transcripts/silo.txt
+```
+
+The file is the game's own output. `READ_INPUT` echoes what it accepts, so a
+run already comes back looking like a session at a terminal, and the commands
+are recovered by reading the `> ` lines back — there is no second file of
+commands to keep in step. A diff is not by itself a bug; it is the change being
+*seen*.
+
+It found one thing on its first run: `DO_INV` prints "You are carrying" once
+per item. Consistent with `DESCRIBE`, not what a player expects, and now
+pinned.
+
+**A rule that can never fire.** `World.check()` refuses every argument that
+indexes nothing, and none of those is the bug an author ships. That one is a
+key in the room it unlocks: arguments all in range, conditions that can never
+all hold, no error. `World.reach()` is a monotone fixpoint whose result is
+deliberately a **superset** of what a player can bring about, so a rule outside
+it is certainly dead and a rule inside it is only probably live. Erring the
+other way would report locked doors that are not locked, and an author who has
+seen one false alarm stops reading the report.
+
+Some contradictions are exact rather than searched — `AT 3` with `AT 5`,
+`FLAG 2` with `NFLAG 2`, and `HAVE k` with `HERE k`, which reads as a plausible
+sentence and is impossible because `where[k]` is `CARRIED` *or* a room.
+
 ## What it does not do yet
 
 No daemons, no containers, no ranking, and no save and restore on the device -
 `mos_fwrite` is in `libhost` and tested, and the eZ80 side is not written. No
 screen mode and no status line: `PRWRAP` decides where a line ends, and nothing
 here has ever told the terminal anything.
+
+The compiled world has no things in it, because the corpus has no objects. It
+has ten thousand *people*, and they cannot be `Thing`s: `where[]` is a byte
+apiece, which would make a saved game 10 KB rather than 13. People stay on the
+card and are read; only the world is resident.
 
 Those are what is left of #62's second scope.
