@@ -18,6 +18,18 @@ That is the argument for putting the oracle on this machine at all. Reading an
 answer out of an article is comprehension and out of reach. Comparing two
 24-bit numbers is four instructions.
 
+## What a count costs
+
+A hop and then a scan, measured on a 150,000-edge table: 17,910 t-states for
+the search, and 860 more for each record tallied. So counting twenty things is
+twice a hop and counting five hundred is twenty-five times one - 447,559
+t-states, or 24ms. The scan is only forward because `GW_FIND` returns a lower
+bound, so a count never searches twice.
+
+The reason it is a count and not a maximum: tallying reads a record and
+compares it to the key it already has, where a maximum would have to read the
+value each record names, which is a second seek into a second table per record.
+
 ## Why the state is in memory
 
 Everything here is 24-bit and there are three index registers, so the search
@@ -39,7 +51,7 @@ would call 0x010000 zero, so the test is `SBC HL,DE` against zero instead.
 from __future__ import annotations
 
 from libez80 import EZ80Builder
-from libgraphcard import CLIMB_LIMIT, EDGE_SIZE, INVERSE, PLAIN, RELATION
+from libgraphcard import CLIMB_LIMIT, COUNT, EDGE_SIZE, INVERSE, PLAIN, RELATION
 
 #: Every walk cell is 24-bit, which is a word on this machine.
 CELLS = (
@@ -55,6 +67,7 @@ CELLS = (
     "GW_TYPEN",     # how many ids are in it
     "GW_FWD",       # byte offset of the forward table
     "GW_REV",       # and of the reverse one
+    "GW_TALLY",     # how many records a count step found
 )
 
 
@@ -239,6 +252,49 @@ def emit_walk(b: EZ80Builder, num_edges: int, types_at: int, num_types: int,
     b.or_a()
     b.ret()
 
+    # --- GW_COUNT: how many records share (GW_HERE, GW_REL). Tally in GW_TALLY.
+    #
+    # The table is sorted, so every record for one key is contiguous, and
+    # `GW_FIND` already leaves the **lower bound** in GW_LOW - the first of
+    # them. So the count is a scan forward from there and nothing else: no
+    # backward pass, no second search. That is the whole reason a count fits on
+    # this machine while a maximum does not; one tallies, the other has to
+    # compare values it would have to read.
+    #
+    # A miss is a count of zero rather than a failure. "None" is what the
+    # question asked, and returning carry here would send the program to the
+    # article list as though it had not understood.
+    b.label("GW_COUNT")
+    b.ld_hl_nn(0)
+    b.ld_mem_label_hl("GW_TALLY")
+    b.ld_hl_mem_label("GW_HERE")
+    b.ld_mem_label_hl("GW_KEY")
+    b.call("GW_FIND")
+    b.jp_c("GW_COUNT_DONE")            # no such edge: the answer is zero
+    b.ld_hl_mem_label("GW_LOW")
+    b.ld_mem_label_hl("GW_MID")
+
+    b.label("GW_COUNT_LP")
+    b.ld_hl_mem_label("GW_MID")        # off the end of the table
+    b.ld_de_nn(num_edges)
+    b.or_a()
+    b.sbc_hl_de()
+    b.jp_nc("GW_COUNT_DONE")
+    b.call("GW_FETCH")
+    b.call("GW_SAME")
+    b.jp_nz("GW_COUNT_DONE")           # a different key: the run has ended
+    b.ld_hl_mem_label("GW_TALLY")
+    b.inc_hl()
+    b.ld_mem_label_hl("GW_TALLY")
+    b.ld_hl_mem_label("GW_MID")
+    b.inc_hl()
+    b.ld_mem_label_hl("GW_MID")
+    b.jp("GW_COUNT_LP")
+
+    b.label("GW_COUNT_DONE")
+    b.or_a()
+    b.ret()
+
     # --- GW_TYPESET: A = type id -> GW_TYPEAT, GW_TYPEN from the card's table.
     b.label("GW_TYPESET")
     # Widen the kind byte to 24 bits through a zeroed cell: there is no
@@ -369,11 +425,22 @@ def emit_walk(b: EZ80Builder, num_edges: int, types_at: int, num_types: int,
     b.ld_mem_label_hl("GW_STEPS")
     b.cp_n(PLAIN)
     b.jp_z("GW_FOLLOW_PLAIN")
+    b.cp_n(COUNT)
+    b.jp_z("GW_FOLLOW_COUNT")
 
     b.call("GW_TYPESET")               # a climb: point at that type's ids
     b.call("GW_CLIMBTO")
     b.ret_c()
     b.jp("GW_FOLLOW_LP")
+
+    # A count ends the walk whatever `GW_LEFT` says: the answer is a number,
+    # and there is nowhere to hop from a number. Carry clear, tally in
+    # GW_TALLY, and the caller reads it because the path said the last step
+    # was a count - `libgraphcard.counts` is the same test in Python.
+    b.label("GW_FOLLOW_COUNT")
+    b.call("GW_COUNT")
+    b.or_a()
+    b.ret()
 
     b.label("GW_FOLLOW_PLAIN")
     b.call("GW_HOP")

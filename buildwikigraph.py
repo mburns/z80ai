@@ -87,6 +87,20 @@ def paths_for(phrases: list[str], relations: list[str],
             continue
         steps: list[tuple[int, int]] = []
         for word in phrase.lower().split():
+            if word.startswith(libgraph.COUNT):
+                # A count tallies the records pointing *at* here, so it reads
+                # the reverse table and always carries INVERSE. It also ends
+                # the path - there is nowhere to hop from a number - and
+                # `paths_for` does not enforce that, because a phrase that put
+                # a step after one would be a phrase somebody wrote wrongly
+                # rather than a corpus this cannot walk.
+                relation = word[len(libgraph.COUNT):]
+                if relation in relations:
+                    steps.append((relations.index(relation)
+                                  | libgraphcard.INVERSE, libgraphcard.COUNT))
+                    continue
+                steps = []
+                break
             if word in libgraph.CLIMB:
                 relation, kind = libgraph.CLIMB[word]
                 if relation in relations and kind in types:

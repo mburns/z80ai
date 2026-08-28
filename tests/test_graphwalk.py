@@ -118,8 +118,20 @@ def harness(card, steps: list[tuple[int, int]], subject: int,
     b.call("GW_FOLLOW")
     b.jp_c("NOWHERE")
 
-    # Print the id it reached, as decimal, so the test can read it back.
+    # Print the id it reached, as decimal, so the test can read it back. A
+    # count leaves a number rather than an id, and the harness finds that out
+    # the way the program does: the kind byte behind GW_STEPS.
+    b.ld_hl_mem_label("GW_STEPS")
+    b.dec_hl()
+    b.ld_a_hl()
+    b.cp_n(libgraphcard.COUNT)
+    b.jp_z("TALLY")
     b.ld_hl_mem_label("GW_HERE")
+    b.call("PRDEC")
+    b.jp("DONE")
+
+    b.label("TALLY")
+    b.ld_hl_mem_label("GW_TALLY")
     b.call("PRDEC")
     b.jp("DONE")
 
@@ -430,3 +442,72 @@ def test_forward_and_inverse_do_not_confuse_their_tables(graph):
     assert walk_on_device(graph, back, doc["Warsaw"]) == str(doc["Marie Curie"])
     # ...and each is nowhere in the other direction.
     assert walk_on_device(graph, back, doc["Marie Curie"]) == "NOWHERE"
+
+
+# --- counting on the machine --------------------------------------------------
+
+
+def _count(rid, relation):
+    return [(rid[relation] | libgraphcard.INVERSE, libgraphcard.COUNT)]
+
+
+def test_a_count_agrees(graph):
+    """Five things sit in England: Hampshire, London and three fillers."""
+    _card, _path, doc, rid, _titles, _db = graph
+    device, reference = both(graph, _count(rid, "located_in"), doc["England"])
+    assert device == reference == "5"
+
+
+def test_a_count_of_one_agrees(graph):
+    _card, _path, doc, rid, _titles, _db = graph
+    device, reference = both(graph, _count(rid, "born_in"), doc["Warsaw"])
+    assert device == reference == "1"
+
+
+def test_a_count_of_nothing_is_zero_and_not_nowhere(graph):
+    """The difference the walk has to preserve. Nobody was born in England
+    directly, and the honest answer is none - not the article list, which is
+    what a carry return would have got."""
+    _card, _path, doc, rid, _titles, _db = graph
+    device, reference = both(graph, _count(rid, "born_in"), doc["England"])
+    assert device == reference == "0"
+
+
+def test_every_object_counts_the_same_on_both(graph):
+    """The scan runs forward from a lower bound, so an off-by-one at either
+    end of a run is a number that is still a plausible number."""
+    _card, _path, doc, rid, _titles, db = graph
+    for (title,) in db.execute("SELECT title FROM article WHERE source = 'w'"):
+        for relation in rid:
+            device, reference = both(graph, _count(rid, relation), doc[title])
+            assert device == reference, f"{relation} into {title}"
+
+
+def test_a_count_after_a_climb_agrees(graph):
+    """A count ends a path but need not start one: "how many places are in the
+    country Jane Austen was born in" is a climb and then a tally."""
+    card, _path, doc, rid, _titles, _db = graph
+    country = card.type_names.index("country")
+    steps = [(rid["born_in"], libgraphcard.PLAIN),
+             (rid["located_in"], country),
+             (rid["located_in"] | libgraphcard.INVERSE, libgraphcard.COUNT)]
+    device, reference = both(graph, steps, doc["Jane Austen"])
+    assert device == reference == "5"      # Steventon -> Hampshire -> England
+
+
+def test_a_count_ends_the_walk_whatever_is_left(graph):
+    """`GW_LEFT` still says one step remains. There is nowhere to hop from a
+    number, so the count returns rather than falling back into the loop."""
+    _card, _path, doc, rid, _titles, _db = graph
+    steps = [(rid["located_in"] | libgraphcard.INVERSE, libgraphcard.COUNT),
+             (rid["born_in"], libgraphcard.PLAIN)]
+    assert walk_on_device(graph, steps, doc["England"]) == "5"
+
+
+def test_a_forward_count_reads_the_forward_table(graph):
+    """`CardGraph.count` is the reverse direction by name, and `follow` used
+    it for both. Hampshire is in one place and holds one."""
+    _card, _path, doc, rid, _titles, _db = graph
+    steps = [(rid["located_in"], libgraphcard.COUNT)]
+    device, reference = both(graph, steps, doc["Hampshire"])
+    assert device == reference == "1"

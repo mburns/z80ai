@@ -57,6 +57,31 @@ HEADER = struct.Struct("<6sBBIIIIIII")
 PLAIN = 0xFF
 STEP = struct.Struct("<BB")
 
+#: `kind` for a step that **tallies** the records instead of following one.
+#: "How many children does X have" counts `child_of` rows pointing at X, so a
+#: count always reads the reverse table and always carries `INVERSE`.
+#:
+#: It is not an aggregate, which is why it fits at all: the reverse table is
+#: sorted, so every record for one object is contiguous. The binary search that
+#: a hop already does finds one of them, and the count is a scan outward from
+#: there - a loop and a counter.
+#:
+#: 0xFE because 0xFF is `PLAIN` and everything below is a type id. This corpus
+#: has fifteen types and Wikipedia has fewer, so the gap is wide; a card with
+#: 254 types would collide, and `build` would have to say so rather than
+#: silently encoding a climb as a count.
+COUNT = 0xFE
+
+
+def counts(steps: list[tuple[int, int]] | None) -> bool:
+    """Whether a path answers with a number rather than a document.
+
+    Both walkers overload their answer this way - `libgraph.follow` returns
+    `str(count(...))` in the same field it otherwise puts an entity name in -
+    so the discriminator has to live in the *path*, which both of them have.
+    """
+    return steps is not None and len(steps) > 0 and steps[-1][1] == COUNT
+
 #: How many times a climb may step before giving up, and the *default* for a
 #: card rather than a property of one: `buildwikisearch --climb-limit` picks
 #: the number a given card is built with, and the walk routine carries it as an
@@ -402,6 +427,19 @@ class CardGraph:
         for index, (step, kind) in enumerate(steps):
             relation = step & RELATION
             hop = self.subjects if step & INVERSE else self.objects
+
+            if kind == COUNT:
+                # Ends the walk: the answer is a tally, and there is nowhere to
+                # hop from a number. Zero is an answer rather than a miss -
+                # "none" is what the question asked, and returning `None` here
+                # would send the machine to the article list instead.
+                #
+                # Counted through `hop` and not `self.count`, which is the
+                # reverse direction by name. The machine reads its table from
+                # the same flag, and hardcoding the reverse here would make the
+                # two disagree on any forward count - silently, with both
+                # answers a plausible number.
+                return len(hop(here, relation, limit=1 << 24)), walked, None
 
             if kind == PLAIN:
                 found = hop(here, relation, limit=1)
