@@ -120,6 +120,28 @@ class Rule:
     once: bool = True
 
 
+@dataclass(frozen=True)
+class Reach:
+    """What `World.reach` found, which is a ceiling rather than a description.
+
+    Every field is a superset of what a player can really bring about - see
+    `World.reach` for the three ways it errs upward and why that direction is
+    the useful one.
+    """
+
+    #: Rooms the player can stand in.
+    rooms: frozenset[int]
+    #: Things that can be in the player's hands.
+    held: frozenset[int]
+    #: Things that can be in a room the player can stand in.
+    present: frozenset[int]
+    #: Flags that can be set.
+    flags: frozenset[int]
+    #: Rules that can fire. Anything outside this is dead code with a story
+    #: attached, which is the bug this whole analysis exists to find.
+    rules: frozenset[int]
+
+
 @dataclass
 class World:
     rooms: list[Room]
@@ -146,6 +168,11 @@ class World:
         kind of bug an author discovers ten minutes in rather than at build
         time.
         """
+        self._check_shape()
+        self._check_rules()
+        self._check_impossible()
+
+    def _check_shape(self) -> None:
         if not self.rooms:
             raise ValueError("a world needs at least one room")
         if len(self.rooms) >= NOWHERE:
@@ -180,8 +207,6 @@ class World:
             raise ValueError("two things share a name, and the parser resolves "
                              "a noun to exactly one")
 
-        self._check_rules()
-
     def _check_rules(self) -> None:
         """Every argument, against what it indexes.
 
@@ -200,6 +225,43 @@ class World:
                 if op not in ACTION_NAMES:
                     raise ValueError(f"rule {number}: no action {op}")
                 self._check_arg(number, ACTION_NAMES[op], op, arg, arg2)
+
+    def _check_impossible(self) -> None:
+        """Rules that can never fire, exactly first and then approximately.
+
+        The two passes are different kinds of claim and are kept apart for
+        that reason. A contradiction is arithmetic - `AT 3` and `AT 5` are one
+        byte compared against two values and the comparison cannot pass twice
+        - and is worth naming precisely. `dead_rules` is a search over an
+        over-approximation, so it says less and says it about more.
+        """
+        portable = sum(1 for t in self.things if t.portable)
+        for number, rule in enumerate(self.rules):
+            rooms = {arg for op, arg in rule.when if op == C_AT}
+            if len(rooms) > 1:
+                raise ValueError(
+                    f"rule {number} needs the player in rooms "
+                    f"{sorted(rooms)} at once")
+            set_flags = {arg for op, arg in rule.when if op == C_FLAG}
+            clear_flags = {arg for op, arg in rule.when if op == C_NFLAG}
+            if both := set_flags & clear_flags:
+                raise ValueError(f"rule {number} needs flag {min(both)} both "
+                                 f"set and clear")
+            carried = {arg for op, arg in rule.when if op == C_HAVE}
+            here = {arg for op, arg in rule.when if op == C_HERE}
+            if both := carried & here:
+                thing = self.things[min(both)]
+                raise ValueError(
+                    f"rule {number} needs {thing.name!r} carried and in the "
+                    f"room, and a thing is in one place")
+            for op, arg in rule.when:
+                if op == C_CARRYING and arg > portable:
+                    raise ValueError(
+                        f"rule {number}: CARRYING {arg}, and only {portable} "
+                        f"of {len(self.things)} things can be picked up")
+
+        for number, why in self.dead_rules():
+            raise ValueError(f"rule {number} can never fire: {why}")
 
     def _check_arg(self, number: int, name: str, op: int, arg: int,
                    arg2: int = 0) -> None:
@@ -239,9 +301,10 @@ class World:
         return (1 + max(1, len(self.things)) + self.flags
                 + max(1, len(self.rules)))
 
-    def reachable(self) -> set[int]:
+    def reachable(self, start: int | None = None) -> set[int]:
         """Rooms reachable from the start, for the check nobody runs by hand."""
-        seen, queue = {self.start}, [self.start]
+        first = self.start if start is None else start
+        seen, queue = {first}, [first]
         while queue:
             room = self.rooms[queue.pop()]
             for target in room.exits.values():
@@ -249,3 +312,116 @@ class World:
                     seen.add(target)
                     queue.append(target)
         return seen
+
+    # --- what a player can get to, which is not the same as what exists ------
+
+    def reach(self) -> Reach:
+        """Everything a player could ever bring about, over-approximated.
+
+        The one property that matters is the direction of the error: this set
+        is a **superset** of what is really attainable, so a rule outside it is
+        certainly dead and a rule inside it is only probably live. That is the
+        useful direction. An analysis that under-approximated would report
+        locked doors that are not locked, which an author would learn to
+        ignore, and an analysis that claimed to be exact would be lying - the
+        turn loop's state space is every arrangement of every thing.
+
+        Three deliberate over-approximations, each of which drops a way the
+        world can go *backwards*:
+
+        - `A_CLEAR` is ignored, so a flag once settable stays settable.
+        - `C_NFLAG` always holds, because every flag is clear on turn one and
+          a rule may fire then. This is why an `NFLAG` condition can never be
+          what makes a rule dead.
+        - a thing is treated as being everywhere it could ever be at once,
+          rather than in one place at a time.
+
+        The fixpoint is monotone under all three, so it terminates.
+        """
+        rooms = self.reachable()
+        # Where each thing might be. `CARRIED` is a place like any other here,
+        # which is what lets `A_MOVE thing CARRIED` feed `C_HAVE`.
+        at: list[set[int]] = [{thing.at} for thing in self.things]
+        flags: set[int] = set()
+        fired: set[int] = set()
+
+        while True:
+            held = {t for t, places in enumerate(at)
+                    if CARRIED in places
+                    or (self.things[t].portable and places & rooms)}
+            present = {t for t, places in enumerate(at) if places & rooms}
+            before = (len(rooms), sum(len(p) for p in at), len(flags),
+                      len(fired))
+
+            for number, rule in enumerate(self.rules):
+                if number in fired:
+                    continue
+                if not all(self._holds(op, arg, rooms, held, present, flags)
+                           for op, arg in rule.when):
+                    continue
+                fired.add(number)
+                for op, arg, arg2 in rule.then:
+                    if op == A_SET:
+                        flags.add(arg)
+                    elif op == A_GOTO:
+                        rooms |= self.reachable(arg)
+                    elif op == A_MOVE:
+                        at[arg].add(arg2)
+
+            after = (len(rooms), sum(len(p) for p in at), len(flags),
+                     len(fired))
+            if after == before:
+                return Reach(frozenset(rooms), frozenset(held),
+                             frozenset(present), frozenset(flags),
+                             frozenset(fired))
+
+    def _holds(self, op: int, arg: int, rooms: set[int], held: set[int],
+               present: set[int], flags: set[int]) -> bool:
+        if op == C_AT:
+            return arg in rooms
+        if op == C_HAVE:
+            return arg in held
+        if op == C_HERE:
+            return arg in present
+        if op == C_FLAG:
+            return arg in flags
+        if op == C_CARRYING:
+            return len(held) >= arg
+        return True                      # C_NFLAG; see `reach`
+
+    def dead_rules(self) -> list[tuple[int, str]]:
+        """Rules no play of this world can ever fire, and the reason.
+
+        This is the locked-key bug in the only form it can be seen in: a key
+        behind the door it opens is not a wrong table entry, it is a rule whose
+        conditions never all hold, and nothing about the emitted binary says
+        so. The game runs, and the ending is simply never reached.
+        """
+        got = self.reach()
+        dead = []
+        for number, rule in enumerate(self.rules):
+            if number in got.rules:
+                continue
+            why = next((self._why_not(op, arg, got) for op, arg in rule.when
+                        if not self._holds(op, arg, set(got.rooms),
+                                           set(got.held), set(got.present),
+                                           set(got.flags))),
+                       "its conditions cannot hold together")
+            dead.append((number, why))
+        return dead
+
+    def _why_not(self, op: int, arg: int, got: Reach) -> str:
+        if op == C_AT:
+            return f"room {arg} ({self.rooms[arg].name!r}) cannot be reached"
+        if op == C_HAVE:
+            thing = self.things[arg]
+            if not thing.portable:
+                return f"thing {arg} ({thing.name!r}) is not portable"
+            return f"thing {arg} ({thing.name!r}) cannot be picked up"
+        if op == C_HERE:
+            return (f"thing {arg} ({self.things[arg].name!r}) is never in a "
+                    f"room that can be reached")
+        if op == C_FLAG:
+            return f"flag {arg} is never set"
+        return (f"{arg} things cannot be carried at once; only "
+                f"{len(got.held)} can ever be picked up")
