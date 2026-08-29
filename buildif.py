@@ -47,7 +47,10 @@ MAX_INPUT_LEN = 60
 #: The longest word either table holds, plus room to notice an over-long one.
 #: `INVENTORY` is nine; a player who types more gets it truncated and then
 #: named back at them, which is a legible failure rather than a wrong verb.
-MAX_WORD_LEN = 12
+#:
+#: Defined in `libworld` because it also bounds what an author may *name* a
+#: thing, and `World.check` is where they find that out.
+MAX_WORD_LEN = libworld.MAX_WORD_LEN
 
 #: Room row: name pointer, description pointer, then one byte an exit.
 ROOM_STRIDE = 3 + 3 + len(DIRECTIONS)
@@ -65,6 +68,12 @@ V_QUIT = V_INVENTORY + 1
 #: Only the merged build can act on it; the standalone world says there is no
 #: terminal here, which is true of every room in it.
 V_USE = V_QUIT + 1
+#: The verb that reads a thing's description. Every thing row has carried a
+#: pointer to one since this file was written and nothing ever printed it - the
+#: text was emitted into the image, indexed, and unreachable. This is the
+#: cheaper of the two ways to resolve that; the other was to stop emitting it,
+#: and `worlds.py` had already written four descriptions worth reading.
+V_EXAMINE = V_USE + 1
 
 #: Stack margin below the top of SRAM, matching every other Agon build here.
 STACK_MARGIN = 0x1000
@@ -87,7 +96,9 @@ def _words(world: World) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
               ("DROP", V_DROP), ("PUT", V_DROP),
               ("INVENTORY", V_INVENTORY), ("I", V_INVENTORY),
               ("QUIT", V_QUIT), ("Q", V_QUIT),
-              ("USE", V_USE), ("CONSULT", V_USE), ("ASK", V_USE)]
+              ("USE", V_USE), ("CONSULT", V_USE), ("ASK", V_USE),
+              ("EXAMINE", V_EXAMINE), ("X", V_EXAMINE),
+              ("READ", V_EXAMINE)]
 
     nouns = [(thing.name.upper(), index)
              for index, thing in enumerate(world.things)]
@@ -181,6 +192,8 @@ def emit_dispatch(b: EZ80Builder, quit_label: str) -> None:
     b.jp_z("DO_DROP")
     b.cp_n(V_USE)
     b.jp_z("DO_USE")
+    b.cp_n(V_EXAMINE)
+    b.jp_z("DO_EXAM")
     b.jp("DO_GO")                    # below LOOK: the id is a direction
 
     b.label("DO_LOOK")
@@ -609,6 +622,33 @@ def _emit_take_drop(b: EZ80Builder, world: World) -> None:
 
     b.label("TK_HAVENOT")
     b.ld_hl_label("MSGHAVENOT")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("TURN")
+
+    # DO_EXAM: the thing's description, which is offset 3 of its row.
+    #
+    # Carried or in the room, both - a player who has picked something up has
+    # not stopped being able to look at it, and refusing there would be a
+    # distinction the game made and nothing else did.
+    b.label("DO_EXAM")
+    b.call("NOUNID")
+    b.jp_c("BADNOUN")
+    b.ld_c_a()
+    b.call("WHEREPTR")
+    b.ld_a_hl()
+    b.cp_n(CARRIED)
+    b.jp_z("EX_SHOW")
+    b.ld_hl_label("HERE")
+    b.cp_hl()
+    b.jp_nz("TK_ABSENT")
+
+    b.label("EX_SHOW")
+    b.ld_a_c()
+    b.call("THINGROW")
+    b.ld_de_nn(3)
+    b.add_hl_de()
+    b.call("LDPTR")
     b.call("PRWRAP")
     b.call("PRNL")
     b.jp("TURN")

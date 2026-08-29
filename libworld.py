@@ -48,6 +48,12 @@ ALIASES: dict[str, str] = {
     "U": "UP", "D": "DOWN",
 }
 
+#: The longest word the parser will hold, and therefore the longest a thing can
+#: be named. Here rather than in `buildif` for the same reason `ALIASES` is: it
+#: is a fact about the vocabulary a world may use, which an author has to obey
+#: while writing one and `World.check` is what tells them so.
+MAX_WORD_LEN = 12
+
 #: No exit that way. 255 rooms is the limit a one-byte room id implies, and a
 #: world that wants more wants a different overlay rather than a wider table.
 NOWHERE = 0xFF
@@ -202,10 +208,42 @@ class World:
                 raise ValueError(f"{thing.name!r} starts in room {thing.at}, "
                                  f"which does not exist")
 
+        self._check_names()
+
+    def _check_names(self) -> None:
+        """A thing's name against what the parser can actually match.
+
+        `SPLIT` takes two words and no more and stops copying either at
+        `MAX_WORD_LEN`, so a thing whose name is two words or thirteen
+        characters is one the player cannot name. Nothing said so until this
+        existed, and the failure is a quiet one twice over: the build succeeds,
+        and `DESCRIBE` then lists the thing in the room every turn - so the
+        player is told they can see something, types its name, and is told the
+        game does not know the word.
+
+            > take identification
+            I do not know the word 'IDENTIFICATI'.
+
+        The truncation in that reply is `SP_ONE` stopping at twelve, which is
+        the only evidence on the screen that the world was built wrong rather
+        than the player spelling it wrong.
+        """
         names = [t.name.upper() for t in self.things]
         if len(set(names)) != len(names):
             raise ValueError("two things share a name, and the parser resolves "
                              "a noun to exactly one")
+
+        for thing in self.things:
+            if len(thing.name.split()) != 1:
+                raise ValueError(
+                    f"{thing.name!r} is not one word, and a command is a verb "
+                    f"and at most one noun")
+            if len(thing.name) > MAX_WORD_LEN:
+                raise ValueError(
+                    f"{thing.name!r} is {len(thing.name)} characters and the "
+                    f"parser holds {MAX_WORD_LEN}, so it would be matched "
+                    f"against {thing.name.upper()[:MAX_WORD_LEN]!r} and never "
+                    f"found")
 
     def _check_rules(self) -> None:
         """Every argument, against what it indexes.
