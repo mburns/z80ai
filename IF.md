@@ -31,10 +31,10 @@ Taken.
 
 That is the whole reason this is a separate program from the search card.
 
-| | a question | a turn |
-|---|---:|---:|
-| card bytes | ~4,600 | **0** |
-| instructions | ~370,000 | **~3,400** |
+| | a question | a move | asking a person |
+|---|---:|---:|---:|
+| card bytes | ~4,600 | **0** | **0** |
+| instructions | ~370,000 | ~4,700 | ~7,000 |
 
 The oracle's figures are fine for a question and hopeless for a step. A player
 takes a step every few seconds and most steps are `DOWN`, so a move has to be
@@ -42,6 +42,20 @@ free, and the only way it is free is if nothing about it touches the card.
 
 So the world is tables in the image and a small mutable overlay in RAM. Nothing
 is read, because there is nothing to read: it is all already there.
+
+**Talking is in the same column as walking, and that was the design
+constraint.** A game about asking questions in which asking a person cost what
+asking the archive costs would be a game nobody talked in - so a person is a
+table in the image and answers for nothing, and the card is reserved for the
+one thing that is supposed to feel expensive.
+
+The parser grew a third word slot and a noise-word table, so every command now
+pays a table scan per word that it did not before. Measured on the same world
+either side of the change, a move went from **4,603 instructions to 4,746** —
+143 instructions, about 3%, to buy `ASK MARNES ABOUT ALLISON` and `TAKE THE
+LEDGER`. It was worth checking rather than assuming; a scan per word per turn
+sounds like it should cost more than that, and the reason it does not is that
+the noise table has seven entries and most commands are two words.
 
 ## The parser is a word table, and that was measured
 
@@ -86,6 +100,23 @@ was built wrong rather than the player spelling it wrong. `World.check()` now
 refuses both, and `libworld.MAX_WORD_LEN` is where the limit lives because it
 bounds what an author may write as much as what the parser may read.
 
+That limit now covers a person's name and a topic's words too, for the same
+reason and with the same message: both are looked up in the same `LOOKUP` over
+the same twelve-character slots.
+
+### Three words, and a table of the ones that mean nothing
+
+`ASK MARNES ABOUT ALLISON` is four words and the shortest natural phrasing of
+the only command that names two things. So the splitter fills three slots and
+drops the noise between them — `ABOUT`, `THE`, `A`, `AN`, `TO`, `AT`, `FOR` —
+by looking each word up in a table and writing over it if it hits.
+
+Dropping them in the splitter rather than in `DO_ASK` is what keeps the count
+at three. Every natural wording puts a preposition between the person and the
+topic, so either the splitter loses it or every slot in the program widens by
+one to carry a word only one command ever uses. It pays for itself elsewhere
+too: `TAKE THE LEDGER` now works, and did not before.
+
 The model is not wrong there in a way more training would fix. It is being
 asked a question with no answer and returning its best guess, because that is
 the only thing it can do.
@@ -98,14 +129,32 @@ the only thing it can do.
 | `things` | name, description, where it starts, portable — 8 bytes, in the image |
 | a thing's name | **one word, at most `MAX_WORD_LEN`** — the parser's limit, not a style rule |
 | `SUBJECTS` | one pointer a thing, to the line `CONSULT` types at the archive — in the image |
+| `people` | description, default line, where they start — 7 bytes, in the image |
+| `lines` | person, topic, gate, flag to set, text — 7 bytes, in the image |
 | `HERE` | the room the player is in — **1 byte, in RAM** |
 | `WHERE[]` | where each thing is now — **1 byte each, in RAM** |
 | `FLAGS[]` | one bit a proposition — **in RAM** |
+| `ASKED[]` | what has been asked about — **1 byte a topic, in RAM** |
+| `HEAT` | how much attention that has cost — **1 byte, in RAM** |
+| `PWHERE[]` | where each person is now — **1 byte each, in RAM** |
 
-Only the last three change. The image is identical on every copy, so a saved
-game is the overlay and nothing else: **13 bytes** for this world, one
+Only the bottom six change. The image is identical on every copy, so a saved
+game is the overlay and nothing else: **13 bytes** for the six-room world as it
+was, **85** for the mystery with its four people and five topics, one
 contiguous run so that writing it is a single `mos_fwrite` rather than three
 and a format.
+
+`ASKED` is inside that run rather than beside it, and the reason is not
+symmetry. A restore that put the player back on the stair but forgot what they
+had already been told would re-explain everything and fire every `C_ASKED`
+rule a second time — a worse bug than losing the save, because it looks like
+the game working.
+
+It is also the one thing in the overlay that only grows. No action clears it
+and no opcode could: `A_CLEAR` can put a flag back, and a mystery whose record
+of what the player has learned can be rewound is not a fair one. Monotone
+state is enforced by there being no instruction for the alternative rather
+than by nobody having written one.
 
 `mos_fwrite` itself is in `libhost` and tested; the eZ80 side of save and
 restore is the next item on #62 and is not here yet.
@@ -120,12 +169,26 @@ A world binary does not share that map. It has no accumulator, no unpacking
 buffers and no classifier, so:
 
 ```
-SILO.bin  3,124 bytes   6 rooms, 4 things
-  overlay 13 bytes - the whole saved game
-  image ends at 040C34h, 517,068 bytes of SRAM unused
+SILO.bin  4,713 bytes   6 rooms, 4 things, 0 people, 0 lines
+  overlay 76 bytes - the whole saved game
+  image ends at 041269h, 515,479 bytes of SRAM unused
+  108 reachable states
 ```
 
-**505 KB**, not 388. The two programs were always going to be separate
+**503 KB**, not 388.
+
+This file quoted 3,124 bytes and 13 of overlay for the same six rooms, and
+both had drifted before any of this: the tree built 4,242 bytes and 73 of
+overlay immediately before the change that added people. Measured against
+that rather than against the prose, **people, topics, attention and the third
+word slot cost this world 471 bytes and 3 bytes of overlay** — and it has
+nobody to ask and nothing to ask about, so that is the price of the machinery
+existing at all rather than of anything in `worlds.py`.
+
+The lesson is the smaller one and worth writing down: a number in a document
+is not a measurement, and the delta that matters was 471 rather than the 1,589
+the stale figure would have implied. Both are nothing against half a megabyte
+spare. Only one of them is true. The two programs were always going to be separate
 binaries and the estimate quietly assumed one. What the 388 KB figure is
 actually about is a world that lives *inside* the oracle card's program, which
 is the "terminal found in the world" item and a different arrangement.
@@ -156,6 +219,13 @@ once per rule and never iterates, so "the oldest person on X's crew" is exactly
 as far out of reach as it was. Closing it wants a loop opcode, which is a
 different instrument and a bigger one.
 
+**And a fair-play mystery does not want it.** Ranking a set is what the
+*player* does; the machine serves the clues and checks one answer. `ACCUSE
+<person>` is a byte compare, and the deduction happens in a head the hardware
+does not have to model. The division of labour the eZ80 forces turns out to be
+the one the genre already wanted — a librarian, not a detective — which is why
+the loop opcode is still not here and is no longer the obvious next thing.
+
 ```
 > take badge
 > take wrench
@@ -174,6 +244,224 @@ than a bit**: bits are eight times smaller and want a shift and a mask at four
 call sites, and there is half a megabyte of SRAM spare — the sixty bytes are
 not worth four places to be wrong, and a restore that replayed every event the
 player had already seen would be the bug that saved them.
+
+## The question is the plot
+
+Three of the four shapes a path cannot express were closed by a condition
+list. The one the condition list could not reach at any length is not
+aggregation — it is *what the player wanted to know*, which was not state at
+all until now.
+
+```
+> ask jahns about allison
+Jahns looks at the screen rather than at you. 'She went out. That is the
+whole of the record and it is enough.'
+Jahns does not answer that one. She looks at you for a moment longer than
+she needs to, and then back at the hills.
+```
+
+The second paragraph is a rule, and its conditions are `ASKED allison` and
+`WITH jahns`. Neither is a fact about the map or the inventory. Together they
+are a question and who was standing there when it was asked, which is the
+first thing in this program that the card could not have been asked and the
+map could not have recorded.
+
+| | | |
+|---|---|---|
+| `C_ASKED n` | topic `n` has come up | of the archive **or** of a person |
+| `C_HEAT n` | attention stands at `n` or above | one byte, saturating |
+| `C_WITH n` | person `n` is in the room | |
+| `A_HEAT n` / `A_COOL n` | attention up and down | |
+| `A_SEND p r` | move a person | not `A_MOVE`: a person is not a thing |
+
+Both directions of the counter exist because a world with only `A_HEAT` is one
+the player can only lose. There has to be somewhere to lie low, or the counter
+is a countdown wearing a different name.
+
+It saturates at both ends rather than wrapping. 200 and 200 is 255, not 144 —
+a counter that rolled over would hand the player an escape from every
+consequence by asking enough questions, which is exactly backwards.
+
+### One table, two ways of asking
+
+A topic is one index whether it is put to a person or to the card. That is the
+point rather than a saving: a player who reads the incident report about the
+cistern pump and a player who asks Knox about it have learned the same thing,
+and a world that recorded those separately would need every rule written
+twice.
+
+### Why the hook is the document, not the classifier
+
+The obvious place to notice a question is where the question is understood.
+It is the wrong place, and the repository already has the number that says so.
+
+`liboracle` gets the relation right **84.0%** of the time on phrasings the
+model has not seen. A plot that advanced only when the classifier agreed would
+stall one turn in six, for a reason the player cannot see and cannot act on —
+which is not an unreliable oracle, it is a broken one.
+
+The *document* is not a guess in the same way. BM25 over titles resolves the
+entity without help, and `liboracle.entity` says why: the mention carries the
+rare words while the frame around it — "where was", "who wrote" — is common
+enough that idf discounts it to nothing. So `NOTICE` hangs the plot off which
+article was reached, which is the reliable half of the machine, and leaves the
+classifier doing the job it is actually measured at.
+
+That is the whole of the wiring: one scan of a table of `(article, topic,
+attention, seal)` rows, between the search and the answer.
+
+## A record that declines, and declines the same way twice
+
+```
+archive> pump
+Incident Report 214-11: Cistern Pump Failure
+The cistern pump on Level 142 stopped without warning.
+
+archive> allison
+RECORD SEALED BY ORDER OF JUDICIAL. THIS ACCESS HAS BEEN LOGGED.
+```
+
+Unreliability was accidental before this: 54% of Simple English Wikipedia
+articles carry no infobox, so a chain that hops onto one of them stops. That
+is a machine with gaps, and `liboracle` already does the honest thing with it
+by reporting where the walk stopped.
+
+A seal is the other kind, and it is chosen. A topic can carry text the archive
+prints *instead of* the record — and the topic is still marked asked and still
+charged its attention, because the refusal is the thing the player learned.
+
+`data/silo/plant.py` established the principle for the corpus and this is the
+same one at the terminal: **a record that is wrong in a fixed, discoverable
+way is interesting, and one that is unreliable at random is noise.** A stable
+lie is a clue. That is also the fair-play contract, and it is worth stating as
+a rule rather than a hope — the archive may decline, but when it states a fact
+that fact holds, except where it has been sealed and says so.
+
+## Fair play, checked rather than promised
+
+A fair-play mystery makes a promise the author cannot keep by reading their
+own source: that the ending can be reached, and that every clue it rests on
+can be found first. The state space is where that promise lives, so it is
+checked there.
+
+```bash
+python buildif.py --world mystery -o MYST.bin
+```
+```
+MYST.bin  7,335 bytes   6 rooms, 4 things, 4 people, 8 lines
+  overlay 85 bytes - the whole saved game
+  30,688 reachable states
+  solved in 6: down, ask marnes about allison, down, take badge, east,
+               ask walk about allison
+```
+
+`World.explore` walks the game rather than the map. A state is where the
+player is, what everything is holding, which flags are set, which rules have
+fired, what has been asked and what that cost. Every command is an edge.
+
+**It models the device rather than an idealisation of it.** Rules are one pass
+a turn, not a fixpoint, because `RULES_RUN` walks the table once and a rule
+made true by a later rule does not fire until the next turn. `LOOK` is
+therefore a move — it is the turn that costs nothing and lets a cascade finish
+— and a walkthrough that needs one will contain one. That fidelity is what
+makes `test_the_mystery_can_be_won` meaningful: it takes the solver's own
+answer and plays it through the emulator, and the two have to agree.
+
+### The reduction that makes it finish, and why it is sound
+
+The first run of this did not finish. The state space is dominated by
+inventory permutations: three portable things in six rooms multiplies
+everything else by 343.
+
+Dropping a thing changes exactly three conditions. `C_HAVE` goes false,
+`C_CARRYING` falls, and `C_HERE` goes true. **The first two can only ever stop
+a rule firing, never start one** — so the only way putting something down can
+*open* anything is through a `C_HERE` that names it, and for every other thing
+which floor it is lying on is a distinction the rule language cannot make.
+
+So drops are modelled for exactly the things some `C_HERE` observes. On the
+mystery, which has none, that is the difference between not finishing and
+30,688 states in under a second.
+
+| | states |
+|---|---:|
+| `worlds.silo()` — six rooms, four things | 108 |
+| `worlds_mystery.mystery()` — plus four people, five topics, a counter | 30,688 |
+
+### What it finds
+
+An unwinnable game gets noticed in playtesting. The bugs this is for are the
+quiet ones:
+
+| | |
+|---|---|
+| a goal no state satisfies | the game plays for an hour and cannot be won |
+| a line behind a gate nothing sets | reads as the author cheating |
+| a room, thing or person nothing reaches | authored content nobody can see |
+| **a rule no state fires** | no error, no output, nothing to notice at all |
+
+The last one is not hypothetical. A rule in `worlds_mystery` was written to
+charge attention for reading a sealed record and keyed on a flag that nothing
+set. It had no error and no symptom, and this is what found it.
+
+`libworld.World.check` catches the rest before anything is emitted — a person
+standing in a room that does not exist, two topics claiming one word, a
+person with no default line, and the one that actually gets made: an ungated
+line written *above* a gated one for the same pair, so the fallback always
+wins and the specific line can never be spoken.
+
+## People are a table, and the table is the oracle's shape
+
+```
+> ask walk about allison
+'Allison who,' says Walk, in the voice of somebody who knows exactly which
+Allison.
+
+> ask marnes about allison
+'She was IT,' says Marnes, and puts the cup down.
+
+> ask walk about allison
+The boots go still. 'She fitted the landing screen the week before. On her
+own. You have read the order on that wall.'
+```
+
+Three lookups and a linear scan over `(person, topic, gate, sets, text)` rows,
+first match wins. That is the oracle's own shape — resolve the subject,
+resolve what is being asked, look it up — at a hundredth of the cost, because
+the table is in the image and the card is not touched.
+
+Ordering is the whole of the conditional mechanism. The author writes the most
+specific line first; there is no condition list on a line, because a line that
+needed one is a rule.
+
+`sets` is how a conversation teaches the world something. `C_ASKED` records
+that a subject came up; `sets` records that a *particular person answered it*,
+which is the difference between having raised a name and having been told
+something. In the transcript above it is what makes the third command print a
+different sentence from the first.
+
+### Every person needs a refuse class
+
+```
+> ask knox about allison
+'Down here we fix what is in front of us,' says Knox. 'You want somebody who
+reads.'
+```
+
+That is the person's default line, and it is not optional — `check` refuses a
+person without one. It is the same finding as the parser's, in a voice: a
+model asked about a word it was never given answers with a confident `OK`, and
+a person who answered confidently about a topic the author never considered is
+worse, because the player cannot tell invention from testimony and will act on
+it. A deflection in character is worth more than a guess.
+
+### A person is not a `Thing` with `portable=False`
+
+It would have saved eight bytes. A thing that cannot be carried is scenery and
+is listed as "You can see screen."; a person is listed by the sentence that
+puts them in a room, is asked rather than taken, and moves under `A_SEND`
+rather than `A_MOVE` — so nothing can pick one up. Sharing the table would
+have cost every message that mentions one.
 
 ## The card, standing in a room
 
@@ -410,6 +698,19 @@ Some contradictions are exact rather than searched — `AT 3` with `AT 5`,
 `FLAG 2` with `NFLAG 2`, and `HAVE k` with `HERE k`, which reads as a plausible
 sentence and is impossible because `where[k]` is `CARRIED` *or* a room.
 
+## What a world costs the oracle binary, re-measured
+
+| | bytes | |
+|---|---:|---:|
+| the search program, no world | 4,812 | |
+| carrying `worlds.silo()` | 9,246 | +4,434 |
+| carrying `worlds_mystery.mystery()` | 12,047 | +7,235 |
+
+The first delta is the figure this file already claimed — a world costs the
+oracle binary under 5 KB — and it still holds. The second is what people,
+topics, dialogue and the attention counter add on top, and most of it is
+prose rather than code.
+
 ## What it does not do yet
 
 No daemons, no containers, no ranking, and no save and restore on the device -
@@ -420,5 +721,26 @@ here has ever told the terminal anything.
 People are still not `Thing`s and cannot be: `where[]` is a byte apiece, which
 would turn a 13-byte save into 10 KB. They stay on the card and are reached
 through the objects that name them.
+
+`libworld.Person` does not change that arithmetic and is not an attempt to.
+A `Person` is an authored character with lines written for them, and four of
+them cost four bytes of overlay; the corpus's ten thousand are records, and
+they stay on the card where they can be read and not carried. The two are
+different kinds of thing that the word "person" happens to cover, and the
+resident one is bounded by how much dialogue anybody writes rather than by how
+large the silo is.
+
+Attention is not shown to the player. It moves the world and the player infers
+it from boots on the stair, which is the right register for this fiction and
+is also the reason there is no status line to put it on.
+
+`C_ASKED` tests a topic against zero. The count is stored, because the byte is
+spent either way and a threshold opcode would want it already there, but
+nothing exposes it — "asked three times" is one `cp` away and has not been
+needed.
+
+The state search grows with the flags a world actually uses, and `explore`
+raises rather than guesses when it passes 200,000 states. Three hundred rooms
+would want a different instrument; six and four people want this one.
 
 Those are what is left of #62's second scope.
