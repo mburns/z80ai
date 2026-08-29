@@ -59,6 +59,22 @@ MAX_WORD_LEN = libworld.MAX_WORD_LEN
 ROOM_STRIDE = 3 + 3 + len(DIRECTIONS)
 #: Thing row: name pointer, description pointer, starting place, portable.
 THING_STRIDE = 3 + 3 + 1 + 1
+#: Person row: description pointer, default-line pointer, starting room.
+#: There is no name pointer - a person's name is only ever typed, never
+#: printed, because the description is the sentence that puts them in a room.
+PERSON_STRIDE = 3 + 3 + 1
+#: Dialogue row: person, topic, gate flag, flag to set, text pointer.
+LINE_STRIDE = 1 + 1 + 1 + 1 + 3
+
+#: Words dropped between the ones that mean something, so that `ASK MARNES
+#: ABOUT ALLISON` reaches the same three slots as `ASK MARNES ALLISON`.
+#:
+#: Dropping them in the splitter rather than the handlers is what keeps the
+#: slot count at three. `ASK` needs a verb, a person and a topic, and every
+#: natural phrasing of that has a preposition in the middle - so either the
+#: splitter loses it or every command becomes four words wide, and four words
+#: costs `TAKE` and `DROP` a slot neither has ever used.
+NOISE_WORDS: tuple[str, ...] = ("ABOUT", "THE", "A", "AN", "TO", "AT", "FOR")
 
 #: Verb ids, in the order the verb table lists them. Directions come first so
 #: that a verb id below `len(DIRECTIONS)` *is* the direction index.
@@ -77,6 +93,13 @@ V_USE = V_QUIT + 1
 #: cheaper of the two ways to resolve that; the other was to stop emitting it,
 #: and `worlds.py` had already written four descriptions worth reading.
 V_EXAMINE = V_USE + 1
+#: Ask a *person* about a topic. `ASK` was an alias for `USE` and is not any
+#: more, and `CONSULT <thing>` is why it could stop being one: holding a piece
+#: of paper up to the archive already has a verb, so `ASK` is free to mean the
+#: other way of finding something out. A machine and a person are asked in the
+#: same words and answer out of different tables, and one verb would have had
+#: to guess which was meant.
+V_ASK = V_EXAMINE + 1
 
 #: Stack margin below the top of SRAM, matching every other Agon build here.
 STACK_MARGIN = 0x1000
@@ -99,13 +122,38 @@ def _words(world: World) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
               ("DROP", V_DROP), ("PUT", V_DROP),
               ("INVENTORY", V_INVENTORY), ("I", V_INVENTORY),
               ("QUIT", V_QUIT), ("Q", V_QUIT),
-              ("USE", V_USE), ("CONSULT", V_USE), ("ASK", V_USE),
+              ("USE", V_USE), ("CONSULT", V_USE),
               ("EXAMINE", V_EXAMINE), ("X", V_EXAMINE),
-              ("READ", V_EXAMINE)]
+              ("READ", V_EXAMINE),
+              ("ASK", V_ASK), ("TALK", V_ASK)]
 
     nouns = [(thing.name.upper(), index)
              for index, thing in enumerate(world.things)]
     return verbs, nouns
+
+
+def _people_words(world: World) -> list[tuple[str, int]]:
+    """Who can be named. A separate table from the nouns on purpose.
+
+    `libworld.World.check` refuses a word that is both, so nothing here is
+    ambiguous - but the tables stay apart because `TAKE` and `ASK` want
+    different failures. Naming a person to `TAKE` should say the machine does
+    not know the word, not that a deputy is too heavy.
+    """
+    return [(person.name.upper(), index)
+            for index, person in enumerate(world.people)]
+
+
+def _topic_words(world: World) -> list[tuple[str, int]]:
+    """Every word that reaches a topic, flattened out of the topic list.
+
+    One topic has several words because a player types `PUMP` for what the
+    archive files as `Cistern Pump Failure, Level 142`. `check` refuses two
+    topics claiming one word, so this table resolves to exactly one id.
+    """
+    return [(word.upper(), index)
+            for index, topic in enumerate(world.topics)
+            for word in topic.words]
 
 
 def _emit_word_table(b: EZ80Builder, label: str,
@@ -206,6 +254,8 @@ def emit_dispatch(b: EZ80Builder, quit_label: str) -> None:
     b.jp_z("DO_USE")
     b.cp_n(V_EXAMINE)
     b.jp_z("DO_EXAM")
+    b.cp_n(V_ASK)
+    b.jp_z("DO_ASK")
     b.jp("DO_GO")                    # below LOOK: the id is a direction
 
     b.label("DO_LOOK")
@@ -256,6 +306,8 @@ def emit_world_routines(b: EZ80Builder, world: World,
     _emit_subj_row(b)
     _emit_where_ptr(b)
     _ldptr(b)
+    _emit_ask(b, world)
+    _emit_attention(b, world)
     _emit_rules(b, world)
 
 
@@ -298,17 +350,27 @@ def _emit_reset_things(b: EZ80Builder, world: World) -> None:
     The image holds where a thing *starts* and RAM holds where it is, which is
     the whole distinction that makes a saved game the overlay and nothing else.
     """
-    if not world.things:
-        return
-    b.ld_hl_label("INITWHERE")
-    b.ld_de_label("WHERE")
-    b.ld_b_n(len(world.things))
-    b.label("RESET_LP")
-    b.ld_a_hl()
-    b.ld_de_a()
-    b.inc_hl()
-    b.inc_de()
-    b.djnz("RESET_LP")
+    if world.things:
+        b.ld_hl_label("INITWHERE")
+        b.ld_de_label("WHERE")
+        b.ld_b_n(len(world.things))
+        b.label("RESET_LP")
+        b.ld_a_hl()
+        b.ld_de_a()
+        b.inc_hl()
+        b.inc_de()
+        b.djnz("RESET_LP")
+
+    if world.people:
+        b.ld_hl_label("INITPWHERE")
+        b.ld_de_label("PWHERE")
+        b.ld_b_n(len(world.people))
+        b.label("RESETP_LP")
+        b.ld_a_hl()
+        b.ld_de_a()
+        b.inc_hl()
+        b.inc_de()
+        b.djnz("RESETP_LP")
 
 
 def _emit_room_row(b: EZ80Builder) -> None:
@@ -385,32 +447,58 @@ def _emit_upper(b: EZ80Builder) -> None:
 
 
 def _emit_split(b: EZ80Builder) -> None:
-    """INPBUF -> W1/W1LEN and W2/W2LEN, uppercased.
+    """INPBUF -> W1, W2 and W3, uppercased, with the noise words dropped.
 
-    Two words and no more. Everything this understands is a verb and at most
-    one noun, and a third word is a phrasing it will decline by name rather
-    than one it quietly ignores - `PUT KEY IN BOX` is not a command here and
-    saying so is better than doing half of it.
+    Three words, because `ASK MARNES ABOUT ALLISON` is the shortest natural
+    phrasing of the one command that names two things. `TAKE` and `DROP` still
+    read two and a third word to them is a phrasing this declines by name
+    rather than one it quietly does half of.
+
+    The noise words come out in the splitter rather than in `DO_ASK`, which is
+    what keeps the count at three: a preposition sits between the person and
+    the topic in every wording anybody types, so either it is dropped here or
+    every slot in the program widens by one to carry it.
     """
     b.label("SPLIT")
     b.xor_a()
     b.ld_mem_label_a("W1LEN")
     b.ld_mem_label_a("W2LEN")
+    b.ld_mem_label_a("W3LEN")
     b.ld_a_mem_label("INPLEN")
     b.or_a()
     b.ret_z()
     b.ld_b_a()
     b.ld_hl_label("INPBUF")
 
-    b.ld_de_label("W1")
-    b.call("SP_ONE")
-    b.ld_a_c()
-    b.ld_mem_label_a("W1LEN")
-    b.ld_de_label("W2")
-    b.call("SP_ONE")
-    b.ld_a_c()
-    b.ld_mem_label_a("W2LEN")
+    for slot in ("W1", "W2", "W3"):
+        b.ld_de_label(slot)
+        b.call("SP_WORD")
+        b.ld_a_c()
+        b.ld_mem_label_a(f"{slot}LEN")
     b.ret()
+
+    # SP_WORD: one word that is not noise, into DE. HL/B advance over the
+    # input as `SP_ONE` leaves them; a noise word is copied and then written
+    # over by the next, which is why the destination is reloaded each time.
+    b.label("SP_WORD")
+    b.ld_mem_label_de("SPDST")
+
+    b.label("SPW_TRY")
+    b.ld_de_mem_label("SPDST")
+    b.call("SP_ONE")
+    b.ld_a_c()
+    b.or_a()
+    b.ret_z()                        # the line ran out
+    b.push_hl()
+    b.push_bc()
+    b.ld_hl_label("NOISE")
+    b.ld_de_mem_label("SPDST")
+    b.ld_a_c()
+    b.call("LOOKUP")
+    b.pop_bc()                       # C is the length again
+    b.pop_hl()                       # and HL the place in the line
+    b.ret_c()                        # a miss: this word means something
+    b.jr("SPW_TRY")
 
     # SP_ONE: HL source, B bytes left, DE destination -> C length.
     b.label("SP_ONE")
@@ -544,32 +632,57 @@ def _emit_describe(b: EZ80Builder, world: World) -> None:
     b.call("PRWRAP")
     b.call("PRNL")
 
-    if not world.things:
-        b.ret()
+    if world.things:
+        b.ld_b_n(len(world.things))
+        b.ld_c_n(0)
+        b.label("LH_LP")
+        b.push_bc()
+        b.ld_a_c()
+        b.call("WHEREPTR")
+        b.ld_a_hl()
+        b.ld_hl_label("HERE")
+        b.cp_hl()
+        b.jr_nz("LH_NEXT")
+        b.ld_hl_label("MSGSEE")
+        b.call("PRSTR")
+        b.ld_a_c()
+        b.call("THINGROW")
+        b.call("LDPTR")
+        b.call("PRWRAP")
+        b.ld_hl_label("MSGDOT")
+        b.call("PRSTR")
+        b.call("PRNL")
+        b.label("LH_NEXT")
+        b.pop_bc()
+        b.inc_c()
+        b.djnz("LH_LP")
 
-    b.ld_b_n(len(world.things))
+    if not world.people:
+        b.ret()
+        return
+
+    # Whoever is standing here, by their description rather than their name.
+    # "You can see Marnes." is what a thing gets; a person gets the sentence
+    # that puts them in the room, which is why `Person` has no name pointer.
+    b.ld_b_n(len(world.people))
     b.ld_c_n(0)
-    b.label("LH_LP")
+    b.label("LP_LP")
     b.push_bc()
     b.ld_a_c()
-    b.call("WHEREPTR")
+    b.call("PWHEREPTR")
     b.ld_a_hl()
     b.ld_hl_label("HERE")
     b.cp_hl()
-    b.jr_nz("LH_NEXT")
-    b.ld_hl_label("MSGSEE")
-    b.call("PRSTR")
+    b.jr_nz("LP_NEXT")
     b.ld_a_c()
-    b.call("THINGROW")
+    b.call("PERSONROW")
     b.call("LDPTR")
     b.call("PRWRAP")
-    b.ld_hl_label("MSGDOT")
-    b.call("PRSTR")
     b.call("PRNL")
-    b.label("LH_NEXT")
+    b.label("LP_NEXT")
     b.pop_bc()
     b.inc_c()
-    b.djnz("LH_LP")
+    b.djnz("LP_LP")
     b.ret()
 
 
@@ -843,6 +956,219 @@ def _emit_take_drop(b: EZ80Builder, world: World,
     b.jp("TURN")
 
 
+def _emit_ask(b: EZ80Builder, world: World) -> None:
+    """`ASK <person> ABOUT <topic>` - the oracle's shape, in the image.
+
+    Three lookups and a linear scan, and every byte of it is resident. That is
+    the same asymmetry the turn loop is built on: the card costs ~4,600 bytes
+    of I/O and ~370,000 instructions to answer a question, and a person
+    answers out of a table for nothing. A world where talking cost what
+    consulting the archive costs would be a world nobody talked in.
+
+    The scan takes the first row whose gate is satisfied, so the author writes
+    the most specific line first and `libworld.World.check` refuses a row that
+    an earlier one has already shadowed - which is the mistake that produces
+    dialogue nobody can ever hear.
+    """
+    b.label("DO_ASK")
+    if not world.people or not world.topics:
+        # Nobody to ask, or nothing to ask about. Said plainly rather than
+        # left as an unknown verb, because `ASK` is in the table either way.
+        b.ld_hl_label("MSGNOASK")
+        b.call("PRWRAP")
+        b.call("PRNL")
+        b.jp("TURN")
+        return
+
+    b.ld_a_mem_label("W2LEN")
+    b.or_a()
+    b.jp_z("ASK_WHO")
+    b.ld_hl_label("PEOPLEW")
+    b.ld_de_label("W2")
+    b.ld_a_mem_label("W2LEN")
+    b.call("LOOKUP")
+    b.jp_c("ASK_NOBODY")
+    b.ld_mem_label_a("ASKWHO")
+
+    b.call("PWHEREPTR")
+    b.ld_a_hl()
+    b.ld_hl_label("HERE")
+    b.cp_hl()
+    b.jp_nz("ASK_ABSENT")
+
+    b.ld_a_mem_label("W3LEN")
+    b.or_a()
+    b.jp_z("ASK_WHAT")
+    b.ld_hl_label("TOPICW")
+    b.ld_de_label("W3")
+    b.ld_a_mem_label("W3LEN")
+    b.call("LOOKUP")
+    b.jp_c("ASK_NOTOPIC")
+    b.ld_mem_label_a("ASKTOP")
+
+    # Marked asked before the answer is chosen, and marked whatever the answer
+    # turns out to be. `C_ASKED` records that the subject came up, not that it
+    # was productively answered - a deflection is a thing the player learned.
+    b.call("MARK_ASKED")
+    b.call("SAY")
+    b.jp("TURN")
+
+    for label, message in (("ASK_WHO", "MSGASKWHO"),
+                           ("ASK_ABSENT", "MSGASKGONE"),
+                           ("ASK_WHAT", "MSGASKWHAT")):
+        b.label(label)
+        b.ld_hl_label(message)
+        b.call("PRWRAP")
+        b.call("PRNL")
+        b.jp("TURN")
+
+    for label, message, word, length in (
+            ("ASK_NOBODY", "MSGNOONE", "W2", "W2LEN"),
+            ("ASK_NOTOPIC", "MSGNOUN", "W3", "W3LEN")):
+        b.label(label)
+        b.ld_hl_label(message)
+        b.call("PRSTR")
+        b.ld_hl_label(word)
+        b.ld_a_mem_label(length)
+        b.call("PRWORD")
+        b.ld_hl_label("MSGQUOTE")
+        b.call("PRSTR")
+        b.jp("TURN")
+
+    # SAY: the line for (ASKWHO, ASKTOP), or the person's default.
+    #
+    # IX walks the rows because the gate and the flag it sets both want
+    # `FLAGPTR`, which returns in HL - so the row pointer cannot live there.
+    b.label("SAY")
+    b.ld_ix_label("DIALOG")
+
+    b.label("SAY_LP")
+    b.ld_a_ixd(0)
+    b.cp_n(libworld.NONE)
+    b.jr_z("SAY_DEF")
+    b.ld_hl_label("ASKWHO")
+    b.cp_hl()
+    b.jr_nz("SAY_NEXT")
+    b.ld_a_ixd(1)
+    b.ld_hl_label("ASKTOP")
+    b.cp_hl()
+    b.jr_nz("SAY_NEXT")
+
+    b.ld_a_ixd(2)                    # the gate
+    b.cp_n(libworld.NONE)
+    b.jr_z("SAY_HIT")
+    b.call("FLAGPTR")
+    b.ld_a_hl()
+    b.or_a()
+    b.jr_z("SAY_NEXT")
+
+    b.label("SAY_HIT")
+    b.ld_a_ixd(3)                    # the flag speaking it sets
+    b.cp_n(libworld.NONE)
+    b.jr_z("SAY_PRINT")
+    b.call("FLAGPTR")
+    b.ld_a_n(1)
+    b.ld_hl_a()
+
+    b.label("SAY_PRINT")
+    b.ld_hl_ixd(4)
+    b.call("PRWRAP")
+    b.jp("PRNL")
+
+    b.label("SAY_NEXT")
+    b.ld_de_nn(LINE_STRIDE)
+    b.add_ix_de()
+    b.jr("SAY_LP")
+
+    b.label("SAY_DEF")
+    b.ld_a_mem_label("ASKWHO")
+    b.call("PERSONROW")
+    b.ld_de_nn(3)                    # past the description, to the default
+    b.add_hl_de()
+    b.call("LDPTR")
+    b.call("PRWRAP")
+    b.jp("PRNL")
+
+
+def _emit_attention(b: EZ80Builder, world: World) -> None:
+    """`ASKED`, `HEAT` and `PWHERE`: the three arrays a question moves.
+
+    `ASKED` only ever grows. No action clears it and nothing in the rule set
+    can, which is deliberate rather than an omission - `A_CLEAR` can put a
+    flag back, and a mystery whose record of what the player had been told
+    could be rewound would not be fair. It is the one monotone thing in the
+    overlay.
+
+    `HEAT` saturates at both ends rather than wrapping. A counter that rolled
+    over from 255 to 0 would hand the player an escape from every consequence
+    by asking enough questions, which is exactly backwards.
+    """
+    if world.people:
+        # x7, as one doubling too many and a subtraction. `THINGROW` gets
+        # three doublings and `ROOMROW` an add; seven is the stride that has
+        # neither, and the shift-and-subtract is still cheaper than a multiply
+        # the eZ80 would have to set up registers for.
+        b.label("PERSONROW")
+        b.ld_hl_nn(0)
+        b.ld_l_a()
+        b.push_hl()
+        b.pop_de()
+        b.add_hl_hl()
+        b.add_hl_hl()
+        b.add_hl_hl()                    # x8
+        b.or_a()                         # clear the carry the doublings left
+        b.sbc_hl_de()                    # x7, which is PERSON_STRIDE
+        b.ld_de_label("PEOPLE")
+        b.add_hl_de()
+        b.ret()
+
+    b.label("ASKEDPTR")
+    b.ld_hl_label("ASKED")
+    b.ld_de_nn(0)
+    b.ld_e_a()
+    b.add_hl_de()
+    b.ret()
+
+    b.label("PWHEREPTR")
+    b.ld_hl_label("PWHERE")
+    b.ld_de_nn(0)
+    b.ld_e_a()
+    b.add_hl_de()
+    b.ret()
+
+    # MARK_ASKED: the topic in ASKTOP, counted rather than flagged. Only the
+    # zero test is exposed as `C_ASKED`; the count is kept because the byte is
+    # spent either way and a threshold opcode would want it already there.
+    b.label("MARK_ASKED")
+    b.ld_a_mem_label("ASKTOP")
+    b.call("ASKEDPTR")
+    b.ld_a_hl()
+    b.inc_a()
+    b.ret_z()                        # 255 was already as asked as it gets
+    b.ld_hl_a()
+    b.ret()
+
+    b.label("ADDHEAT")
+    b.ld_c_a()
+    b.ld_a_mem_label("HEAT")
+    b.add_a_c()
+    b.jr_nc("AH_OK")
+    b.ld_a_n(0xFF)
+    b.label("AH_OK")
+    b.ld_mem_label_a("HEAT")
+    b.ret()
+
+    b.label("SUBHEAT")
+    b.ld_c_a()
+    b.ld_a_mem_label("HEAT")
+    b.sub_c()
+    b.jr_nc("SH_OK")
+    b.xor_a()
+    b.label("SH_OK")
+    b.ld_mem_label_a("HEAT")
+    b.ret()
+
+
 def _emit_rules(b: EZ80Builder, world: World) -> None:
     """Check every rule; fire the ones whose conditions all hold.
 
@@ -957,8 +1283,8 @@ def _emit_rule_test(b: EZ80Builder, world: World) -> None:
     b.ld_a_mem_label("HERE")
     b.ld_hl_label("RU_ARG")
     b.cp_hl()
-    b.jr_z("RT_YES")
-    b.jr("RT_NO")
+    b.jp_z("RT_YES")
+    b.jp("RT_NO")
 
     b.label("RT_HAVE")
     b.cp_n(libworld.C_HAVE)
@@ -967,8 +1293,8 @@ def _emit_rule_test(b: EZ80Builder, world: World) -> None:
     b.call("WHEREPTR")
     b.ld_a_hl()
     b.cp_n(CARRIED)
-    b.jr_z("RT_YES")
-    b.jr("RT_NO")
+    b.jp_z("RT_YES")
+    b.jp("RT_NO")
 
     b.label("RT_HERE")
     b.cp_n(libworld.C_HERE)
@@ -978,8 +1304,8 @@ def _emit_rule_test(b: EZ80Builder, world: World) -> None:
     b.ld_a_hl()
     b.ld_hl_label("HERE")
     b.cp_hl()
-    b.jr_z("RT_YES")
-    b.jr("RT_NO")
+    b.jp_z("RT_YES")
+    b.jp("RT_NO")
 
     b.label("RT_FLAG")
     b.cp_n(libworld.C_FLAG)
@@ -988,8 +1314,8 @@ def _emit_rule_test(b: EZ80Builder, world: World) -> None:
     b.call("FLAGPTR")
     b.ld_a_hl()
     b.or_a()
-    b.jr_nz("RT_YES")
-    b.jr("RT_NO")
+    b.jp_nz("RT_YES")
+    b.jp("RT_NO")
 
     b.label("RT_NFLAG")
     b.cp_n(libworld.C_NFLAG)
@@ -998,18 +1324,51 @@ def _emit_rule_test(b: EZ80Builder, world: World) -> None:
     b.call("FLAGPTR")
     b.ld_a_hl()
     b.or_a()
-    b.jr_z("RT_YES")
-    b.jr("RT_NO")
+    b.jp_z("RT_YES")
+    b.jp("RT_NO")
 
     # The count a path cannot do, and the reason this opcode exists at all.
     b.label("RT_COUNT")
     b.cp_n(libworld.C_CARRYING)
-    b.jr_nz("RT_NO")
+    b.jr_nz("RT_ASKED")
     b.call("COUNTHELD")
     b.ld_hl_label("RU_ARG")
     b.cp_hl()
-    b.jr_c("RT_NO")                  # carrying fewer than the rule asked for
-    b.jr("RT_YES")
+    b.jp_c("RT_NO")                  # carrying fewer than the rule asked for
+    b.jp("RT_YES")
+
+    # The three the archive and the people put there. `C_ASKED` is what makes
+    # a question part of the plot rather than a lookup beside it: the world
+    # can react to what the player wanted to know, which is the one thing a
+    # stateless card could never be asked.
+    b.label("RT_ASKED")
+    b.cp_n(libworld.C_ASKED)
+    b.jr_nz("RT_HEAT")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("ASKEDPTR")
+    b.ld_a_hl()
+    b.or_a()
+    b.jp_nz("RT_YES")
+    b.jp("RT_NO")
+
+    b.label("RT_HEAT")
+    b.cp_n(libworld.C_HEAT)
+    b.jr_nz("RT_WITH")
+    b.ld_a_mem_label("HEAT")
+    b.ld_hl_label("RU_ARG")
+    b.cp_hl()
+    b.jp_c("RT_NO")                  # quieter than the rule was watching for
+    b.jp("RT_YES")
+
+    b.label("RT_WITH")
+    b.cp_n(libworld.C_WITH)
+    b.jp_nz("RT_NO")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("PWHEREPTR")
+    b.ld_a_hl()
+    b.ld_hl_label("HERE")
+    b.cp_hl()
+    b.jp_z("RT_YES")
 
     b.label("RT_NO")
     b.or_a()
@@ -1069,9 +1428,33 @@ def _emit_rule_do(b: EZ80Builder, world: World) -> None:
 
     b.label("RD_MOVE")
     b.cp_n(libworld.A_MOVE)
-    b.ret_nz()
+    b.jr_nz("RD_HEAT")
     b.ld_a_mem_label("RU_ARG")
     b.call("WHEREPTR")
+    b.ld_a_mem_label("RU_ARG2")
+    b.ld_hl_a()
+    b.ret()
+
+    # Attention, up and down. Both exist because a world with only `A_HEAT`
+    # is one the player can only lose: there has to be somewhere to lie low,
+    # or the counter is a countdown wearing a different name.
+    b.label("RD_HEAT")
+    b.cp_n(libworld.A_HEAT)
+    b.jr_nz("RD_COOL")
+    b.ld_a_mem_label("RU_ARG")
+    b.jp("ADDHEAT")
+
+    b.label("RD_COOL")
+    b.cp_n(libworld.A_COOL)
+    b.jr_nz("RD_SEND")
+    b.ld_a_mem_label("RU_ARG")
+    b.jp("SUBHEAT")
+
+    b.label("RD_SEND")
+    b.cp_n(libworld.A_SEND)
+    b.ret_nz()
+    b.ld_a_mem_label("RU_ARG")
+    b.call("PWHEREPTR")
     b.ld_a_mem_label("RU_ARG2")
     b.ld_hl_a()
     b.ret()
@@ -1165,6 +1548,11 @@ MESSAGES: dict[str, str] = {
     "MSGSITDOWN": "The screen wakes. Type a name to look it up, or LEAVE to "
                   "stand up again.",
     "TERMPROMPT": "archive> ",
+    "MSGNOASK": "There is nobody here to ask.",
+    "MSGNOONE": "You do not know anybody called '",
+    "MSGASKWHO": "Who do you want to ask?",
+    "MSGASKWHAT": "What do you want to ask about?",
+    "MSGASKGONE": "They are not here.",
 }
 
 
@@ -1199,8 +1587,36 @@ def _emit_tables(b: EZ80Builder, world: World,
         for thing in world.things:
             b.db(thing.at)
 
+    if world.people:
+        b.label("PEOPLE")
+        for index, person in enumerate(world.people):
+            b.fixup_word(f"PDESC{index}")
+            b.fixup_word(f"PDEF{index}")
+            b.db(person.at)
+        b.label("INITPWHERE")
+        for person in world.people:
+            b.db(person.at)
+
+    if world.people and world.topics:
+        # The dialogue, in the order the author wrote it. The scan is linear
+        # and first-match-wins, which is what makes ordering the whole of the
+        # conditional mechanism - see `_emit_ask`.
+        b.label("DIALOG")
+        for index, line in enumerate(world.lines):
+            b.db(line.person)
+            b.db(line.topic)
+            b.db(line.gate)
+            b.db(line.sets)
+            b.fixup_word(f"DLINE{index}")
+        b.db(libworld.NONE)          # a person of 255 ends the table
+
     _emit_word_table(b, "VERBS", verbs)
     _emit_word_table(b, "NOUNS", nouns)
+    _emit_word_table(b, "NOISE", [(w, 0) for w in NOISE_WORDS])
+    if world.people:
+        _emit_word_table(b, "PEOPLEW", _people_words(world))
+    if world.topics:
+        _emit_word_table(b, "TOPICW", _topic_words(world))
 
     if world.rules:
         b.label("RULETAB")
@@ -1248,6 +1664,18 @@ def _emit_tables(b: EZ80Builder, world: World,
         b.label(f"TSUBJ{index}")
         b.ascii(thing.subject or "")
         b.db(0)
+    for index, person in enumerate(world.people):
+        b.label(f"PDESC{index}")
+        b.ascii(person.description)
+        b.db(0)
+        b.label(f"PDEF{index}")
+        b.ascii(person.default)
+        b.db(0)
+    if world.people and world.topics:
+        for index, line in enumerate(world.lines):
+            b.label(f"DLINE{index}")
+            b.ascii(line.text)
+            b.db(0)
 
     for label, text in MESSAGES.items():
         b.label(label)
@@ -1278,23 +1706,36 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
     b.ds(world.flags)
     b.label("FIRED")
     b.ds(max(1, len(world.rules)))
+    # `ASKED` and `HEAT` are inside the run rather than beside it, because a
+    # restore that put the player back somewhere but forgot what they had
+    # already been told would be a worse bug than losing the save: the world
+    # would re-explain everything and the rules keyed on `C_ASKED` would fire
+    # a second time.
+    b.label("ASKED")
+    b.ds(max(1, len(world.topics)))
+    b.label("HEAT")
+    b.db(0)
+    b.label("PWHERE")
+    b.ds(max(1, len(world.people)))
 
     # Everything below is scratch that does not outlive a turn.
-    scratch = ["VERB", "W1LEN", "W2LEN", "LKLEN", "NCARRIED", "RU_ONCE",
-               "RU_NC", "RU_NA", "RU_OP", "RU_ARG", "RU_ARG2", "RU_CNT",
-               "ATTERM"]
+    scratch = ["VERB", "W1LEN", "W2LEN", "W3LEN", "LKLEN", "NCARRIED",
+               "RU_ONCE", "RU_NC", "RU_NA", "RU_OP", "RU_ARG", "RU_ARG2",
+               "RU_CNT", "ATTERM", "ASKWHO", "ASKTOP"]
     if not shared_console:
         scratch += ["WRAPCOL", "INPLEN"]
     for name in scratch:
         b.label(name)
         b.db(0)
-    for name in ("PTMP", "LKPTR", "RULEPTR", "RU_CUR"):
+    for name in ("PTMP", "LKPTR", "RULEPTR", "RU_CUR", "SPDST"):
         b.label(name)
         b.d24(0)
 
     b.label("W1")
     b.ds(MAX_WORD_LEN + 1)
     b.label("W2")
+    b.ds(MAX_WORD_LEN + 1)
+    b.label("W3")
     b.ds(MAX_WORD_LEN + 1)
     if not shared_console:
         b.label("INPBUF")
@@ -1310,7 +1751,7 @@ def overlay_at(builder: EZ80Builder, world: World) -> tuple[int, int]:
     emitted with the rest of save and restore rather than here.
     """
     start = builder.labels["HERE"]
-    end = builder.labels["FIRED"] + max(1, len(world.rules))
+    end = builder.labels["PWHERE"] + max(1, len(world.people))
     return start, end - start
 
 
@@ -1318,19 +1759,40 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--output", "-o", default="SILO.bin", type=Path)
+    ap.add_argument("--world", default="silo", choices=("silo", "mystery"),
+                    help="silo is six rooms and four things; mystery adds "
+                         "the people, topics and attention counter")
     args = ap.parse_args()
 
-    import worlds
-    world = worlds.silo()
+    if args.world == "mystery":
+        import worlds_mystery
+        world = worlds_mystery.mystery()
+    else:
+        import worlds
+        world = worlds.silo()
     builder = build(world)
     builder.save(str(args.output))
 
     top = builder.org + len(builder.code)
     print(f"{args.output}  {len(builder.code):,} bytes   "
-          f"{len(world.rooms)} rooms, {len(world.things)} things")
+          f"{len(world.rooms)} rooms, {len(world.things)} things, "
+          f"{len(world.people)} people, {len(world.lines)} lines")
     print(f"  overlay {world.overlay_bytes} bytes - the whole saved game")
     print(f"  image ends at {top:06X}h, "
           f"{AGON_SRAM_TOP - STACK_MARGIN - top:,} bytes of SRAM unused")
+
+    # The check nobody runs by hand, and the one that makes "fair play" a
+    # property of the build rather than a promise in the prose.
+    search = world.explore()
+    walkthrough = search.solve()
+    print(f"  {len(search.states):,} reachable states")
+    if walkthrough is None:
+        raise SystemExit("  the goal is not reachable, so this cannot be won")
+    if world.goal:
+        print(f"  solved in {len(walkthrough)}: {', '.join(walkthrough)}")
+    for kind, missing in search.unseen().items():
+        if missing:
+            print(f"  unreachable {kind}: {', '.join(missing)}")
 
 
 if __name__ == "__main__":

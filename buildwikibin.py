@@ -304,7 +304,21 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
 
     b.call("CLEAR_ACC")
     b.call("SCORE_QUERY")
-    b.call("ORACLE" if oracle else "REPORT")
+    if world is None:
+        b.call("ORACLE" if oracle else "REPORT")
+    else:
+        # The scan, then what the world makes of it, then the answer - and in
+        # that order, because a sealed record is not printed and a question is
+        # noticed whether or not it was answered.
+        #
+        # This is the whole of "the query drives the plot". Without it the two
+        # halves of the binary are two programs that happen to share `INPBUF`;
+        # with it, what the player wanted to know is state the rules can read.
+        b.call("REPORT")
+        b.call("NOTICE")
+        b.or_a()
+        b.jp_nz("MAINLOOP")          # sealed, and NOTICE has said so
+        b.call("ORACLE_SCANNED" if oracle else "RP_SHOW")
     b.jp("MAINLOOP")
 
     b.label("QUIT")
@@ -572,7 +586,8 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     b.ret()
 
     _emit_score_term(b, acc_base)
-    _emit_report(b, num_docs, acc_base, pages, oracle is not None)
+    _emit_report(b, num_docs, acc_base, pages,
+                 oracle is not None or world is not None)
     if oracle is not None:
         _emit_oracle(b, oracle)
         _emit_classifier(b, oracle)
@@ -591,6 +606,7 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
         # read it.
         buildif.emit_world_routines(b, world, ask_label="ML_ASK")
         buildif.emit_world_tables(b, world)
+        _emit_notice(b, world)
         b.label("LEAVEWORD")
         for word in ("LEAVE", "STAND", "STOP"):
             b.db(len(word))
@@ -981,6 +997,120 @@ def _emit_score_term(b: EZ80Builder, acc_base: int) -> None:
     b.sbc_hl_de()
     b.ld_mem_label_hl("NPOST")
     b.jp("STS_BLOCK")
+
+
+#: Watch row: article id, the topic it is about, what asking costs, and the
+#: text to print instead of the record. Eight bytes, in the image.
+WATCH_STRIDE = 3 + 1 + 1 + 3
+#: Ends the watch table. No article can have this id - a 24-bit count of
+#: articles would have exhausted SRAM a hundred times over first.
+WATCH_END = 0xFFFFFF
+
+
+def _emit_notice(b: EZ80Builder, world: libworld.World) -> None:
+    """What the world makes of a question, between the scan and the answer.
+
+    Three things, in one pass over a table that is usually a dozen rows:
+
+        the topic       marked asked, so `C_ASKED` can read it
+        the attention   added, so `C_HEAT` can read it
+        the seal        printed instead of the record, if there is one
+
+    ## Why this is the hook rather than the classifier
+
+    The obvious place to notice a question is where the question is
+    understood. It is the wrong place. `liboracle` gets the relation right
+    84.0% of the time on phrasings it has not seen, and a plot that advanced
+    only when the classifier agreed would stall one time in six for reasons
+    the player cannot see or act on.
+
+    The *document* is not a guess in the same way. BM25 over titles resolves
+    the entity without help - `liboracle.entity` says why, and it is that the
+    mention carries the rare words while the frame around it is discounted to
+    nothing. So the plot hangs off which article was reached, which is the
+    reliable half of the machine, and the classifier is left doing the job it
+    is measured at.
+
+    ## Why a seal is a clue rather than a wall
+
+    A censored topic is still marked asked and still charged. The archive
+    refusing to answer is a thing the player learned, and `data/silo/plant.py`
+    already established the principle for the corpus: a record that is wrong
+    in a fixed, discoverable way is interesting, and one that is unreliable at
+    random is noise. A seal is that, made visible.
+    """
+    rows = [(doc, index, entry.heat, entry.censor)
+            for index, entry in enumerate(world.topics)
+            for doc in entry.docs]
+
+    b.label("NOTICE")
+    b.ld_a_mem_label("BESTSC")
+    b.or_a()
+    b.jr_z("NT_NONE")                # nothing matched: not about anything
+    if not rows:
+        b.jr("NT_NONE")
+    else:
+        b.ld_ix_label("WATCH")
+
+        b.label("NT_LP")
+        b.ld_hl_ixd(0)
+        b.ld_de_nn(WATCH_END)
+        b.or_a()
+        b.sbc_hl_de()
+        b.jr_z("NT_NONE")
+        b.ld_hl_ixd(0)
+        b.ld_de_mem_label("BESTID")
+        b.or_a()
+        b.sbc_hl_de()
+        b.jr_z("NT_HIT")
+        b.ld_de_nn(WATCH_STRIDE)
+        b.add_ix_de()
+        b.jr("NT_LP")
+
+        b.label("NT_HIT")
+        b.ld_a_ixd(3)
+        b.ld_mem_label_a("ASKTOP")
+        b.call("MARK_ASKED")
+        b.ld_a_ixd(4)
+        b.or_a()
+        b.jr_z("NT_SEAL")
+        b.call("ADDHEAT")
+
+        b.label("NT_SEAL")
+        b.ld_hl_ixd(5)
+        b.ld_de_nn(0)
+        b.or_a()
+        b.sbc_hl_de()
+        b.jr_z("NT_NONE")
+        b.call("PRNL")
+        b.ld_hl_ixd(5)
+        b.call("PRWRAP")
+        b.call("PRNL")
+        b.ld_a_n(1)
+        b.ret()
+
+    b.label("NT_NONE")
+    b.xor_a()
+    b.ret()
+
+    if not rows:
+        return
+    b.label("WATCH")
+    for doc, index, heat, censor in rows:
+        b.d24(doc)
+        b.db(index)
+        b.db(heat)
+        if censor is None:
+            b.d24(0)
+        else:
+            b.fixup_word(f"SEAL{index}")
+    b.d24(WATCH_END)
+
+    for index, entry in enumerate(world.topics):
+        if entry.censor is not None:
+            b.label(f"SEAL{index}")
+            b.ascii(entry.censor)
+            b.db(0)
 
 
 def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
@@ -1413,6 +1543,9 @@ def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
 
     b.label("ORACLE")
     b.call("REPORT")                 # scan only: fills BESTID and BESTSC
+    # A world hooks in between the scan and the answer, so that what was asked
+    # about is recorded before anything is said about it.
+    b.label("ORACLE_SCANNED")
     b.ld_a_mem_label("BESTSC")
     b.or_a()
     b.jp_z("RP_SHOW")                # nothing matched at all

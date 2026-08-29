@@ -35,6 +35,7 @@ measured that a card holds far more of it than anybody will write.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 #: The directions a room can lead in, in table order. Six is what a silo needs
 #: - four around, two along the stair - and each is one byte in a room's row,
@@ -66,6 +67,11 @@ NOWHERE = 0xFF
 #: Where a thing is when the player has it, rather than in a room.
 CARRIED = 0xFE
 
+#: No gate on a line of dialogue, and no flag set by speaking it. `NOWHERE`
+#: bounds rooms and this bounds the two optional fields of a line, which are
+#: the only bytes in any table that are allowed to be absent.
+NONE = 0xFF
+
 
 @dataclass
 class Room:
@@ -95,6 +101,80 @@ class Thing:
     subject: str | None = None
 
 
+@dataclass
+class Topic:
+    """Something that can be asked about, of the archive or of a person.
+
+    One table for both, which is the point rather than a saving. A player who
+    reads the incident report about the cistern pump and a player who asks the
+    deputy about it have learned the same thing, and a world that recorded
+    those separately would need every rule written twice.
+
+    `docs` are article ids on the card. They are ids rather than titles because
+    `buildwikibin` is handed a document count and never sees the index - see
+    `resolve_topics`, which is where a title becomes a number.
+    """
+
+    #: What the author calls it. Never printed; it names the index in errors.
+    name: str
+    #: What a player may type. Uppercased into the topic word table.
+    words: list[str]
+    #: Article titles on the card that are about this. `resolve_topics`
+    #: turns them into `docs`, and refuses one the card does not hold.
+    titles: list[str] = field(default_factory=list)
+    #: Article ids on the card that are about this, for the merged build.
+    docs: list[int] = field(default_factory=list)
+    #: What asking costs in attention. Most topics cost nothing.
+    heat: int = 0
+    #: What the archive says instead of the article, for a record that has
+    #: been sealed. `None` prints the article. A censored topic still marks
+    #: itself asked and still costs its heat: the sealing is what was learned.
+    censor: str | None = None
+
+
+@dataclass
+class Person:
+    """Somebody standing in a room, who can be asked about a topic.
+
+    Not a `Thing` with `portable=False`. A thing that cannot be carried is
+    scenery and is listed as "You can see screen."; a person is listed by
+    standing there, is asked rather than taken, and moves under `A_SEND`
+    rather than `A_MOVE`. Sharing the table would have saved eight bytes and
+    cost every message that mentions one.
+    """
+
+    name: str
+    description: str
+    #: Room index they start in.
+    at: int
+    #: What they say about a topic no line covers. The refuse class again:
+    #: `IF.md` sets out why a confident answer to an unwritten question is
+    #: worse than a deflection, and a person has the same failure a parser
+    #: does. Every person needs one, so it is not optional.
+    default: str
+
+
+@dataclass
+class Line:
+    """One thing one person says about one topic.
+
+    Rows are scanned in order and the first whose gate is satisfied wins, so
+    the author writes the most specific line first. That ordering is the whole
+    of the conditional-dialogue mechanism: there is no condition list here,
+    because a line that needed one is a rule.
+    """
+
+    person: int
+    topic: int
+    text: str
+    #: A flag that must be set for this line to be the one spoken, or `NONE`.
+    gate: int = NONE
+    #: A flag speaking it sets, or `NONE`. This is how a conversation teaches
+    #: the world something - `C_ASKED` records that a topic came up, and this
+    #: records that a particular person answered it.
+    sets: int = NONE
+
+
 #: Condition opcodes. Every condition in a rule must hold, which is the point:
 #: `data/silo/README.md` sets out that a graph path composes and then stops at
 #: conjunction, and a list of conditions ANDed together is the smallest thing
@@ -105,19 +185,27 @@ C_HERE = 2      # thing `arg` is in the room the player is in
 C_FLAG = 3      # flag `arg` is set
 C_NFLAG = 4     # flag `arg` is clear
 C_CARRYING = 5  # the player is carrying at least `arg` things
+C_ASKED = 6     # topic `arg` has been asked about, of the archive or a person
+C_HEAT = 7      # attention stands at `arg` or above
+C_WITH = 8      # person `arg` is in the room the player is in
 
-#: Action opcodes. `A_MOVE` takes two bytes because it names a thing and a
-#: destination; everything else takes one.
+#: Action opcodes. `A_MOVE` and `A_SEND` take two bytes because each names
+#: something and a destination; everything else takes one.
 A_SET = 0       # set flag `arg`
 A_CLEAR = 1     # clear flag `arg`
 A_PRINT = 2     # print message `arg`
 A_GOTO = 3      # move the player to room `arg`
 A_MOVE = 4      # move thing `arg` to `arg2`
+A_HEAT = 5      # add `arg` to attention, saturating at 255
+A_COOL = 6      # take `arg` off attention, floored at 0
+A_SEND = 7      # move person `arg` to room `arg2`
 
 CONDITION_NAMES = {C_AT: "AT", C_HAVE: "HAVE", C_HERE: "HERE", C_FLAG: "FLAG",
-                   C_NFLAG: "NFLAG", C_CARRYING: "CARRYING"}
+                   C_NFLAG: "NFLAG", C_CARRYING: "CARRYING", C_ASKED: "ASKED",
+                   C_HEAT: "HEAT", C_WITH: "WITH"}
 ACTION_NAMES = {A_SET: "SET", A_CLEAR: "CLEAR", A_PRINT: "PRINT",
-                A_GOTO: "GOTO", A_MOVE: "MOVE"}
+                A_GOTO: "GOTO", A_MOVE: "MOVE", A_HEAT: "HEAT",
+                A_COOL: "COOL", A_SEND: "SEND"}
 
 
 @dataclass
@@ -180,6 +268,17 @@ class World:
     #: How many one-bit propositions the world reserves. Costs one byte per
     #: eight and nothing else, so the number is a guess that can be generous.
     flags: int = 64
+    #: What can be asked about, of the archive or of a person.
+    topics: list[Topic] = field(default_factory=list)
+    #: Who is standing about to be asked.
+    people: list[Person] = field(default_factory=list)
+    #: What they say, most specific first.
+    lines: list[Line] = field(default_factory=list)
+    #: What the world is won by: a condition list in the same shape as
+    #: `Rule.when`. `solve` is what makes it more than documentation - a goal
+    #: no reachable state satisfies is a game that cannot be finished, and
+    #: that is a build-time question rather than a playtesting one.
+    goal: list[tuple[int, int]] = field(default_factory=list)
 
     def check(self) -> None:
         """Refuse a world that cannot be walked, before anything is emitted.
@@ -274,6 +373,104 @@ class World:
             # first is not a mistake. The standalone binary says there is no
             # terminal here, which is true of every room in it.
 
+        self._check_people(set(names))
+        self._check_topics()
+        self._check_lines()
+        self._check_rules()
+
+        for op, arg in self.goal:
+            if op not in CONDITION_NAMES:
+                raise ValueError(f"the goal has no condition {op}")
+            self._check_arg(-1, CONDITION_NAMES[op], op, arg)
+
+    def _check_people(self, thing_names: set[str]) -> None:
+        """Rooms that exist, names that are one person's and nobody else's."""
+        if len(self.people) >= NOWHERE:
+            raise ValueError(f"{len(self.people)} people, and a person id is "
+                             f"one byte with {NONE:#x} reserved for 'none'")
+        seen: set[str] = set()
+        for person in self.people:
+            if not 0 <= person.at < len(self.rooms):
+                raise ValueError(f"{person.name!r} stands in room {person.at},"
+                                 f" which does not exist")
+            name = person.name.upper()
+            if name in seen:
+                raise ValueError(f"two people are called {person.name!r}, and "
+                                 f"ASK resolves a name to exactly one")
+            # A word that is both is not ambiguous to the machine - TAKE reads
+            # the noun table and ASK reads this one - but it is ambiguous to
+            # the player, who has no way to know which table they are in.
+            if name in thing_names:
+                raise ValueError(f"{person.name!r} is both a person and a "
+                                 f"thing, and a player cannot tell which")
+            if len(person.name.split()) != 1 or len(person.name) > MAX_WORD_LEN:
+                raise ValueError(
+                    f"{person.name!r} is not one word of at most "
+                    f"{MAX_WORD_LEN} characters, so `ASK` can never resolve "
+                    f"it - the same limit a thing's name has")
+            seen.add(name)
+            if not person.default:
+                raise ValueError(f"{person.name!r} has no default line, so a "
+                                 f"topic nobody wrote gets silence")
+
+    def _check_topics(self) -> None:
+        """One word, one topic. The word table resolves it to exactly one."""
+        if len(self.topics) >= NOWHERE:
+            raise ValueError(f"{len(self.topics)} topics, and a topic id is "
+                             f"one byte with {NONE:#x} reserved")
+        words: dict[str, str] = {}
+        for topic in self.topics:
+            if not topic.words:
+                raise ValueError(f"topic {topic.name!r} has no words, so "
+                                 f"nothing a player types can reach it")
+            if not 0 <= topic.heat <= 255:
+                raise ValueError(f"topic {topic.name!r} costs {topic.heat} "
+                                 f"attention, and that is one byte")
+            for word in topic.words:
+                upper = word.upper()
+                if len(word.split()) != 1 or len(word) > MAX_WORD_LEN:
+                    raise ValueError(
+                        f"topic {topic.name!r} can be reached by {word!r}, "
+                        f"which is not one word of at most {MAX_WORD_LEN} "
+                        f"characters and so can never be typed")
+                if upper in words:
+                    raise ValueError(
+                        f"{word!r} names both {words[upper]!r} and "
+                        f"{topic.name!r}, and a word resolves to one topic")
+                words[upper] = topic.name
+
+    def _check_lines(self) -> None:
+        """Every index, and every line that can never be the one spoken."""
+        seen: set[tuple[int, int, int]] = set()
+        for number, line in enumerate(self.lines):
+            if not 0 <= line.person < len(self.people):
+                raise ValueError(f"line {number} is spoken by person "
+                                 f"{line.person}, who does not exist")
+            if not 0 <= line.topic < len(self.topics):
+                raise ValueError(f"line {number} is about topic {line.topic}, "
+                                 f"which does not exist")
+            for name, flag in (("gate", line.gate), ("sets", line.sets)):
+                if flag != NONE and not 0 <= flag < self.flags:
+                    raise ValueError(f"line {number} {name}s flag {flag}, and "
+                                     f"the world reserves {self.flags}")
+            key = (line.person, line.topic, line.gate)
+            if key in seen:
+                # The scan takes the first match, so the second is dead text.
+                raise ValueError(
+                    f"line {number} repeats person {line.person} on topic "
+                    f"{line.topic} behind the same gate, and the scan takes "
+                    f"the first - the second can never be spoken")
+            seen.add(key)
+            if line.gate == NONE:
+                continue
+            # An ungated line before a gated one shadows it for the same
+            # reason, and is the mistake that actually gets made.
+            if (line.person, line.topic, NONE) in seen:
+                raise ValueError(
+                    f"line {number} is gated behind flag {line.gate} but an "
+                    f"ungated line for person {line.person} on topic "
+                    f"{line.topic} comes first and always wins")
+
     def _check_rules(self) -> None:
         """Every argument, against what it indexes.
 
@@ -333,24 +530,42 @@ class World:
     def _check_arg(self, number: int, name: str, op: int, arg: int,
                    arg2: int = 0) -> None:
         rooms, things = len(self.rooms), len(self.things)
+        where = "the goal" if number < 0 else f"rule {number}"
         if (name in ("AT", "GOTO") and not 0 <= arg < rooms):
-            raise ValueError(f"rule {number}: {name} {arg}, and there are "
+            raise ValueError(f"{where}: {name} {arg}, and there are "
                              f"{rooms} rooms")
         if name in ("HAVE", "HERE", "MOVE") and not 0 <= arg < things:
-            raise ValueError(f"rule {number}: {name} {arg}, and there are "
+            raise ValueError(f"{where}: {name} {arg}, and there are "
                              f"{things} things")
         if name == "MOVE" and not (0 <= arg2 < rooms or arg2 == CARRIED):
-            raise ValueError(f"rule {number}: MOVE to {arg2}, which is neither "
+            raise ValueError(f"{where}: MOVE to {arg2}, which is neither "
                              f"a room nor CARRIED")
         if name in ("FLAG", "NFLAG", "SET", "CLEAR") and not 0 <= arg < self.flags:
-            raise ValueError(f"rule {number}: {name} {arg}, and the world "
+            raise ValueError(f"{where}: {name} {arg}, and the world "
                              f"reserves {self.flags} flags")
         if name == "PRINT" and not 0 <= arg < len(self.messages):
-            raise ValueError(f"rule {number}: PRINT {arg}, and there are "
+            raise ValueError(f"{where}: PRINT {arg}, and there are "
                              f"{len(self.messages)} messages")
         if name == "CARRYING" and not 0 <= arg <= things:
-            raise ValueError(f"rule {number}: CARRYING {arg}, and there are "
+            raise ValueError(f"{where}: CARRYING {arg}, and there are "
                              f"only {things} things to carry")
+        if name == "ASKED" and not 0 <= arg < len(self.topics):
+            raise ValueError(f"{where}: ASKED {arg}, and there are "
+                             f"{len(self.topics)} topics")
+        if name in ("WITH", "SEND") and not 0 <= arg < len(self.people):
+            raise ValueError(f"{where}: {name} {arg}, and there are "
+                             f"{len(self.people)} people")
+        if name == "SEND" and not 0 <= arg2 < rooms:
+            raise ValueError(f"{where}: SEND to room {arg2}, which does "
+                             f"not exist")
+        if name in ("HEAT", "COOL") and not 0 <= arg <= 255:
+            raise ValueError(f"{where}: {name} {arg}, and attention is "
+                             f"one byte")
+        if name == "HEAT" and op == C_HEAT and arg == 0:
+            # Heat is never negative, so `HEAT 0` holds on the first turn and
+            # every turn - the same mistake as a rule with no conditions.
+            raise ValueError(f"{where}: HEAT 0 always holds, so the rule "
+                             f"fires before the player has done anything")
 
     @property
     def overlay_bytes(self) -> int:
@@ -366,7 +581,21 @@ class World:
         packing them saved sixty bytes to earn.
         """
         return (1 + max(1, len(self.things)) + self.flags
-                + max(1, len(self.rules)))
+                + max(1, len(self.rules))
+                + max(1, len(self.topics))     # ASKED, one byte a topic
+                + 1                            # HEAT
+                + max(1, len(self.people)))    # PWHERE
+
+    @property
+    def asked_bytes(self) -> int:
+        """`ASKED`, which is the one part of the overlay that only grows.
+
+        Named separately because it is the piece a save file must not lose and
+        a rule must not touch. `A_CLEAR` can put a flag back; nothing clears a
+        topic. A mystery is fair only if what the player has been told stays
+        told, and monotone state is how that is enforced rather than promised.
+        """
+        return max(1, len(self.topics))
 
     def reachable(self, start: int | None = None) -> set[int]:
         """Rooms reachable from the start, for the check nobody runs by hand."""
@@ -402,14 +631,24 @@ class World:
           what makes a rule dead.
         - a thing is treated as being everywhere it could ever be at once,
           rather than in one place at a time.
+        - a flag a line of dialogue sets counts as settable, without asking
+          whether that person can be found or that gate opened.
 
-        The fixpoint is monotone under all three, so it terminates.
+        The fixpoint is monotone under all four, so it terminates.
+
+        That fourth one was not optional. `A_SET` inside a rule is not the
+        only way a flag goes up any more - `Line.sets` is how a conversation
+        teaches the world something - and without it this analysis condemned
+        every rule in `worlds_mystery` that reads what somebody said. An
+        over-approximation that has not been told about a mechanism does not
+        degrade gracefully; it reports the mechanism as dead.
         """
         rooms = self.reachable()
         # Where each thing might be. `CARRIED` is a place like any other here,
         # which is what lets `A_MOVE thing CARRIED` feed `C_HAVE`.
         at: list[set[int]] = [{thing.at} for thing in self.things]
-        flags: set[int] = set()
+        flags: set[int] = {line.sets for line in self.lines
+                           if line.sets != NONE}
         fired: set[int] = set()
 
         while True:
@@ -454,7 +693,18 @@ class World:
             return arg in flags
         if op == C_CARRYING:
             return len(held) >= arg
-        return True                      # C_NFLAG; see `reach`
+        # `C_NFLAG`, and `C_ASKED`, `C_HEAT` and `C_WITH` with it. The
+        # fall-through is not laziness about the three new ones: this analysis
+        # is a ceiling and every one of them is something a player can bring
+        # about by typing - any topic can be raised, attention only climbs
+        # when it is, and a person stands in a room. Answering `True` keeps
+        # the error pointing upward, which is the property `reach` rests on.
+        #
+        # `explore` is where these are decided exactly, at the cost of an
+        # actual state search. The two are not rivals: this one is total and
+        # cheap and can only be wrong in the safe direction, and that one is
+        # exact and can produce a walkthrough. See `explore`.
+        return True
 
     def dead_rules(self) -> list[tuple[int, str]]:
         """Rules no play of this world can ever fire, and the reason.
@@ -492,3 +742,362 @@ class World:
             return f"flag {arg} is never set"
         return (f"{arg} things cannot be carried at once; only "
                 f"{len(got.held)} can ever be picked up")
+    # --- fair play, as a build-time question ----------------------------------
+
+    def explore(self, max_states: int = 200_000) -> Search:
+        """Every state a player can reach, and the shortest way to each.
+
+        `reachable` walks the map. This walks the *game*: a state is where the
+        player is, what everything is holding, which flags are set, which
+        rules have fired, what has been asked and how much attention that has
+        cost. Every command is an edge.
+
+        A fair-play mystery makes a promise the author cannot keep by reading
+        their own source - that the ending can be reached, and that every clue
+        it rests on can be found first. This is the machine that checks it.
+        Both `solve` and `unseen` are readings of what it returns.
+
+        ## And `reach`, which is the other half
+
+        `reach` answers a neighbouring question and the two are not rivals.
+        It is a monotone fixpoint - total, cheap, and wrong only ever in the
+        safe direction, so a rule it calls dead is certainly dead. This is
+        exact, and pays an exponential search for it.
+
+        The division that follows is worth stating plainly. `dead_rules` is
+        the check to run on every build, because it always terminates and
+        never cries wolf. This is the one to run when a world has a *goal*,
+        because an over-approximation cannot prove a game winnable and cannot
+        produce the sequence of commands that wins it - and a walkthrough is
+        the only artefact here that can be replayed through the emulator and
+        checked against the binary, which is what `test_the_mystery_can_be_won`
+        does.
+
+        **It models the device rather than an idealisation of it.** Rules are
+        one pass a turn, not a fixpoint, because `RULES_RUN` walks the table
+        once and a rule made true by a later rule does not fire until the next
+        turn. `LOOK` is therefore a move: it is the turn that costs nothing and
+        lets a cascade finish, and a walkthrough that needs one will contain
+        one.
+
+        Attention is clamped at the largest threshold any condition tests,
+        which is exact rather than approximate - nothing in the world can tell
+        one value above that from another - and is what keeps the space finite.
+        """
+        cap = self._heat_cap()
+        start = _State(
+            here=self.start, at_terminal=False,
+            where=tuple(t.at for t in self.things),
+            flags=(0,) * self.flags,
+            fired=(0,) * len(self.rules),
+            asked=(0,) * len(self.topics),
+            heat=0,
+            pwhere=tuple(p.at for p in self.people))
+
+        # The start is a turn: the program describes the room and then runs
+        # the rules before it reads the first line.
+        seen_msgs: set[int] = set()
+        spoken: set[int] = set()
+        start = self._settle(start, cap, seen_msgs)
+
+        parents: dict[_State, tuple[_State, str] | None] = {start: None}
+        order: list[_State] = [start]
+        queue = [start]
+        while queue:
+            state = queue.pop(0)
+            for command, successor in self._moves(state, cap, seen_msgs,
+                                                  spoken):
+                if successor in parents:
+                    continue
+                if len(parents) >= max_states:
+                    raise RuntimeError(
+                        f"more than {max_states:,} states, so this is not "
+                        f"the instrument for this world - raise max_states "
+                        f"if you mean it, and know it grows with 2^flags")
+                parents[successor] = (state, command)
+                order.append(successor)
+                queue.append(successor)
+
+        return Search(world=self, parents=parents, states=order,
+                      printed=seen_msgs, spoken=spoken)
+
+    def droppable(self) -> set[int]:
+        """Things whose being *put down somewhere* any rule can notice.
+
+        The reduction that makes the search finish, and it is sound rather
+        than a sample. Dropping a thing changes exactly three conditions:
+        `C_HAVE` goes false, `C_CARRYING` falls, and `C_HERE` goes true. The
+        first two can only stop a rule firing, never start one - so the only
+        way putting something down can *open* anything is through a `C_HERE`
+        that names it.
+
+        For every other thing, which floor it is lying on is a distinction the
+        rule language cannot make, and modelling it multiplies the state space
+        by the number of rooms per object for nothing. `worlds_mystery` has no
+        `C_HERE` at all, which takes it from over 200,000 states to a few
+        thousand.
+
+        The one thing this gives up is a world where *not* holding something
+        matters - a rule with `HAVE` in it that the player would rather did
+        not fire. That is exotic, it is stated here rather than buried, and
+        `explore` can be given a world with a `C_HERE` on the thing to model
+        it.
+        """
+        observed = {arg for rule in self.rules for op, arg in rule.when
+                    if op == C_HERE}
+        observed |= {arg for op, arg in self.goal if op == C_HERE}
+        return observed
+
+    def _heat_cap(self) -> int:
+        """The largest attention any condition asks about.
+
+        Above it the world is blind, so the search need not count higher - and
+        must not, or a rule that adds one every turn makes the space infinite.
+        """
+        thresholds = [arg for rule in self.rules for op, arg in rule.when
+                      if op == C_HEAT]
+        thresholds += [arg for op, arg in self.goal if op == C_HEAT]
+        return max(thresholds, default=0)
+
+    def _moves(self, state: _State, cap: int, printed: set[int],
+               spoken: set[int]) -> list[tuple[str, _State]]:
+        """Every command that is legal here, and where it leads."""
+        out: list[tuple[str, _State]] = []
+
+        def turn(name: str, changed: _State) -> None:
+            out.append((name, self._settle(changed, cap, printed)))
+
+        if state.at_terminal:
+            # The classifier is listening, so the word table is not. This is
+            # `ATTERM` and it is the whole of the switch.
+            turn("leave", state._replace(at_terminal=False))
+            for index, topic in enumerate(self.topics):
+                asked = _set(state.asked, index, 1)
+                turn(f"archive {topic.words[0].lower()}",
+                     state._replace(asked=asked,
+                                    heat=min(cap, state.heat + topic.heat)))
+            return out
+
+        # A turn that does nothing but let the rules run. Not padding: rules
+        # are one pass, so a cascade of two needs two turns and this is the
+        # cheaper one.
+        turn("look", state)
+
+        for direction, target in self.rooms[state.here].exits.items():
+            turn(direction.lower(), state._replace(here=target))
+
+        for index, thing in enumerate(self.things):
+            if thing.portable and state.where[index] == state.here:
+                turn(f"take {thing.name}",
+                     state._replace(where=_set(state.where, index, CARRIED)))
+            elif state.where[index] == CARRIED and index in self.droppable():
+                turn(f"drop {thing.name}",
+                     state._replace(where=_set(state.where, index,
+                                               state.here)))
+
+        for pid, person in enumerate(self.people):
+            if state.pwhere[pid] != state.here:
+                continue
+            for tid, topic in enumerate(self.topics):
+                line = self._line_for(pid, tid, state.flags)
+                if line is not None:
+                    spoken.add(line)
+                flags = state.flags
+                if line is not None and self.lines[line].sets != NONE:
+                    flags = _set(flags, self.lines[line].sets, 1)
+                turn(f"ask {person.name} about {topic.words[0].lower()}",
+                     state._replace(asked=_set(state.asked, tid, 1),
+                                    flags=flags))
+
+        if self.terminal is not None and state.here == self.terminal:
+            turn("use", state._replace(at_terminal=True))
+
+        return out
+
+    def _line_for(self, person: int, topic: int,
+                  flags: tuple[int, ...]) -> int | None:
+        """The row that would be spoken, or None for the person's default."""
+        for index, line in enumerate(self.lines):
+            if line.person != person or line.topic != topic:
+                continue
+            if line.gate == NONE or flags[line.gate]:
+                return index
+        return None
+
+    def _settle(self, state: _State, cap: int,
+                printed: set[int]) -> _State:
+        """One pass of the rule table, which is what a turn actually costs."""
+        for number, rule in enumerate(self.rules):
+            if rule.once and state.fired[number]:
+                continue
+            if not all(self._holds_in(state, op, arg) for op, arg in rule.when):
+                continue
+            for op, arg, arg2 in rule.then:
+                state = self._apply(state, op, arg, arg2, cap, printed)
+            state = state._replace(fired=_set(state.fired, number, 1))
+        return state
+
+    def _holds_in(self, state: _State, op: int, arg: int) -> bool:
+        if op == C_AT:
+            return state.here == arg
+        if op == C_HAVE:
+            return state.where[arg] == CARRIED
+        if op == C_HERE:
+            return state.where[arg] == state.here
+        if op == C_FLAG:
+            return bool(state.flags[arg])
+        if op == C_NFLAG:
+            return not state.flags[arg]
+        if op == C_CARRYING:
+            return sum(1 for w in state.where if w == CARRIED) >= arg
+        if op == C_ASKED:
+            return bool(state.asked[arg])
+        if op == C_HEAT:
+            return state.heat >= arg
+        if op == C_WITH:
+            return state.pwhere[arg] == state.here
+        raise ValueError(f"no condition {op}")
+
+    def _apply(self, state: _State, op: int, arg: int, arg2: int, cap: int,
+               printed: set[int]) -> _State:
+        if op == A_SET:
+            return state._replace(flags=_set(state.flags, arg, 1))
+        if op == A_CLEAR:
+            return state._replace(flags=_set(state.flags, arg, 0))
+        if op == A_PRINT:
+            printed.add(arg)
+            return state
+        if op == A_GOTO:
+            return state._replace(here=arg)
+        if op == A_MOVE:
+            return state._replace(where=_set(state.where, arg, arg2))
+        if op == A_HEAT:
+            return state._replace(heat=min(cap, state.heat + arg))
+        if op == A_COOL:
+            return state._replace(heat=max(0, state.heat - arg))
+        if op == A_SEND:
+            return state._replace(pwhere=_set(state.pwhere, arg, arg2))
+        raise ValueError(f"no action {op}")
+
+
+class _State(NamedTuple):
+    """Everything a turn can change, hashable so the search can visit it once.
+
+    This is the overlay and nothing else, with `at_terminal` for `ATTERM` -
+    which is not saved on the device, because standing up is what a restore
+    does anyway.
+    """
+
+    here: int
+    at_terminal: bool
+    where: tuple[int, ...]
+    flags: tuple[int, ...]
+    fired: tuple[int, ...]
+    asked: tuple[int, ...]
+    heat: int
+    pwhere: tuple[int, ...]
+
+
+def _set(values: tuple[int, ...], index: int, value: int) -> tuple[int, ...]:
+    """One element changed, since a state has to stay hashable."""
+    if values[index] == value:
+        return values
+    return (*values[:index], value, *values[index + 1:])
+
+
+@dataclass
+class Search:
+    """What `World.explore` found, and the three questions asked of it."""
+
+    world: World
+    parents: dict[_State, tuple[_State, str] | None]
+    states: list[_State]
+    #: Message indices some reachable state prints.
+    printed: set[int]
+    #: Line indices some reachable state speaks.
+    spoken: set[int]
+
+    def solve(self) -> list[str] | None:
+        """The shortest sequence of commands that satisfies the goal.
+
+        `None` means the goal is unreachable, which is the bug this exists to
+        find: a game that looks finished, plays for an hour and cannot be won.
+        A world with no goal is not solvable-or-not, so it returns `[]`.
+        """
+        if not self.world.goal:
+            return []
+        for state in self.states:
+            if all(self.world._holds_in(state, op, arg)
+                   for op, arg in self.world.goal):
+                return self._path(state)
+        return None
+
+    def _path(self, state: _State) -> list[str]:
+        commands: list[str] = []
+        while True:
+            step = self.parents[state]
+            if step is None:
+                return list(reversed(commands))
+            state, command = step
+            commands.append(command)
+
+    def unseen(self) -> dict[str, list[str]]:
+        """Authored content no reachable state can show.
+
+        The practical fair-play bug is not an unwinnable game - that one gets
+        noticed. It is a clue behind a door that never opens, which reads to
+        the player as the author having been unfair when they were only wrong.
+        """
+        world = self.world
+        visited = {s.here for s in self.states}
+        held = {i for s in self.states for i, w in enumerate(s.where)
+                if w == CARRIED}
+        stood = {w for s in self.states for w in s.pwhere}
+        return {
+            "rooms": [r.name for i, r in enumerate(world.rooms)
+                      if i not in visited],
+            "things": [t.name for i, t in enumerate(world.things)
+                       if t.portable and i not in held],
+            "messages": [world.messages[i][:40]
+                         for i in range(len(world.messages))
+                         if i not in self.printed],
+            "lines": [f"{world.people[ln.person].name} on "
+                      f"{world.topics[ln.topic].name}"
+                      for i, ln in enumerate(world.lines)
+                      if i not in self.spoken],
+            "people": [p.name for i, p in enumerate(world.people)
+                       if p.at not in visited and p.at not in stood],
+            # A rule no reachable state fires is the quietest authoring bug
+            # there is: it has no error, no output and nothing to notice. The
+            # rule that was supposed to charge for reading a sealed record was
+            # one of these, and this is what found it.
+            "rules": [f"rule {i}" for i in range(len(world.rules))
+                      if not any(s.fired[i] for s in self.states)],
+        }
+
+
+def resolve_topics(world: World, titles: list[str]) -> None:
+    """Turn every topic's article titles into the ids the card knows.
+
+    `Topic.docs` are numbers because `buildwikibin.build` is handed a document
+    count and never sees the index. Somebody has to bridge that, and doing it
+    here means the world is the only thing that knows both - a build that
+    resolved titles itself would need the index passed through three call
+    sites that have no other use for it.
+
+    Titles are matched case-insensitively and an unknown one is an error
+    rather than a topic that quietly marks nothing: a mistyped title is
+    exactly the bug that makes a clue unfindable, and it is invisible at play
+    time because the archive still answers.
+    """
+    index = {title.upper(): doc for doc, title in enumerate(titles)}
+    for topic in world.topics:
+        docs = []
+        for title in topic.titles:
+            doc = index.get(title.upper())
+            if doc is None:
+                raise ValueError(
+                    f"topic {topic.name!r} names the article {title!r}, "
+                    f"which is not on this card")
+            docs.append(doc)
+        topic.docs = docs
