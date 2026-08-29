@@ -16,6 +16,9 @@ A ration ledger from year 188. The back of it has been drawn on.
 > take ledger
 Taken.
 
+> consult ledger
+There is no terminal here.
+
 > down
 The Mids Stair
 A landing halfway down, where the stair widens enough for two people to

@@ -54,6 +54,11 @@ ALIASES: dict[str, str] = {
 #: while writing one and `World.check` is what tells them so.
 MAX_WORD_LEN = 12
 
+#: The longest line the console reads, and therefore the longest a thing's
+#: `subject` may be: consulting one copies it into the same `INPBUF` a player
+#: types into, so anything longer would be a question truncated mid-word.
+MAX_INPUT_LEN = 60
+
 #: No exit that way. 255 rooms is the limit a one-byte room id implies, and a
 #: world that wants more wants a different overlay rather than a wider table.
 NOWHERE = 0xFF
@@ -78,6 +83,16 @@ class Thing:
     at: int
     #: Whether the player can pick it up. A door is scenery; a key is not.
     portable: bool = True
+    #: What this thing is a reference to, in the archive's own words - the
+    #: line `CONSULT` types at the terminal on the player's behalf.
+    #:
+    #: This is the whole of the join between the two programs. The card holds
+    #: ten thousand people and the world can carry none of them; what it can
+    #: carry is a *name*, on a ledger or a work order or a death notice, and a
+    #: thing with a subject is that piece of paper. Without one, `CONSULT`
+    #: says the screen has nothing to say about it - which is also the answer
+    #: for a wrench.
+    subject: str | None = None
 
 
 #: Condition opcodes. Every condition in a rule must hold, which is the point:
@@ -244,6 +259,20 @@ class World:
                     f"parser holds {MAX_WORD_LEN}, so it would be matched "
                     f"against {thing.name.upper()[:MAX_WORD_LEN]!r} and never "
                     f"found")
+            if thing.subject is not None and not thing.subject.strip():
+                raise ValueError(
+                    f"{thing.name!r} has an empty subject, which the terminal "
+                    f"cannot tell from having none - leave it None")
+            if thing.subject is not None and len(thing.subject) > MAX_INPUT_LEN:
+                raise ValueError(
+                    f"{thing.name!r} names a subject of {len(thing.subject)} "
+                    f"characters and the console reads {MAX_INPUT_LEN}, so it "
+                    f"would reach the archive cut off mid-word")
+            # Deliberately *not* refused when `terminal is None`. One `World`
+            # is built twice - once standalone, once carried by the oracle -
+            # and only the second has a card, so a subject unreadable in the
+            # first is not a mistake. The standalone binary says there is no
+            # terminal here, which is true of every room in it.
 
     def _check_rules(self) -> None:
         """Every argument, against what it indexes.

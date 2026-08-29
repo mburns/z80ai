@@ -501,6 +501,10 @@ def merged(tmp_path_factory):
 
     world = worlds.silo()
     world.terminal = 3                       # the IT office
+    # The shipped ledger points at `Supply`, which is a silo entry and not on
+    # this two-article card. Pointing it here keeps the assertion crisp about
+    # the mechanism rather than about what the corpus happens to hold.
+    world.things[1].subject = "Pump Failure"
     builder = buildwikibin.build(index.num_docs, index_name="W.IDX",
                                  text_name="W.DAT", world=world)
     return builder.build(), {
@@ -579,6 +583,86 @@ def test_walking_still_reads_nothing_from_the_card(merged):
     host2 = AgonHost(stdin=["!"], files=files)
     host2.run(game, max_cycles=2_000_000_000)
     assert before == host2.io_bytes          # four moves cost nothing extra
+
+
+# --- carrying a name to the terminal ------------------------------------------
+#
+# The join between the two programs, and the only one there is. Ten thousand
+# people are on the card and the world can carry none of them; what it can
+# carry is a *name*, and a thing's `subject` is the piece of paper it is
+# written on. `CONSULT LEDGER` types that at the archive - so the entries a
+# player can reach are the ones they have physically found a reference to.
+
+
+def test_consulting_a_thing_asks_the_card_about_its_subject(merged):
+    out = visit(merged, "down", "take ledger", "down", "east", "consult ledger")
+    assert "Pump Failure" in out
+    assert said(out, "The cistern pump on Level 142 stopped without warning.")
+
+
+def test_consulting_does_not_sit_the_player_down(merged):
+    """A piece of paper held up, not a chair pulled out.
+
+    The distinction is load-bearing: after `USE` the classifier owns `INPBUF`
+    and `TAKE` is not a command until you `LEAVE`. After `CONSULT` the world
+    is still listening, which is the whole point of the thing being the
+    question rather than a way into a prompt.
+    """
+    out = visit(merged, "down", "take ledger", "down", "east",
+                "consult ledger", "take screen")
+    assert "The screen wakes." not in out
+    assert said(out, "That is not something you can carry.")
+
+
+def test_a_thing_you_are_not_holding_cannot_be_consulted(merged):
+    """Finding it is the game, so the card stays shut until you have it."""
+    out = visit(merged, "down", "down", "east", "consult ledger")
+    assert said(out, "You are not carrying it.")
+    assert "Pump Failure" not in out
+
+
+def test_a_thing_that_names_nothing_says_so(merged):
+    """A wrench is a tool. Two of the four things are references and two are
+    not, and the machine has to be able to say which."""
+    out = visit(merged, "down", "down", "down", "down", "take wrench",
+                "up", "up", "east", "consult wrench")
+    assert said(out, "The screen has nothing to say about that.")
+    assert "Nothing on the card matches that." not in out
+
+
+def test_a_subject_the_card_has_never_heard_of_is_the_cards_refusal(merged):
+    """Two refusals, and the layer each belongs to.
+
+    The badge names `Sheriff's Office`, which is a silo entry and not on this
+    two-article card. So the world hands the name over and the *card* declines
+    it - "the thing means nothing" and "the archive has never heard of it" are
+    different facts and it would be wrong for the world to answer the second.
+    """
+    out = visit(merged, "down", "down", "take badge", "east", "consult badge")
+    assert said(out, "Nothing on the card matches that.")
+    assert "The screen has nothing to say about that." not in out
+
+
+def test_consulting_away_from_the_terminal_is_refused(merged):
+    out = visit(merged, "down", "take ledger", "consult ledger")
+    assert said(out, "There is no terminal here.")
+    assert "Pump Failure" not in out
+
+
+def test_consulting_costs_a_question_and_walking_still_costs_nothing(merged):
+    """`IF.md`'s claim, with the new verb in the middle of it.
+
+    `CONSULT` is a card read by design - it is the expensive action - and the
+    moves either side of it are still free.
+    """
+    game, files = merged
+    walk = ["down", "take ledger", "down", "east"]
+    host = AgonHost(stdin=[*walk, "!"], files=files)
+    host.run(game, max_cycles=2_000_000_000)
+
+    asked = AgonHost(stdin=[*walk, "consult ledger", "!"], files=files)
+    asked.run(game, max_cycles=2_000_000_000)
+    assert asked.io_bytes > host.io_bytes
 
 
 def test_a_world_costs_the_oracle_what_it_says(merged):
@@ -667,6 +751,35 @@ def test_a_name_of_exactly_the_longest_word_is_allowed():
     """The boundary, because an off-by-one here refuses a legal name."""
     World(rooms=[Room("A", "a")],
           things=[Thing("x" * libworld.MAX_WORD_LEN, "k", 0)]).check()
+
+
+def test_a_subject_longer_than_the_console_reads_is_refused():
+    """`CONSULT` copies it into the same `INPBUF` a player types into, so a
+    longer one would reach the archive cut off mid-word."""
+    world = World(rooms=[Room("A", "a")], terminal=0, things=[
+        Thing("key", "k", 0, subject="x" * (libworld.MAX_INPUT_LEN + 1))])
+    with pytest.raises(ValueError, match="cut off mid-word"):
+        world.check()
+
+
+def test_an_empty_subject_is_refused_rather_than_read_as_none():
+    """The emitted table cannot tell them apart: a thing that names nothing
+    points at an empty string, and so would this."""
+    world = World(rooms=[Room("A", "a")], terminal=0,
+                  things=[Thing("key", "k", 0, subject="  ")])
+    with pytest.raises(ValueError, match="empty subject"):
+        world.check()
+
+
+def test_a_subject_survives_a_world_with_no_terminal():
+    """One `World` is built twice and only the second build has a card.
+
+    Refusing here would make it impossible to write a subject in the shared
+    world definition at all - `worlds.silo()` has `terminal=None` and the
+    merged build sets it.
+    """
+    World(rooms=[Room("A", "a")],
+          things=[Thing("key", "k", 0, subject="Supply")]).check()
 
 
 def test_the_parser_agrees_with_the_check_about_the_boundary():

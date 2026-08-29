@@ -585,7 +585,11 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
         buildif.emit_dispatch(b, quit_label="QUIT")
         b.label("TURN")
         b.jp("MAINLOOP")
-        buildif.emit_world_routines(b, world)
+        # `CONSULT <thing>` puts the thing's subject in INPBUF and comes out
+        # here, which is the same place a line typed at the screen goes. The
+        # player never sat down: they held up a piece of paper and the archive
+        # read it.
+        buildif.emit_world_routines(b, world, ask_label="ML_ASK")
         buildif.emit_world_tables(b, world)
         b.label("LEAVEWORD")
         for word in ("LEAVE", "STAND", "STOP"):
