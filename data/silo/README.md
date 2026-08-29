@@ -1128,20 +1128,59 @@ refusal is visible and unhelpful, a missed refusal is a confident wrong answer
 with nothing on the screen to say so, and this file has argued from the start
 that a machine with gaps that says so beats one that is merely unreliable.
 
-### And it makes counting affordable
+<h3 id="what-shipping-the-counts-cost">And one of the two counts is free</h3>
 
-The count classes cost the old arrangement twenty-seven points of refusal. They
-cost this one fourteen, and land it **above where it started**:
+The measurement above said the counts cost the *old* twelve-wording
+arrangement twenty-seven points and this one fourteen, landing it above where
+it started. **That comparison was against a baseline that no longer ships**,
+and it does not survive being made against the arrangement that does. Ten
+seeds, paired, held-out phrasings, everything else held fixed:
 
-| | classes | refusal recall | answerable |
+| | classes | refusal recall | answerable | the counts |
+|---|---:|---:|---:|---:|
+| no counts *(the 48-wording class)* | 21 | **86.9 ± 4.0** | 52.5 ± 0.9 | — |
+| **`count_child_of` only** | 22 | **80.0 ± 4.1** | 52.5 ± 0.8 | 56.2 ± 7.4 |
+| both counts | 23 | **68.3 ± 6.0** | 54.0 ± 1.1 | 58.5 ± 4.2 |
+
+Paired per seed, the drop from no counts is **6.9 ± 6.8** for the child count
+(t = 1.02, indistinguishable from nothing) and **18.6 ± 6.9** for both
+(t = 2.68). The difference between them is **11.7 ± 5.6** — all of the cost is
+one class, and it is `born_on count_born_on`.
+
+So `count_child_of` ships and the level count does not. It is still a path the
+card can walk; it is not a question the classifier is taught to ask for.
+
+### It is not that the level count steals the refusals
+
+That was the prediction, and the breakdown refutes it. Of ninety-four missed
+refusals across three seeds, **nine went to a count class**. The two refuse
+shapes that are themselves about counting both got *better*:
+
+| refuse shape | 21 classes | 23 classes | of |
 |---|---:|---:|---:|
-| 12 wordings, no counts *(what shipped)* | 21 | 56.7% | 44.6% |
-| 48 wordings, plus two count classes | 23 | **63.1%** | 43.3% |
+| a count of a union | 9 | **0** | 80 |
+| a maximum | 34 | **9** | 40 |
+| an intersection | 0 | 35 | 120 |
+| a count round the ring | 0 | **48** | 117 |
 
-Same answerable accuracy, better refusal, and two capabilities that were not
-there. Counting is no longer blocked by the classifier — what remains is card
-support for a count step and the eZ80 routine to walk one, which is
-[scoped](#counting-was-not-an-aggregate-after-all) and not built.
+The forty-eight are the ring count, and they go to `lives_at` and its
+compositions — the paths they share words with. So the level count does not
+capture those refusals, it **displaces** them: teaching the model to separate
+`how many people were born on {s}'s level` from `how many people live on {s}'s
+floor` moves the second out of the refusal region and into the dwelling path
+next door, which answers it with an address.
+
+The collision was exactly where it was predicted to be. What was wrong was the
+expectation of what a collision looks like in the scores — not the near class
+winning, but the far class losing its grip on a neighbour it was already
+holding weakly.
+
+### Three seeds could not have found this
+
+Every other sweep in this file uses three. Three seeds put the refusal spread
+at ±16 and ±22 points and the arms overlap completely; the effect only becomes
+legible at ten, and even there two of the ten seeds move the other way. That is
+a caution about the rest of this file rather than about this measurement.
 
 ## Using it as an oracle for authored fiction
 
@@ -1153,11 +1192,17 @@ it is a constraint rather than a capability.
 
 Two things, and they do not overlap.
 
-**About people, from the graph.** Twenty question shapes — parent, spouse, job,
-shift, crew, class, dwelling, neighbour, section, birth year, and the
+**About people, from the graph.** Twenty-one question shapes — parent, spouse,
+job, shift, crew, class, dwelling, neighbour, section, birth year, and the
 compositions of those. A question in one of those shapes about somebody in the
 corpus is answered with a name and a full stop, in about 370,000 instructions,
 whatever the corpus size.
+
+One of the twenty-one is answered with a **number** rather than a name: how
+many children somebody has. The machine prints the tally and a full stop, and
+zero is one of the things it can print — that is an answer, not a failure to
+find one. A second count, how many people were born on somebody's level, is
+walkable and [deliberately not taught](#what-shipping-the-counts-cost).
 
 **About anything, from the text.** Any entry — generated or written — is found
 by the words in it. `data/silo/authored/` holds ten documents nobody generated,
@@ -1233,8 +1278,8 @@ it gets.
   packed bytes against 25 — and the ceiling is still a count, not a size, so
   neither is the constraint.
 - **Re-run `authored.py` after every `generate.py`**, which deletes them.
-- The classifier knows twenty shapes and one refusal. A question outside all
-  twenty-one does not fail; it lands on whichever of them it looks most like.
+- The classifier knows twenty-one shapes and one refusal. A question outside all
+  twenty-two does not fail; it lands on whichever of them it looks most like.
 
 ### What this is not
 
@@ -1277,21 +1322,26 @@ is a binary search followed by a scan — a loop and a counter, not an aggregate
 > near-neighbour misrouting the section above measures, where 32 of 63 missed
 > refusals landed on `crew_is` for exactly this reason.
 >
-> It is only a hazard so far: these count questions are in `questions.py`,
-> which measures the graph, and **not** in `relationpaths.PATHS`, which is what
-> the classifier learns. The card cannot ask them yet and so cannot confuse
-> them yet. Adding them is the point at which this has to be measured.
+> **The hazard was real and cost one of the two counts its place.**
+> `count_child_of` is in `relationpaths.PATHS` and the card answers it;
+> `born_on count_born_on` is not, for the 11.7 points it takes off the refusal
+> class. The measurement is [above](#what-shipping-the-counts-cost) — including
+> what this paragraph got wrong about how a collision shows up in the scores.
 
 `libgraph.COUNT` makes it a step. `count_child_of` is "how many children";
 `born_on count_born_on` hops to a level and counts what points back at it.
 
-| | steps | walk |
-|---|---:|---:|
-| how many children does X have | 1 | 100% |
-| how many people were born on X's level | 2 | 100% |
+| | steps | walk | in the phrasebook |
+|---|---:|---:|:---|
+| how many children does X have | 1 | 100% | yes |
+| how many people were born on X's level | 2 | 100% | [no](#what-shipping-the-counts-cost) |
 
 A count ends the walk, because a number has no edges — there is nowhere to hop
 from three.
+
+The second row is the distinction this file keeps having to make: **what the
+graph can answer and what the classifier is taught to ask for are two different
+lists**, and the second is shorter on purpose.
 
 What is genuinely out of reach is narrower than "aggregates", and worth stating
 precisely now that one of them has moved:
@@ -1303,11 +1353,42 @@ precisely now that one of them has moved:
 - **"related on any line"** — the paternal line is answered below; any line
   needs the ancestor sets rather than their tops.
 
-**The eZ80 does not carry counting yet**, and what it needs is specific: a
-routine beside `GW_HOP` that scans from the record `GW_FIND` lands on instead
-of returning it, one of the spare `kind` bytes in the step encoding to mark the
-step, and something that can print a decimal number — the program has only ever
-printed titles it read off the card.
+### The eZ80 carries counting
+
+Three pieces, and each was the size the paragraph above guessed. `GW_COUNT`
+scans forward from the record `GW_FIND` lands on rather than returning it — 83
+bytes, and it needs no second search because `GW_FIND` is a *lower bound*, so
+the first record of a run is exactly where it stops. `libgraphcard.COUNT` is
+`0xFE`, a spare kind byte beside `PLAIN`'s `0xFF`, so a count step is the same
+two bytes as any other and the card does not grow. `PRNUM` prints a 24-bit
+number in decimal, which the program had never needed: 332 bytes, unrolled over
+the powers of ten because this machine has no divide.
+
+A count costs a hop and then a scan. On a 150,000-edge table, 17,910 t-states
+for the search and 860 for each record tallied, so a count of twenty is twice a
+hop and a count of five hundred is twenty-five times one.
+
+On this card, asked as a player would ask it:
+
+| query | answer | instructions | card bytes |
+|---|---:|---:|---:|
+| how many children does Joshua U. Kim have | 7 | 485,950 | 2,866 |
+| how many children does Aaron A. Baker have | 0 | 516,188 | 3,658 |
+| *who is Joshua U. Kim's father* (a hop, for scale) | — | 519,414 | 8,871 |
+| *how many were born on his level* † | 642 | 1,244,428 | 27,480 |
+
+Every count is exactly what SQL says. A small count is **cheaper than an
+ordinary question**, because the scan is shorter than the search that found the
+subject.
+
+† Measured on a card built before the level count was dropped from the
+phrasebook, and kept because it is the only figure here for a *large* count:
+642 records is 2.4x a hop, or 0.07 s. It is what the shipped card would cost if
+that class were taught, and the walk still answers it — nothing routes to it.
+
+Zero prints as `0.` rather than falling back to the article list. That is the
+distinction the walk exists to preserve: the machine reached the man and found
+nothing pointing at him, which is not the same as not having understood.
 
 ## Two subjects, not one
 
