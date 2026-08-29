@@ -8,9 +8,16 @@ written. Both are easy to get right by accident - a compiler that recomputed
 that matter are the ones that edit the database and check the world moved.
 
 The database here is built by hand rather than by `generate.py`, which wants
-Faker and eight seconds. Six levels and one small floor is enough to have a
-ring, a stair and a department, and everything about the geometry is a property
-of one floor rather than of nine thousand people.
+Faker and eight seconds. Eight levels, seven departments and one small floor is
+enough to have a ring, a stair, somewhere to put every seeded thing and one
+cleaning to hang them off - and everything about the geometry is a property of
+one floor rather than of nine thousand people.
+
+The last section is the one that could not be written until all the others
+existed: it builds the compiled world, an oracle binary and a card, and plays
+the case from the notice through to the photograph. Every test above holds one
+link and none of them says the links join, which is the arrangement that passes
+while the thing it describes does not work.
 """
 
 from __future__ import annotations
@@ -76,8 +83,19 @@ def _apartments(db: sqlite3.Connection) -> None:
 
 @pytest.fixture
 def db(tmp_path):
-    """Six levels, one department and one floor of twelve flats."""
-    conn = schema.connect(tmp_path / "silo.db", migrate=True)
+    conn = _database(tmp_path)
+    yield conn
+    conn.close()
+
+
+def _database(where: Path) -> sqlite3.Connection:
+    """Eight levels, seven departments, one ring, and one cleaning.
+
+    A function as well as a fixture because the end-to-end walk at the bottom
+    of this file is module-scoped - it builds an oracle binary, which is not
+    something to do once per test.
+    """
+    conn = schema.connect(where / "silo.db", migrate=True)
     for number in range(1, LEVELS + 1):
         name = f"Level {number}"
         conn.execute("INSERT INTO article (source, title, lead) "
@@ -109,8 +127,7 @@ def db(tmp_path):
                  "ring, since, until) VALUES (?, 'Holston Becker', ?, 30, "
                  "'A', 100, 180)", (SOURCE, FLOOR))
     conn.commit()
-    yield conn
-    conn.close()
+    return conn
 
 
 def exits(world, name: str) -> dict[str, str]:
@@ -408,3 +425,121 @@ def test_a_turn_in_the_compiled_world_still_reads_nothing(db):
     # `PRWRAP` decides where the lines break, which is its business and not
     # this assertion's - the same normalisation `tests/test_if.py` uses.
     assert "Juliette Nichols" in " ".join(out.split())
+
+
+# --- the chain, walked ---------------------------------------------------------
+#
+# Every test above holds one link: the seed is placed where it belongs, the
+# case fills the holes, `CONSULT` copies a subject into `INPBUF`. None of them
+# says the links join, and they were verified separately - which is exactly the
+# arrangement that passes while the thing it describes does not work.
+#
+# So one test builds the whole apparatus - compiled world, oracle binary, card
+# - and plays it. The card is made here rather than being `data/silo.db`, which
+# is 39 MB, gitignored and wants Faker. That is a real limit and worth stating:
+# this walks the *mechanism* over a corpus invented for it, not the corpus that
+# ships.
+
+
+def _card(tmp_path, world):
+    """A card holding exactly what this world's things point at."""
+    import libsearch
+
+    subjects = sorted({t.subject for t in world.things
+                       if t.subject is not None})
+    leads = [f"{name} is an entry in the archive of Silo 18. "
+             f"Filed under {name}." for name in subjects]
+    index = libsearch.build(subjects, leads, {})
+    libsearch.write_index(index, tmp_path / "S.IDX")
+    libsearch.write_text(index, tmp_path / "S.DAT")
+    return index.num_docs, {
+        "S.IDX": (tmp_path / "S.IDX").read_bytes(),
+        "S.DAT": (tmp_path / "S.DAT").read_bytes()}
+
+
+@pytest.fixture(scope="module")
+def played(tmp_path_factory):
+    """Walk the case from the notice to the photograph, asking as we go.
+
+    Judicial is level 5, the Sheriff's Office 4, IT 3 and the ring is on
+    `FLOOR`. The route is: take the notice, take the key, carry both up to the
+    terminal, ask about each, then walk to the flat the key named and read
+    what is in it.
+    """
+    import buildwikibin
+
+    # Module-scoped, so build the database here rather than reuse `db`.
+    conn = _database(tmp_path_factory.mktemp("chain"))
+    world = buildworld.build(conn, (FLOOR,))
+    conn.close()
+
+    num_docs, files = _card(tmp_path_factory.mktemp("card"), world)
+    game = buildwikibin.build(num_docs, index_name="S.IDX",
+                              text_name="S.DAT", world=world).build()
+    route = [
+        "down", "down", "down", "down",          # Level 5
+        "east", "take notice", "west",           # Judicial
+        "up", "east", "take key", "west",        # Level 4, Sheriff's Office
+        "up", "east",                            # Level 3, IT: the terminal
+        "consult notice", "consult key",
+        "west", "up",                            # back out and up to Level 2
+        "west", "east", "east",                  # onto ring A, round to 1:00
+        "take photo",
+        "west", "west", "south",                 # back to the stair
+        "down", "east", "consult photo",
+        "!",
+    ]
+    host = AgonHost(stdin=route, files=files)
+    return host.run(game, max_cycles=2_000_000_000), host, game, files
+
+
+def test_the_notice_answers_from_the_card(played):
+    """Link one: a thing found in a room, asked at a terminal two floors up."""
+    out, _host, _game, _files = played
+    assert f"{CLEANED} is an entry in the archive" in " ".join(out.split())
+
+
+def test_the_key_names_a_flat_the_card_knows(played):
+    out, _host, _game, _files = played
+    flat = schema.address(FLOOR, 60, "A")
+    assert f"{flat} is an entry in the archive" in " ".join(out.split())
+
+
+def test_the_flat_the_key_named_is_a_room_with_the_photograph_in_it(played):
+    """Link two, and the one that makes it a chain rather than two lookups:
+    the address the archive just read out is somewhere the player can stand."""
+    out, _host, _game, _files = played
+    flat = schema.address(FLOOR, 60, "A")
+    assert f"Apartment {flat}" in out
+    assert "Taken." in out
+
+
+def test_the_photograph_names_the_spouse_and_the_card_has_him(played):
+    """Link three. Nothing in the world knows this name - it came out of the
+    corpus, into a description, and back to the card."""
+    out, _host, _game, _files = played
+    assert CLEANED_FACTS["spouse"] in " ".join(out.split())
+
+
+def test_the_chain_costs_three_questions_and_the_walk_costs_nothing(played):
+    """`IF.md`'s claim over the whole apparatus rather than over six rooms.
+
+    Not a bound - an equality. The same three questions asked after twelve
+    more moves read the same number of bytes, so the moves cost nothing at
+    all rather than nearly nothing. A bound would pass a world that paged.
+    """
+    _out, host, game, files = played
+    wandered = AgonHost(
+        stdin=["down", "up", "down", "up", "down", "up",
+               "down", "down", "down", "east", "west", "up",
+               "down", "down", "east", "take notice", "west",
+               "up", "east", "take key", "west", "up", "east",
+               "consult notice", "consult key", "west", "up",
+               "west", "east", "east", "take photo",
+               "west", "west", "south", "down", "east", "consult photo",
+               "!"],
+        files=files)
+    wandered.run(game, max_cycles=2_000_000_000)
+    assert host.io_bytes == wandered.io_bytes
+    assert host.io_bytes > 0                     # and three were still asked
+

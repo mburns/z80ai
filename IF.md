@@ -654,6 +654,34 @@ indistinguishable from a world that was always meant to hold nine:
 One of the ten is the control. A wrench names nothing, because `CONSULT WRENCH`
 has to be able to say so.
 
+### The chain, walked
+
+Every other test holds one link — the seed is placed where it belongs, the case
+fills the holes, `CONSULT` copies a subject into `INPBUF` — and none of them
+says the links join. That is the arrangement that passes while the thing it
+describes does not work, so one test builds the whole apparatus and plays it:
+
+```
+> east            take notice     Judicial, level 5
+> east            take key        Sheriff's Office, level 4
+> east            IT, level 3 — the terminal
+> consult notice  Alexandra Anderson is an entry in the archive...
+> consult key     2 100 A is an entry in the archive...
+> west > east > east              round ring A to the flat the key named
+> take photo
+> consult photo   Ronald Gordon is an entry in the archive...
+```
+
+Three questions and twenty-five moves. The cost assertion is an **equality**
+rather than a bound: the same three questions asked after twelve more moves
+read the same number of bytes, so the moves cost nothing at all rather than
+nearly nothing — a bound would pass a world that paged.
+
+The card is made by the test rather than being `data/silo.db`, which is 39 MB,
+gitignored and wants Faker. That is a real limit and worth stating plainly:
+this walks the *mechanism* over a corpus invented for it, and nothing in CI
+walks the corpus that ships.
+
 ## Two checks the prose needed
 
 **A whole playthrough, kept.** `tests/test_if.py` asserts phrases — fifty-three
