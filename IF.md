@@ -20,6 +20,9 @@ Long tables, and the great screen along the far wall showing the hills
 outside. Nobody sits at the tables nearest it.
 You can see ledger.
 
+> x ledger
+A ration ledger from year 188. The back of it has been drawn on.
+
 > take ledger
 Taken.
 ```
@@ -66,6 +69,23 @@ A player types a noun the author never wrote about every few turns. Naming it
 back is the only useful reply, and a bare argmax cannot produce it — the same
 gap `data/silo/` closed by [teaching a refuse class](data/silo/README.md).
 
+### What a thing may be called
+
+`SPLIT` takes two words and stops copying either at twelve characters, so a
+thing named `ration book` or `identification` is one the parser can never
+resolve. Nothing said so, and the failure was quiet twice over — the build
+succeeded, and `DESCRIBE` then listed the thing in the room every turn:
+
+```
+> take identification
+I do not know the word 'IDENTIFICATI'.
+```
+
+The truncation in that reply is the only evidence on screen that the *world*
+was built wrong rather than the player spelling it wrong. `World.check()` now
+refuses both, and `libworld.MAX_WORD_LEN` is where the limit lives because it
+bounds what an author may write as much as what the parser may read.
+
 The model is not wrong there in a way more training would fix. It is being
 asked a question with no answer and returning its best guess, because that is
 the only thing it can do.
@@ -76,6 +96,7 @@ the only thing it can do.
 |---|---|
 | `rooms` | name, description, six exits — 12 bytes, in the image |
 | `things` | name, description, where it starts, portable — 8 bytes, in the image |
+| a thing's name | **one word, at most `MAX_WORD_LEN`** — the parser's limit, not a style rule |
 | `HERE` | the room the player is in — **1 byte, in RAM** |
 | `WHERE[]` | where each thing is now — **1 byte each, in RAM** |
 | `FLAGS[]` | one bit a proposition — **in RAM** |
@@ -277,6 +298,15 @@ commands to keep in step. A diff is not by itself a bug; it is the change being
 It found one thing on its first run: `DO_INV` prints "You are carrying" once
 per item. Consistent with `DESCRIBE`, not what a player expects, and now
 pinned.
+
+**And it made a second one visible by omission.** Every thing row has carried a
+description pointer since this file was written, and no code path ever read
+offset 3 of one — four descriptions sat in the image, indexed and unreachable,
+because there was no verb that showed them. `EXAMINE` / `X` / `READ` is the
+cheaper of the two resolutions; the other was to stop emitting the text, and
+`worlds.py` had already written four descriptions worth reading. It works on
+what you are carrying as well as what is in the room: picking a thing up has
+not stopped you being able to look at it.
 
 **A rule that can never fire.** `World.check()` refuses every argument that
 indexes nothing, and none of those is the bug an author ships. That one is a

@@ -71,7 +71,7 @@ def test_the_turns_are_recovered_from_the_games_echo():
     more thing to keep in step.
     """
     turns = transcript.commands(SILO.read_text())
-    assert turns[:3] == ["down", "take ledger", "down"]
+    assert turns[:3] == ["down", "x ledger", "take ledger"]
     assert turns[-1] == "quit"
 
 

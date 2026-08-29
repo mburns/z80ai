@@ -10,6 +10,9 @@ Long tables, and the great screen along the far wall showing the hills
 outside. Nobody sits at the tables nearest it.
 You can see ledger.
 
+> x ledger
+A ration ledger from year 188. The back of it has been drawn on.
+
 > take ledger
 Taken.
 
@@ -32,6 +35,10 @@ back off. A standing order on the wall says a screen is fitted by two people
 and never by one.
 You can see screen.
 
+> examine screen
+A screen with its back off, half fitted. The standing order is clear about
+who may open one.
+
 > use
 There is no terminal here.
 
@@ -51,6 +58,10 @@ Generator Three
 Level 140, and the machine that carries the base load. The outboard bearing
 runs hot in the summer months and has done since year 211.
 You can see wrench.
+
+> read wrench
+A generator technician's wrench, worn to the shape of a hand that is not
+yours.
 
 > take wrench
 Taken.

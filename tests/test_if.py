@@ -141,6 +141,40 @@ def test_dropping_what_you_do_not_have_is_refused(game):
     assert "You are not carrying it." in out
 
 
+# --- looking at a thing, which nothing could do ------------------------------
+#
+# Every thing row has carried a description pointer since this file was
+# written, and no code path read offset 3 of one. Four descriptions were in the
+# image, indexed, and unreachable.
+
+
+def test_examining_a_thing_in_the_room_prints_its_description(game):
+    out, _ = play(game, "down", "x ledger")
+    assert said(out, "A ration ledger from year 188.")
+
+
+def test_examining_something_you_are_carrying_still_works(game):
+    """Picking a thing up has not stopped you being able to look at it."""
+    out, _ = play(game, "down", "take ledger", "down", "read ledger")
+    assert said(out, "The back of it has been drawn on.")
+
+
+def test_examining_scenery_works_because_it_is_still_here(game):
+    """`portable=False` refuses TAKE and has nothing to do with looking."""
+    out, _ = play(game, "down", "down", "east", "examine screen")
+    assert said(out, "The standing order is clear about who may open one.")
+
+
+def test_examining_something_that_is_not_here_says_so(game):
+    out, _ = play(game, "x wrench")
+    assert said(out, "That is not here.")
+
+
+def test_examine_without_a_noun_asks_which(game):
+    out, _ = play(game, "x")
+    assert said(out, "What do you want to do that to?")
+
+
 # --- words it was never given -------------------------------------------------
 
 
@@ -605,6 +639,49 @@ def test_a_thing_starting_nowhere_is_refused():
 
 def test_a_carried_thing_may_start_carried():
     World(rooms=[Room("A", "a")], things=[Thing("key", "k", CARRIED)]).check()
+
+
+# --- a name the player can actually type --------------------------------------
+#
+# `SPLIT` takes two words and stops copying either at `MAX_WORD_LEN`. A thing
+# named outside that is one the parser can never resolve, and the world builds,
+# runs, and lists the thing in the room every turn while denying it exists.
+
+
+def test_a_thing_named_in_two_words_is_refused():
+    world = World(rooms=[Room("A", "a")],
+                  things=[Thing("ration book", "a book of chits", 0)])
+    with pytest.raises(ValueError, match="is not one word"):
+        world.check()
+
+
+def test_a_thing_named_past_what_the_parser_holds_is_refused():
+    """And the message says what it would have been matched against."""
+    world = World(rooms=[Room("A", "a")],
+                  things=[Thing("identification", "a card", 0)])
+    with pytest.raises(ValueError, match="'IDENTIFICATI'"):
+        world.check()
+
+
+def test_a_name_of_exactly_the_longest_word_is_allowed():
+    """The boundary, because an off-by-one here refuses a legal name."""
+    World(rooms=[Room("A", "a")],
+          things=[Thing("x" * libworld.MAX_WORD_LEN, "k", 0)]).check()
+
+
+def test_the_parser_agrees_with_the_check_about_the_boundary():
+    """Two implementations of one limit, which is the only way to catch it.
+
+    `World.check` refuses thirteen characters because `SP_ONE` truncates at
+    twelve. Nothing but running the game says the two numbers are the same
+    number - and if they ever part, the check starts refusing names that work
+    or passing names that do not.
+    """
+    longest = "x" * libworld.MAX_WORD_LEN
+    world = World(rooms=[Room("A", "a")], things=[Thing(longest, "k", 0)])
+    out, _host = play(buildif.build(world).build(), f"take {longest}", "i")
+    assert said(out, "Taken.")
+    assert said(out, f"You are carrying {longest}.")
 
 
 # --- what a saved game would be -----------------------------------------------
