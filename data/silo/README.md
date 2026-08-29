@@ -1307,6 +1307,13 @@ reachable in play are the ones somebody has physically found a reference to,
 which is a constraint on the author rather than on the card: a person nothing
 points at is a person nobody can look up.
 
+`data/silo/items.py` is the seed, and it is the one place here that writes
+prose *about* the generated corpus rather than quoting it: ten sentences with
+holes in them, nine of which the alphabetically-first cleaning fills. The
+notice names who was sent out, the key names their flat, the photograph in that
+flat names who they married. Nothing about the objects is derived — the corpus
+has none — but everything they say is.
+
 What is still absent is save and restore on the device, and anything on the
 card that a turn writes.
 ## Counting was not an aggregate after all

@@ -70,10 +70,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import items
 import schema
 
 import buildif
-from libworld import NOWHERE, Room, World
+from libworld import NOWHERE, Room, Thing, World
 
 #: The database the rest of `data/silo/` defaults to.
 DB_PATH = Path(__file__).resolve().parent.parent / "silo.db"
@@ -164,11 +165,21 @@ def _occupants(db: sqlite3.Connection, floor: int) -> dict[str, str]:
     return dict(rows)
 
 
-def build(db: sqlite3.Connection, floors: tuple[int, ...] = ()) -> World:
+def build(db: sqlite3.Connection, floors: tuple[int, ...] = (),
+          seeded: bool = True, notes: list[str] | None = None) -> World:
     """The stair, the departments off it, and the rings on `floors`.
 
     Raises `TooManyRooms` rather than dropping the tail, because a world that
     is quietly missing its bottom forty levels walks perfectly well.
+
+    With `seeded`, `data/silo/items.py` is placed as well - ten things, nine
+    of which hang off one cleaning and name the next place to stand.
+
+    `notes` is the build log, and it exists for one reason: an item can fail
+    to be placed for two legitimate causes - a corpus with no cleaning in it,
+    and a floor that was not opened with `--floors` - and a chain with a link
+    missing is worse than a chain that says which link. Nine things out of ten
+    is indistinguishable from a world that was always meant to hold nine.
     """
     leads = _articles(db)
     levels = _levels(db)
@@ -221,8 +232,40 @@ def build(db: sqlite3.Connection, floors: tuple[int, ...] = ()) -> World:
     for floor in floors:
         _ring(db, rooms, index, floor)
 
-    return World(rooms=rooms, things=[], start=index[f"Level {levels[0]}"],
+    things = _place(db, index, notes if notes is not None else []) \
+        if seeded else []
+    return World(rooms=rooms, things=things,
+                 start=index[f"Level {levels[0]}"],
                  terminal=index.get("IT"))
+
+
+def _place(db: sqlite3.Connection, index: dict[str, int],
+           notes: list[str]) -> list[Thing]:
+    """`items.py` against the rooms this world actually has.
+
+    Two ways an item legitimately has nowhere to go, and both are recorded
+    rather than swallowed: the department it belongs in is not a room, and
+    `FLAT` when the case's floor was never opened with `--floors`.
+    """
+    placed, dropped = items.seed(db)
+    notes.extend(f"{name}: no cleaning in this corpus to hang it on"
+                 for name in dropped)
+
+    things: list[Thing] = []
+    for item, description, subject in placed:
+        where = item.where
+        if where == items.FLAT:
+            found = items.case(db)
+            # A dwelling's room key is its bare address; `build` registers it
+            # that way and prints it as "Apartment 107 800 A".
+            where = "" if found is None else found.flat
+        if where not in index:
+            notes.append(f"{item.name}: nowhere to put it - "
+                         f"{where or 'the flat'} is not a room in this world")
+            continue
+        things.append(Thing(item.name, description, index[where],
+                            subject=subject))
+    return things
 
 
 def _stair(rooms: list[Room], index: dict[str, int], levels: list[int],
@@ -231,9 +274,20 @@ def _stair(rooms: list[Room], index: dict[str, int], levels: list[int],
     for above, below in itertools.pairwise(levels):
         rooms[index[f"Level {above}"]].exits["DOWN"] = index[f"Level {below}"]
         rooms[index[f"Level {below}"]].exits["UP"] = index[f"Level {above}"]
+    shared: dict[int, str] = {}
     for dept, level in departments.items():
         if dept not in index:
             continue
+        # A landing has one EAST, so two departments on one level would be a
+        # silent overwrite: the second door emitted wins and the first
+        # department becomes a room nothing leads to. `generate.py` gives all
+        # fourteen distinct levels, so this has never fired - which is exactly
+        # when a check is worth having.
+        if level in shared:
+            raise ValueError(
+                f"{shared[level]} and {dept} are both on level {level}, and a "
+                f"landing has one door east")
+        shared[level] = dept
         landing = rooms[index[f"Level {level}"]]
         landing.exits["EAST"] = index[dept]
         landing.description += f" A door east is marked {dept}."
@@ -266,14 +320,18 @@ def _ring(db: sqlite3.Connection, rooms: list[Room], index: dict[str, int],
             f"{len(schema.RINGS)} rings.")
 
 
-def report(world: World, image: bytes) -> str:
+def report(world: World, image: bytes, notes: list[str]) -> str:
     stranded = len(world.rooms) - len(world.reachable())
-    return "\n".join([
-        f"{len(world.rooms)} rooms, {len(world.things)} things",
+    named = sum(1 for t in world.things if t.subject is not None)
+    lines = [
+        f"{len(world.rooms)} rooms, {len(world.things)} things "
+        f"({named} of them name something on the card)",
         f"  {len(image):,} bytes of image, {world.overlay_bytes} of overlay",
         f"  {stranded} rooms nothing leads to",
         f"  room ids left: {NOWHERE - len(world.rooms)}",
-    ])
+    ]
+    lines += [f"  not placed - {note}" for note in notes]
+    return "\n".join(lines)
 
 
 def main() -> int:
@@ -281,13 +339,17 @@ def main() -> int:
     parser.add_argument("--db", type=Path, default=DB_PATH)
     parser.add_argument("--floors", type=int, nargs="*", default=[],
                         help="residential levels to open up, ring by ring")
+    parser.add_argument("--bare", action="store_true",
+                        help="geography only: place none of data/silo/items.py")
     parser.add_argument("-o", "--out", type=Path,
                         help="write the eZ80 binary here")
     args = parser.parse_args()
 
+    notes: list[str] = []
     db = sqlite3.connect(args.db)
     try:
-        world = build(db, tuple(args.floors))
+        world = build(db, tuple(args.floors), seeded=not args.bare,
+                      notes=notes)
     except ValueError as refused:      # TooManyRooms is one of these
         print(refused, file=sys.stderr)
         return 1
@@ -295,7 +357,7 @@ def main() -> int:
         db.close()
 
     image = buildif.build(world).build()
-    print(report(world, image))
+    print(report(world, image, notes))
     for number, why in world.dead_rules():
         print(f"  rule {number} can never fire: {why}")
     if args.out:

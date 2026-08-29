@@ -30,13 +30,25 @@ import buildif
 from libhost import AgonHost
 
 SOURCE = schema.SOURCE
-LEVELS = 6
+LEVELS = 8
 #: One department, on a level that also has flats, so the landing has to use
 #: EAST and WEST for different things.
 DEPARTMENT, DEPARTMENT_LEVEL = "IT", 3
+#: The rest, one to a level, because a landing has one door east. Enough of
+#: `data/silo/items.py`'s addresses to place the whole seed.
+DEPARTMENTS = {"Cafeteria": 1, "Mechanical": 2, DEPARTMENT: DEPARTMENT_LEVEL,
+               "Sheriff's Office": 4, "Judicial": 5, "Supply": 6,
+               "Nursery": 7}
 #: Four bearings rather than twenty-four. A ring is a ring.
 BEARINGS = (0, 30, 60, 90)
 FLOOR = 2
+
+#: The cleaning `data/silo/items.py` hangs nine of its ten things off. Its
+#: address is a flat on `FLOOR`, so the photograph has somewhere to be once
+#: that floor is opened.
+CLEANED = "Alexandra Anderson"
+CLEANED_FACTS = {"fate": "Cleaning", "died": "148", "class": "Class of 76 (B)",
+                 "spouse": "Ronald Gordon"}
 
 
 def _apartments(db: sqlite3.Connection) -> None:
@@ -73,14 +85,23 @@ def db(tmp_path):
                      (SOURCE, name, f"{name} of the silo lies in Up Top."))
         conn.execute("INSERT INTO entity_type (source, kind, entity) "
                      "VALUES (?, 'level', ?)", (SOURCE, name))
-    conn.execute("INSERT INTO article (source, title, lead) VALUES (?, ?, ?)",
-                 (SOURCE, DEPARTMENT, f"{DEPARTMENT} is headquartered here."))
-    conn.execute("INSERT INTO entity_type (source, kind, entity) "
-                 "VALUES (?, 'department', ?)", (SOURCE, DEPARTMENT))
-    conn.execute("INSERT INTO edge (source, subject, relation, object) "
-                 "VALUES (?, ?, 'located_in', ?)",
-                 (SOURCE, DEPARTMENT, f"Level {DEPARTMENT_LEVEL}"))
+    for name, level in DEPARTMENTS.items():
+        conn.execute("INSERT INTO article (source, title, lead) "
+                     "VALUES (?, ?, ?)",
+                     (SOURCE, name, f"{name} is headquartered here."))
+        conn.execute("INSERT INTO entity_type (source, kind, entity) "
+                     "VALUES (?, 'department', ?)", (SOURCE, name))
+        conn.execute("INSERT INTO edge (source, subject, relation, object) "
+                     "VALUES (?, ?, 'located_in', ?)",
+                     (SOURCE, name, f"Level {level}"))
     _apartments(conn)
+    for prop, value in CLEANED_FACTS.items():
+        conn.execute("INSERT INTO fact (source, subject, property, ordinal, "
+                     "value, kind) VALUES (?, ?, ?, 0, ?, 'text')",
+                     (SOURCE, CLEANED, prop, value))
+    conn.execute("INSERT INTO fact (source, subject, property, ordinal, "
+                 "value, kind) VALUES (?, ?, 'address', 0, ?, 'text')",
+                 (SOURCE, CLEANED, schema.address(FLOOR, 60, "A")))
     conn.execute("INSERT INTO residence (source, person, floor, bearing, "
                  "ring, since, until) VALUES (?, 'Juliette Nichols', ?, 0, "
                  "'A', 200, NULL)", (SOURCE, FLOOR))
@@ -103,7 +124,8 @@ def exits(world, name: str) -> dict[str, str]:
 
 def test_the_stair_joins_each_level_to_the_next(db):
     world = buildworld.build(db)
-    assert exits(world, "Level 1") == {"DOWN": "Level 2"}
+    assert exits(world, "Level 1")["DOWN"] == "Level 2"
+    assert "UP" not in exits(world, "Level 1")
     assert exits(world, f"Level {LEVELS}") == {"UP": f"Level {LEVELS - 1}"}
     assert exits(world, "Level 4")["UP"] == "Level 3"
 
@@ -251,7 +273,7 @@ def test_more_rooms_than_a_room_id_can_name_is_refused(db):
                    "VALUES (?, ?, 'A level.')", (SOURCE, name))
         db.execute("INSERT INTO entity_type (source, kind, entity) "
                    "VALUES (?, 'level', ?)", (SOURCE, name))
-    with pytest.raises(buildworld.TooManyRooms, match="300 rooms"):
+    with pytest.raises(buildworld.TooManyRooms, match="299 landings"):
         buildworld.build(db)
 
 
@@ -263,6 +285,102 @@ def test_a_floor_that_was_never_opened_is_refused(db):
 def test_a_floor_outside_the_silo_is_refused(db):
     with pytest.raises(ValueError, match="not a level"):
         buildworld.build(db, (99,))
+
+
+# --- ten things, and nine of them are one case --------------------------------
+#
+# The corpus has no objects, so a seed cannot be derived - only placed, and
+# derived *about*. `data/silo/items.py` is hand-written sentences with holes in
+# them and the corpus fills the holes, which makes these tests about the holes.
+
+
+def carried(world, name: str):
+    return next(t for t in world.things if t.name == name)
+
+
+def test_the_seed_is_placed_where_it_belongs(db):
+    world = buildworld.build(db)
+    assert world.rooms[carried(world, "notice").at].name == "Judicial"
+    assert world.rooms[carried(world, "key").at].name == "Sheriff's Office"
+    assert world.rooms[carried(world, "wrench").at].name == "Mechanical"
+
+
+def test_the_case_fills_the_holes_from_the_corpus(db):
+    """The notice names who was sent out, and it is not written in the file."""
+    world = buildworld.build(db)
+    assert CLEANED in carried(world, "notice").description
+    assert carried(world, "notice").subject == CLEANED
+    assert carried(world, "slate").subject == CLEANED_FACTS["class"]
+    assert carried(world, "key").subject == schema.address(FLOOR, 60, "A")
+
+
+def test_each_thing_names_the_next_place_to_stand(db):
+    """The chain, which is the point of the seed being one case rather than
+    ten props: the notice names a person, the key names their flat, and the
+    photograph in it names who they married."""
+    world = buildworld.build(db, (FLOOR,))
+    flat = carried(world, "key").subject
+    assert world.rooms[carried(world, "photo").at].name == f"Apartment {flat}"
+    assert carried(world, "photo").subject == CLEANED_FACTS["spouse"]
+
+
+def test_a_thing_with_nowhere_to_go_is_reported_rather_than_dropped(db):
+    """Nine things out of ten is indistinguishable from a world meant to hold
+    nine, which is why the build log exists."""
+    notes: list[str] = []
+    world = buildworld.build(db, notes=notes)
+    assert not any(t.name == "photo" for t in world.things)
+    assert any("photo" in note and "not a room" in note for note in notes)
+
+
+def test_a_corpus_with_no_cleaning_seeds_only_what_it_can(db):
+    """`generate.py` sends 1.5% of deaths out to clean, and a small enough
+    corpus rounds that to none. A notice about nobody is worse than no
+    notice, and the log says which nine went."""
+    db.execute("DELETE FROM fact WHERE source = ? AND subject = ?",
+               (SOURCE, CLEANED))
+    notes: list[str] = []
+    world = buildworld.build(db, notes=notes)
+    names = {t.name for t in world.things}
+    assert "notice" not in names and "key" not in names
+    assert "wrench" in names and "ledger" in names
+    assert any("no cleaning in this corpus" in note for note in notes)
+
+
+def test_the_tool_that_names_nothing_stays_nameless(db):
+    """`CONSULT WRENCH` has to be able to say the thing means nothing, so one
+    of the ten has to mean nothing."""
+    world = buildworld.build(db)
+    assert carried(world, "wrench").subject is None
+    assert any(t.subject is not None for t in world.things)
+
+
+def test_the_seed_can_be_left_out(db):
+    assert buildworld.build(db, seeded=False).things == []
+
+
+def test_the_same_database_seeds_the_same_silo(db):
+    """`ORDER BY subject` rather than a sample: two builds of one card must
+    not disagree about what is in the drawer."""
+    first = buildworld.build(db, (FLOOR,))
+    second = buildworld.build(db, (FLOOR,))
+    assert [(t.name, t.at, t.subject) for t in first.things] == \
+        [(t.name, t.at, t.subject) for t in second.things]
+
+
+def test_two_departments_on_one_level_are_refused(db):
+    """A landing has one door east, so the second would win silently and the
+    first department become a room nothing leads to. `generate.py` gives all
+    fourteen distinct levels, which is when a check is worth having."""
+    db.execute("INSERT INTO article (source, title, lead) "
+               "VALUES (?, 'Farms', 'Farms is here.')", (SOURCE,))
+    db.execute("INSERT INTO entity_type (source, kind, entity) "
+               "VALUES (?, 'department', 'Farms')", (SOURCE,))
+    db.execute("INSERT INTO edge (source, subject, relation, object) "
+               "VALUES (?, 'Farms', 'located_in', ?)",
+               (SOURCE, f"Level {DEPARTMENT_LEVEL}"))
+    with pytest.raises(ValueError, match="one door east"):
+        buildworld.build(db)
 
 
 # --- and it is still a world --------------------------------------------------
