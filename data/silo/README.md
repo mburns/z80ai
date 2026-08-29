@@ -1300,6 +1300,13 @@ python data/silo/buildworld.py --floors 2 -o SILO.bin
 `libworld.NOWHERE` caps it at 255. That, rather than the half-megabyte of free
 SRAM, is what stops a world holding all twenty-nine opened floors.
 
+**And the world reaches back into this corpus through one verb.** A thing the
+player is carrying may name an entry — `Thing.subject` — and `CONSULT LEDGER`
+at the terminal types that name at the archive on their behalf. So the entries
+reachable in play are the ones somebody has physically found a reference to,
+which is a constraint on the author rather than on the card: a person nothing
+points at is a person nobody can look up.
+
 What is still absent is save and restore on the device, and anything on the
 card that a turn writes.
 ## Counting was not an aggregate after all

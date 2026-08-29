@@ -97,6 +97,7 @@ the only thing it can do.
 | `rooms` | name, description, six exits — 12 bytes, in the image |
 | `things` | name, description, where it starts, portable — 8 bytes, in the image |
 | a thing's name | **one word, at most `MAX_WORD_LEN`** — the parser's limit, not a style rule |
+| `SUBJECTS` | one pointer a thing, to the line `CONSULT` types at the archive — in the image |
 | `HERE` | the room the player is in — **1 byte, in RAM** |
 | `WHERE[]` | where each thing is now — **1 byte each, in RAM** |
 | `FLAGS[]` | one bit a proposition — **in RAM** |
@@ -198,6 +199,51 @@ At approximately 0340 on the eleventh day of...
 archive> leave
 IT, Level 34
 ```
+
+### Carrying a name to it
+
+`CONSULT <thing>` is the other way in, and the one the world is built around.
+Ten thousand people are on the card and the world can carry none of them — but
+it can carry a *name*, on a ledger or a work order or a death notice, and a
+`Thing.subject` is that piece of paper:
+
+```
+> consult ledger
+Pump Failure
+The cistern pump on Level 142 stopped without warning.
+
+> take screen
+That is not something you can carry.
+```
+
+**The player never sat down.** That is the load-bearing difference: after `USE`
+the classifier owns `INPBUF` and `TAKE` is not a command until you `LEAVE`,
+whereas after `CONSULT` the world is still listening. The thing *is* the
+question rather than a way into a prompt, so the entries a player can reach are
+the ones they have physically found a reference to.
+
+Two of the four shipped things name something and two do not, which is the
+distinction the verb exists to make — a wrench is a tool. And there are two
+refusals, at different layers:
+
+| | |
+|---|---|
+| `The screen has nothing to say about that.` | the **thing** names nothing |
+| `Nothing on the card matches that.` | the **archive** has never heard the name |
+
+The world answers the first and hands the second over, because they are
+different facts and it would be wrong for the world to answer the second.
+
+One `World` is built twice — standalone and carried — and only the second has a
+card, so `check()` deliberately allows a subject in a world with no terminal.
+It refuses an empty one (the emitted table cannot tell that from *none*) and
+one longer than the console reads, since `CONSULT` copies it into the very
+buffer a player types into.
+
+The wiring is one parameter: `emit_world_routines(..., ask_label=...)`, the
+card's ask path in the merged binary and a stub that says there is no terminal
+in the standalone one. Passed in rather than defined twice, because
+`Z80Builder.label` overwrites silently.
 
 **It goes the other way round from how #62 pictured it.** The issue described a
 world with a terminal inside it. The world is 4,050 bytes and the oracle
@@ -331,6 +377,8 @@ here has ever told the terminal anything.
 The compiled world has no things in it, because the corpus has no objects. It
 has ten thousand *people*, and they cannot be `Thing`s: `where[]` is a byte
 apiece, which would make a saved game 10 KB rather than 13. People stay on the
-card and are read; only the world is resident.
+card and are read; only the world is resident. `CONSULT` is how a compiled
+world would reach them — a thing placed in a flat, carrying the name of
+whoever lives there — and nothing places things yet.
 
 Those are what is left of #62's second scope.

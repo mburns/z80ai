@@ -55,15 +55,19 @@ def silo() -> World:
     ]
 
     things = [
+        # Two of the four are references to something on the card and two are
+        # not, which is the distinction `CONSULT` exists to make. A wrench is a
+        # tool; a ledger is a piece of paper with a name on it.
         Thing("wrench", "A generator technician's wrench, worn to the shape "
                         "of a hand that is not yours.", GENERATOR),
         Thing("ledger", "A ration ledger from year 188. The back of it has "
-                        "been drawn on.", CAFETERIA),
+                        "been drawn on.", CAFETERIA,
+              subject="Supply"),
         Thing("screen", "A screen with its back off, half fitted. The "
                         "standing order is clear about who may open one.",
               IT_OFFICE, portable=False),
         Thing("badge", "A deputy's badge, tarnished. You have no idea whose.",
-              STAIR_MID),
+              STAIR_MID, subject="Sheriff's Office"),
     ]
 
     # The four shapes `data/silo/README.md` says a path cannot express, as far

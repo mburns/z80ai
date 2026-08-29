@@ -43,7 +43,10 @@ from libworld import CARRIED, DIRECTIONS, NOWHERE, World
 #: An input line, and the most words a command may hold. Two is verb plus noun,
 #: which is every command this understands; a third word is a phrasing it will
 #: say it cannot read rather than one it silently ignores.
-MAX_INPUT_LEN = 60
+#:
+#: In `libworld` because it also bounds a thing's `subject`, which `CONSULT`
+#: copies into this same buffer.
+MAX_INPUT_LEN = libworld.MAX_INPUT_LEN
 #: The longest word either table holds, plus room to notice an over-long one.
 #: `INVENTORY` is nine; a player who types more gets it truncated and then
 #: named back at them, which is a legible failure rather than a wrong verb.
@@ -145,7 +148,16 @@ def build(world: World, org: int = AGON_LOAD_ADDR) -> EZ80Builder:
     b.call("PRSTR")
     b.call("READ_INPUT")
     emit_dispatch(b, quit_label="BYE")
-    emit_world_routines(b, world)
+    emit_world_routines(b, world, ask_label="USE_NOCARD")
+
+    # Where `CONSULT <thing>` goes in a binary with no card behind it. The
+    # subject is in `INPBUF` by now and there is nothing to read it, which is
+    # true of every room in this world rather than of this one.
+    b.label("USE_NOCARD")
+    b.ld_hl_label("MSGNOTERM")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("TURN")
 
     b.label("BYE")
     b.ld_hl_label("MSGBYE")
@@ -216,16 +228,23 @@ def emit_reset(b: EZ80Builder, world: World) -> None:
     _emit_reset_things(b, world)
 
 
-def emit_world_routines(b: EZ80Builder, world: World) -> None:
+def emit_world_routines(b: EZ80Builder, world: World,
+                        ask_label: str) -> None:
     """Everything a turn needs, and nothing about how the program starts.
 
     Split out so the oracle binary can hold a world as well. That direction
     round is the one that fits: the world is 4,050 bytes and the oracle 38,912,
     so a terminal standing in a room is the small thing inside the large one
     rather than the other way about - which is not how issue #62 pictured it.
+
+    `ask_label` is where `CONSULT <thing>` goes once the subject is in
+    `INPBUF`: the card's ask path in the merged binary, and a stub that
+    says there is no terminal in the standalone one. Passed in rather than
+    defined twice, because `Z80Builder.label` overwrites silently and
+    `test_the_two_programs_define_no_label_twice` exists to say so.
     """
     _emit_go(b, world)
-    _emit_take_drop(b, world)
+    _emit_take_drop(b, world, ask_label)
     _emit_describe(b, world)
     _emit_split(b)
     _emit_upper(b)
@@ -234,6 +253,7 @@ def emit_world_routines(b: EZ80Builder, world: World) -> None:
     _emit_noun(b)
     _emit_room_row(b)
     _emit_thing_row(b)
+    _emit_subj_row(b)
     _emit_where_ptr(b)
     _ldptr(b)
     _emit_rules(b, world)
@@ -316,6 +336,25 @@ def _emit_thing_row(b: EZ80Builder) -> None:
     b.add_hl_hl()
     b.add_hl_hl()
     b.ld_de_label("THINGS")
+    b.add_hl_de()
+    b.ret()
+
+
+def _emit_subj_row(b: EZ80Builder) -> None:
+    """HL = &SUBJECTS[A], a three-byte pointer per thing.
+
+    Its own table rather than a fourth field on the thing row, which would
+    take the stride from eight to eleven and cost `THINGROW` its three
+    `ADD HL,HL`. Three is `2A + A`, and the push is cheaper than a multiply.
+    """
+    b.label("SUBJROW")
+    b.ld_hl_nn(0)
+    b.ld_l_a()
+    b.push_hl()
+    b.add_hl_hl()
+    b.pop_de()
+    b.add_hl_de()
+    b.ld_de_label("SUBJECTS")
     b.add_hl_de()
     b.ret()
 
@@ -559,7 +598,8 @@ def _emit_go(b: EZ80Builder, world: World) -> None:
     b.jp("TURN")
 
 
-def _emit_take_drop(b: EZ80Builder, world: World) -> None:
+def _emit_take_drop(b: EZ80Builder, world: World,
+                    ask_label: str) -> None:
     """TAKE, DROP and INVENTORY, which are the whole of this world's physics.
 
     Every one of them is a byte in the overlay changing value. That is the
@@ -679,6 +719,68 @@ def _emit_take_drop(b: EZ80Builder, world: World) -> None:
     # carries a world. The whole of the switch is one byte: from here the
     # classifier reads the same INPBUF the word table just did.
     b.label("DO_USE")
+    # `CONSULT LEDGER` rather than `CONSULT`: the thing is the question.
+    #
+    # Ten thousand people are on the card and the world can carry none of
+    # them. What it can carry is a *name* - on a ledger, a work order, a death
+    # notice - and a thing's `subject` is that piece of paper. Consulting one
+    # types it at the archive on the player's behalf, so the only entries
+    # reachable are the ones somebody has physically found a reference to.
+    b.ld_a_mem_label("W2LEN")
+    b.or_a()
+    b.jp_z("DO_USE_BARE")
+
+    b.call("NOUNID")
+    b.jp_c("BADNOUN")
+    b.ld_c_a()
+    b.call("WHEREPTR")
+    b.ld_a_hl()
+    b.cp_n(CARRIED)
+    b.jp_nz("TK_HAVENOT")
+    b.ld_a_mem_label("HERE")
+    b.ld_hl_label("TERMROOM")
+    b.cp_hl()
+    b.jp_nz("US_NOTERM")
+
+    b.ld_a_c()
+    b.call("SUBJROW")
+    b.call("LDPTR")
+    b.ld_a_hl()
+    b.or_a()
+    b.jp_z("US_NOSUBJ")              # an empty string is "no subject"
+
+    # The subject into INPBUF, which is the line the archive is about to read.
+    # `World.check` refuses a subject longer than the console, so the cap here
+    # is the second of two rather than the only one.
+    b.ld_de_label("INPBUF")
+    b.ld_c_n(0)
+    b.label("US_COPY")
+    b.ld_a_hl()
+    b.or_a()
+    b.jr_z("US_ASK")
+    b.ld_de_a()
+    b.inc_hl()
+    b.inc_de()
+    b.inc_c()
+    b.ld_a_c()
+    b.cp_n(MAX_INPUT_LEN)
+    b.jr_nc("US_ASK")
+    b.jr("US_COPY")
+
+    b.label("US_ASK")
+    b.ld_a_c()
+    b.ld_mem_label_a("INPLEN")
+    b.jp(ask_label)
+
+    for label, message in (("US_NOTERM", "MSGNOTERM"),
+                           ("US_NOSUBJ", "MSGNOSUBJ")):
+        b.label(label)
+        b.ld_hl_label(message)
+        b.call("PRWRAP")
+        b.call("PRNL")
+        b.jp("TURN")
+
+    b.label("DO_USE_BARE")
     b.ld_a_mem_label("HERE")
     b.ld_hl_label("TERMROOM")
     b.cp_hl()
@@ -1059,6 +1161,7 @@ MESSAGES: dict[str, str] = {
     "MSGEMPTY": "You are empty-handed.",
     "MSGBYE": "Goodbye.",
     "MSGNOTERM": "There is no terminal here.",
+    "MSGNOSUBJ": "The screen has nothing to say about that.",
     "MSGSITDOWN": "The screen wakes. Type a name to look it up, or LEAVE to "
                   "stand up again.",
     "TERMPROMPT": "archive> ",
@@ -1082,6 +1185,14 @@ def _emit_tables(b: EZ80Builder, world: World,
         b.fixup_word(f"TDESC{index}")
         b.db(thing.at)
         b.db(1 if thing.portable else 0)
+
+    # One pointer a thing, to the line `CONSULT` types at the archive on its
+    # behalf. A thing that names nothing points at an empty string rather than
+    # at zero, so the test for "no subject" is the first byte and needs no
+    # 24-bit compare.
+    b.label("SUBJECTS")
+    for index, _thing in enumerate(world.things):
+        b.fixup_word(f"TSUBJ{index}")
 
     if world.things:
         b.label("INITWHERE")
@@ -1133,6 +1244,9 @@ def _emit_tables(b: EZ80Builder, world: World,
         b.db(0)
         b.label(f"TDESC{index}")
         b.ascii(thing.description)
+        b.db(0)
+        b.label(f"TSUBJ{index}")
+        b.ascii(thing.subject or "")
         b.db(0)
 
     for label, text in MESSAGES.items():
