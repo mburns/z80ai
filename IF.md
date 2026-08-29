@@ -323,6 +323,49 @@ A 230-room world still reads nothing: `io_bytes == 0` holds at two hundred
 rooms exactly as it did at six, because a move is a table lookup whatever the
 size of the table.
 
+### Ten things, and nine of them are one case
+
+The corpus has no objects, so a seed cannot be derived — only *placed*, and
+derived **about**. `data/silo/items.py` is ten hand-written sentences with
+holes in them, and the corpus fills the holes:
+
+```
+> x notice
+A carbon of a cleaning notice, year 148. Sent out: Alexandra H. Anderson.
+There is no reason given on it, which is the form.
+
+> x key
+A flat key on a wire loop. The paper tag is soft with handling and reads
+107 800 A.
+```
+
+Each names the next place to stand. The notice is in Judicial and names a
+person; the key is in the Sheriff's Office and names their flat; the photograph
+*in* that flat names who they married; the slate in the Nursery names their
+class. Consulting any of them at the terminal on Level 34 asks the card.
+
+The case is the alphabetically first cleaning in the corpus rather than a
+sample, so the same database always seeds the same silo — two builds of one
+card must not disagree about what is in the drawer.
+
+**The constraint that shapes the list is smaller than it looks.** A thing's
+name is one word and every name in a world must be unique, so there is no such
+thing as seventy-two ledgers, one per flat. Ten distinct objects is not a small
+version of a big idea; it is the only shape this parser has.
+
+Two items can legitimately fail to be placed — a corpus with no cleaning in it,
+and the photograph when that floor was not opened with `--floors` — and both go
+in a build log rather than quietly, because nine things out of ten is
+indistinguishable from a world that was always meant to hold nine:
+
+```
+158 rooms, 9 things (6 of them name something on the card)
+  not placed - photo: nowhere to put it - 107 800 A is not a room in this world
+```
+
+One of the ten is the control. A wrench names nothing, because `CONSULT WRENCH`
+has to be able to say so.
+
 ## Two checks the prose needed
 
 **A whole playthrough, kept.** `tests/test_if.py` asserts phrases — fifty-three
@@ -374,11 +417,8 @@ No daemons, no containers, no ranking, and no save and restore on the device -
 screen mode and no status line: `PRWRAP` decides where a line ends, and nothing
 here has ever told the terminal anything.
 
-The compiled world has no things in it, because the corpus has no objects. It
-has ten thousand *people*, and they cannot be `Thing`s: `where[]` is a byte
-apiece, which would make a saved game 10 KB rather than 13. People stay on the
-card and are read; only the world is resident. `CONSULT` is how a compiled
-world would reach them — a thing placed in a flat, carrying the name of
-whoever lives there — and nothing places things yet.
+People are still not `Thing`s and cannot be: `where[]` is a byte apiece, which
+would turn a 13-byte save into 10 KB. They stay on the card and are reached
+through the objects that name them.
 
 Those are what is left of #62's second scope.
