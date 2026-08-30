@@ -2,10 +2,14 @@
 """
 Wikidata statements for the articles this corpus already has.
 
-    # once, against a Wikidata graph dump (needs `ladybug`, ~22GB on disk)
+    # once per Wikidata snapshot (needs `ladybug`, ~22GB on disk, hours)
+    python data/wikipedia/wikidata.py --build latest-truthy.nt.bz2 -o wikidata.lbdb
+
+    # once per corpus (needs `ladybug`, minutes)
     python data/wikipedia/wikidata.py --export wikidata.lbdb -o wikidata.tsv.gz
 
     # thereafter, against the exported file (no exotic dependencies)
+    python data/wikipedia/wikidata.py --survey wikidata.tsv.gz
     python data/wikipedia/wikidata.py --score wikidata.tsv.gz
     python data/wikipedia/wikidata.py --write wikidata.tsv.gz --rebuild-graph
 
@@ -18,13 +22,26 @@ article, which is the only exact key between the two - see the README. Matching
 on the English label instead is right 43.5% of the time and confidently wrong
 2.3% of the time, and nothing about the wrong 2.3% looks wrong.
 
-## Why this is two programs
+## Why this is three stages behind one dependency
 
 Reading the graph dump needs `ladybug` and 22GB of disk for a database of 91.6M
 nodes and 766.5M edges. Nothing else here needs either, and CI needs neither, so
-the export is separated from everything that consumes it: it runs once and
-writes a file of a few megabytes, keyed by Q-id, and every later step reads that
-with the standard library.
+everything that touches it is on one side of a line: `--build` makes the graph
+and `--export` cuts it down, and what comes out is a file of a few megabytes,
+keyed by Q-id, that every later step reads with the standard library.
+
+`--build` is here rather than in a program of its own because it and `--export`
+have to agree about the schema, and the way that agreement was previously kept
+was that the graph existed on somebody's disk and nothing wrote down how. That
+is a pipeline which works until a machine is wiped.
+
+**The graph `--build` makes is not the graph those figures describe.** 766.5M
+edges is what the previous one held; this keeps entity-to-entity truthy
+statements and measures out at about 456M on the 2026-08-28 dump. The
+difference is statements `export` could never have used - literal values, and
+ranks below truthy - so the smaller graph is the same graph for every purpose
+here. Where a number below says 766.5M it is describing the old build, and is
+left alone rather than quietly rewritten to match.
 
 Keyed by Q-id rather than by title on purpose. A title is a fact about one
 snapshot of one wiki - it changes when an article is renamed, and 726 of them
@@ -55,8 +72,12 @@ or a bug in `export` itself.
 from __future__ import annotations
 
 import argparse
+import bz2
 import gzip
+import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -174,6 +195,203 @@ CONTAINMENT = (131, 17)
 #: chain (suburb, city, county, state, country) with room to spare; the point of
 #: a bound is that a cycle in Wikidata cannot spin here forever.
 CHAIN_DEPTH = 6
+
+
+#: The dump the builder reads.
+#:
+#:     https://dumps.wikimedia.org/wikidatawiki/entities/latest-truthy.nt.bz2
+#:
+#: Truthy N-Triples rather than the full JSON export, because `export` reads a
+#: subject, a property and an object and nothing else - truthy is those same
+#: statements with the qualifiers, references and deprecated ranks already
+#: dropped. A fraction of the bytes for exactly the columns that get used.
+TRUTHY = "latest-truthy.nt.bz2"
+
+#: A statement worth a row, as byte prefixes rather than a regex, because this
+#: runs once per line over a file with billions of them.
+NT_ENTITY = b"<http://www.wikidata.org/entity/Q"
+NT_DIRECT = b"<http://www.wikidata.org/prop/direct/P"
+
+#: Cut before Python sees a line at all. Labels, descriptions, aliases and
+#: sitelinks are the bulk of the dump and none of them carry this, so a C loop
+#: discards most of the file before the interpreter is involved.
+PREFILTER = "/prop/direct/P"
+
+#: Parallel bzip2 if this machine has one. 43.3GB compressed expands to ~762GB,
+#: so decompression *is* the runtime rather than a part of it.
+#:
+#: `lbzip2` first because it is the one that parallelises a bzip2 file it did
+#: not write, by finding the block boundaries. `pbzip2` only parallelises what
+#: `pbzip2` compressed and falls back to one thread on anything else - measured
+#: on this dump at 10.0s against plain `bzip2`'s 10.1s for the same 60MB, which
+#: is to say no difference at all. It stays in the list because it costs
+#: nothing and helps on a file it did write; it is not the one to install.
+DECOMPRESSORS = (("lbzip2", "-dc"), ("pbzip2", "-dc"), ("bzip2", "-dc"))
+
+#: What `export` expects to find, and the only place it is written down.
+#: Column order in the edge file is load-bearing: a rel COPY reads the first
+#: two columns as the endpoints and everything after them as properties.
+NODE_TABLE = "CREATE NODE TABLE wikidata_node(qid INT64, PRIMARY KEY(qid))"
+REL_TABLE = ("CREATE REL TABLE wikidata_rel("
+             "FROM wikidata_node TO wikidata_node, property INT64)")
+
+#: Triples held before a parquet flush. 4M is ~96MB of int64 columns.
+BUILD_CHUNK = 4_000_000
+
+
+def triple(line: bytes) -> tuple[int, int, int] | None:
+    """(subject, object, property) for an entity-to-entity truthy statement.
+
+    `None` for everything else, which is most of the dump: labels,
+    descriptions, aliases, sitelinks, and every statement whose value is a
+    literal. A birth *date* is a fact about an article rather than an edge to
+    another one, and this graph holds only the second kind - the corpus reads
+    dates out of the infobox, where they already are.
+
+    Subject and object first, property last, because that is the order a rel
+    COPY wants: the two endpoints, and then the columns.
+    """
+    parts = line.split(b" ", 3)
+    if len(parts) < 4:
+        return None
+    subj, prop, obj = parts[0], parts[1], parts[2]
+    if not (subj.startswith(NT_ENTITY) and prop.startswith(NT_DIRECT)
+            and obj.startswith(NT_ENTITY)):
+        return None
+    try:
+        return (int(subj[len(NT_ENTITY):-1]), int(obj[len(NT_ENTITY):-1]),
+                int(prop[len(NT_DIRECT):-1]))
+    except ValueError:
+        # `Q1234-deadbeef` and friends: a statement id rather than an entity.
+        return None
+
+
+def candidates(dump: Path) -> Iterator[bytes]:
+    """Candidate lines from the dump, decompressed and coarsely filtered.
+
+    Shelling out because both loops that matter here - inflating bzip2 and
+    throwing away four lines in five - are C ones, and the pure-Python path
+    below is the same work an order of magnitude slower. It is kept because a
+    machine without `grep` should still be able to run this overnight rather
+    than not at all.
+    """
+    tool = next(((name, flag) for name, flag in DECOMPRESSORS
+                 if shutil.which(name)), None)
+    if tool is None or not shutil.which("grep"):
+        with bz2.open(dump, "rb") as fh:
+            for line in fh:
+                if PREFILTER.encode() in line:
+                    yield line
+        return
+
+    unpack = subprocess.Popen([tool[0], tool[1], str(dump)],
+                              stdout=subprocess.PIPE)
+    assert unpack.stdout is not None
+    sieve = subprocess.Popen(["grep", "-F", PREFILTER],
+                             stdin=unpack.stdout, stdout=subprocess.PIPE,
+                             env={**os.environ, "LC_ALL": "C"})
+    # So that the decompressor is told when grep goes away, rather than filling
+    # a pipe nobody is reading.
+    unpack.stdout.close()
+    assert sieve.stdout is not None
+    drained = False
+    try:
+        yield from sieve.stdout
+        drained = True
+    finally:
+        sieve.stdout.close()
+        for proc in (sieve, unpack):
+            if proc.poll() is None:
+                proc.terminate()
+            proc.wait()
+    # Only once the stream ended by itself: a caller that stopped early killed
+    # these on purpose and their codes say so.
+    #
+    # A truncated dump is the failure this exists for. Decompressing one ends
+    # the pipe cleanly and sets a code nobody was reading, so the build used to
+    # finish, report a plausible edge count and write a graph missing however
+    # much of Wikidata had not downloaded - which nothing downstream could
+    # detect, because a smaller graph is exactly what a smaller corpus makes.
+    if drained and unpack.returncode:
+        raise RuntimeError(
+            f"{tool[0]} exited {unpack.returncode} reading {dump}: the dump is "
+            f"truncated or corrupt, and the statements read before it stopped "
+            f"are a prefix rather than a graph")
+
+
+def build(dump: Path, out: Path) -> tuple[int, int]:
+    """Turn a truthy N-Triples dump into the graph `export` reads.
+
+    Two parquet files and two COPYs rather than inserts: 766M edges one at a
+    time across the binding is not a thing that finishes.
+
+    The node list comes from a bitmap over the qids the edges mention rather
+    than from a set of them. A Python set of 91.6M integers is several GB on a
+    machine that has already been told to hold a parquet writer, and the ids
+    are dense enough that one bit each is 16MB.
+
+    This is the slow one - hours, most of it decompression - and it is what a
+    re-export does *not* have to repeat. Only a newer Wikidata snapshot needs
+    it run again.
+    """
+    import ladybug as lb
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    edges_path = out.with_suffix(".edges.parquet")
+    nodes_path = out.with_suffix(".nodes.parquet")
+    schema = pa.schema([("subj", pa.int64()), ("obj", pa.int64()),
+                        ("property", pa.int64())])
+    subj: list[int] = []
+    obj: list[int] = []
+    prop: list[int] = []
+    kept = high = 0
+    started = time.time()
+
+    with pq.ParquetWriter(edges_path, schema) as writer:
+        def flush() -> None:
+            nonlocal high
+            if not subj:
+                return
+            high = max(high, max(subj), max(obj))
+            writer.write_table(pa.table([subj, obj, prop], schema=schema))
+            subj.clear()
+            obj.clear()
+            prop.clear()
+
+        for line in candidates(dump):
+            if (got := triple(line)) is None:
+                continue
+            subj.append(got[0])
+            obj.append(got[1])
+            prop.append(got[2])
+            kept += 1
+            if len(subj) >= BUILD_CHUNK:
+                flush()
+                rate = kept / (time.time() - started)
+                print(f"  {kept:,} edges ({rate:,.0f}/s)", flush=True)
+        flush()
+
+    seen = np.zeros(high + 1, dtype=bool)
+    for batch in pq.ParquetFile(edges_path).iter_batches(
+            batch_size=BUILD_CHUNK):
+        seen[batch.column("subj").to_numpy()] = True
+        seen[batch.column("obj").to_numpy()] = True
+    qids = np.flatnonzero(seen)
+    pq.write_table(pa.table({"qid": qids}), nodes_path)
+    print(f"  {len(qids):,} nodes", flush=True)
+
+    con = lb.Connection(lb.Database(str(out)))
+    con.execute(NODE_TABLE)
+    con.execute(REL_TABLE)
+    con.execute(f"COPY wikidata_node FROM '{nodes_path}'")
+    con.execute(f"COPY wikidata_rel FROM '{edges_path}'")
+    # Only once both COPYs are in: a failure above should leave the hours of
+    # parsing on disk rather than make them be done again.
+    edges_path.unlink()
+    nodes_path.unlink()
+    return len(qids), kept
 
 
 def export(dump: Path, out: Path, qids: set[int]) -> tuple[int, int, int]:
@@ -783,10 +1001,15 @@ def main(argv: list[str] | None = None) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--db", type=Path, default=DB_PATH)
     parser.add_argument("--source", default="simplewiki")
+    parser.add_argument("--build", type=Path, metavar="LATEST-TRUTHY.NT.BZ2",
+                        help=f"Build the graph --export reads, from a Wikidata "
+                             f"truthy N-Triples dump ({TRUTHY}). Hours, and "
+                             f"only needed for a newer Wikidata snapshot.")
     parser.add_argument("--export", type=Path, metavar="WIKIDATA.LBDB",
                         help="Cut a fresh export from a Wikidata graph dump")
-    parser.add_argument("-o", "--out", type=Path, default=Path("wikidata.tsv.gz"),
-                        help="Where --export writes")
+    parser.add_argument("-o", "--out", type=Path,
+                        help="Where --build or --export writes "
+                             "(default wikidata.lbdb or wikidata.tsv.gz)")
     parser.add_argument("--score", type=Path, metavar="WIKIDATA.TSV.GZ",
                         help="Report what importing an export would change, "
                              "and write nothing")
@@ -800,9 +1023,17 @@ def main(argv: list[str] | None = None) -> None:
                              "unmapped first, and write nothing")
     args = parser.parse_args(argv)
 
-    # Before the database, because this reads only the export - which is what
-    # makes "what else is in here" answerable on a machine that has the file
-    # and not the 500MB corpus.
+    # Both before the database, because neither reads the corpus: one turns a
+    # Wikidata dump into a graph and the other says what an export holds. That
+    # is what makes them runnable on a machine that has the file and not the
+    # 500MB corpus.
+    if args.build:
+        out = args.out or Path("wikidata.lbdb")
+        print(f"building {out} from {args.build.name}")
+        nodes, edges = build(args.build, out)
+        print(f"{nodes:,} nodes and {edges:,} edges -> {out}")
+        return
+
     if args.survey:
         counts, header = survey(args.survey)
         report_survey(counts, header)
@@ -818,13 +1049,14 @@ def main(argv: list[str] | None = None) -> None:
             "<page.sql.gz> <page_props.sql.gz>")
 
     if args.export:
+        out = args.out or Path("wikidata.tsv.gz")
         qids = set(sitelinks(db, args.source))
         print(f"exporting statements about {len(qids):,} articles "
               f"from {args.export.name}")
-        statements, classed, chain = export(args.export, args.out, qids)
-        print(f"{statements:,} statements, {classed:,} class rows and "
-              f"{chain:,} containment links -> {args.out} "
-              f"({args.out.stat().st_size / 1e6:.1f} MB)")
+        kept, classed, chain = export(args.export, out, qids)
+        print(f"{kept:,} statements, {classed:,} class rows and "
+              f"{chain:,} containment links -> {out} "
+              f"({out.stat().st_size / 1e6:.1f} MB)")
         return
 
     path = args.score or args.write

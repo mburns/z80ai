@@ -1105,11 +1105,66 @@ needs `ladybug` and 22GB of disk and nothing else here does; the file it writes
 is read with the standard library.
 
 ```bash
+# Once per Wikidata snapshot (~25GB down, hours, needs `ladybug`).
+curl -O https://dumps.wikimedia.org/wikidatawiki/entities/latest-truthy.nt.bz2
+python data/wikipedia/wikidata.py --build latest-truthy.nt.bz2 -o wikidata.lbdb
+
 python data/wikipedia/wikidata.py --export wikidata.lbdb -o wikidata.tsv.gz
 python data/wikipedia/wikidata.py --survey wikidata.tsv.gz         # needs no corpus
 python data/wikipedia/wikidata.py --score wikidata.tsv.gz          # writes nothing
 python data/wikipedia/wikidata.py --write wikidata.tsv.gz --rebuild-graph
 ```
+
+### The graph the export reads has to be buildable
+
+For a while it was not. `--export` was documented against `wikidata.lbdb` and
+nothing in the repository made one — the `wikidata_node` / `wikidata_rel`
+schema was simply assumed to exist, which meant the pipeline worked exactly as
+long as one 22GB file survived on one disk.
+
+`--build` reads the **truthy** N-Triples dump rather than the full JSON export,
+because `export` reads a subject, a property and an object and nothing else:
+truthy is those same statements with the qualifiers, references and deprecated
+ranks already dropped. It keeps entity-to-entity statements and discards labels,
+descriptions, aliases, sitelinks and every literal value — a birth *date* is a
+fact about an article rather than an edge to another one, and the corpus already
+reads dates out of the infobox.
+
+Most of the runtime is bzip2. It shells out to `lbzip2` or `pbzip2` when the
+machine has one and to `grep` for the first filter, because both of those loops
+are C ones and the pure-Python fallback is the same work an order of magnitude
+slower. Installing `lbzip2` is worth more than any other tuning here.
+
+The node list comes from a bitmap over the qids the edges mention rather than a
+set of them: a Python set of 91.6M integers is several GB, and the ids are
+dense enough that one bit each is 16MB. Both tables load by `COPY` from
+parquet — 766M edges inserted one at a time is not a thing that finishes.
+
+### What it costs, measured on 60MB of the real dump
+
+| | |
+|---|---|
+| dump | 43.3 GB compressed, **~762 GB** of N-Triples (17.6×) |
+| lines | ~6.4 billion, of which **19.9%** carry `/prop/direct/P` |
+| kept | 35.9% of those are entity-to-entity — **~456M edges** |
+| decompression | 5.9 MB/s of compressed input, so **~2 hours** |
+| parsing | 176k lines/s into `triple`, which is the same rate bzip2 emits them |
+
+Decompression and parsing are neck and neck and run on different cores, so the
+pipeline costs about what decompression alone costs. `grep` spends 0.38s of CPU
+against bzip2's 10.15s for the same slice — it is free, hidden entirely behind
+the decompressor, and it is what keeps four lines in five away from Python.
+
+**`pbzip2` is not the parallel one to want.** It only splits files it
+compressed itself and falls back to a single thread on anything else: 10.0s
+against plain `bzip2`'s 10.1s on the same slice. `lbzip2` is the one that
+parallelises an arbitrary bzip2 file, and it is no longer in Homebrew.
+
+**456M edges rather than 766.5M.** The graph the older figures describe held
+more, because this keeps only entity-to-entity truthy statements — the rest are
+literal values and sub-truthy ranks, none of which `export` could ever have
+used, since it matches node to node. The smaller graph is the same graph for
+every purpose here.
 
 ### Mapping a relation does not cost a pass over the dump
 
@@ -1205,9 +1260,28 @@ source at all; **P37** (official language) is mapped too, which is the same
 relation asked of a country rather than of a work.
 
 They are in `PROPERTY` now, and `test_wikidata.py` asserts the two maps agree
-rather than leaving it to be noticed again. **The numbers above and the 3.1MB
-export were measured against the nine**; re-running `--export` is what says what
-the seventeen are worth.
+rather than leaving it to be noticed again.
+
+The graph as the 2026-08-01 snapshot leaves it, before any Wikidata import, is
+what the seventeen have to improve on:
+
+| relation | edges | | relation | edges |
+|---|---:|---|---|---:|
+| `located_in` | 49,784 | | `member_of` | 10,507 |
+| `born_in` | 42,288 | | `language_is` | 9,909 |
+| `died_in` | 17,277 | | `preceded_by` | 6,783 |
+| `genre_is` | 11,429 | | `followed_by` | 6,538 |
+| `created_by` | 11,107 | | `spouse_of` | 1,836 |
+| | | | `capital_is` | 848 |
+
+168,306 edges over 283,997 articles. **`created_by` is 11,107 and every one of
+them is an infobox `director` or `author` field** — the nine-property import
+added P170 and P50 and reached 13,406, so the eight that land there now are
+being asked to move the number that has moved least. `language_is` is 9,909 and
+had no Wikidata source at all until P364 and P37.
+
+**The numbers in the tables above were measured against the nine**; re-running
+`--export` is what says what the seventeen are worth.
 
 ### What a country is, asked rather than voted on
 
