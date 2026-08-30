@@ -325,6 +325,42 @@ def test_the_pure_python_reader_prefilters(wikidata, tmp_path, monkeypatch):
 
 @pytest.mark.skipif(not shutil.which("bzip2") or not shutil.which("grep"),
                     reason="needs an external bzip2 and grep")
+def test_a_truncated_dump_raises_rather_than_returning_a_prefix(
+        wikidata, tmp_path):
+    """The failure this is for: an interrupted 43GB download decompresses
+    cleanly right up to where it stops. Reading the prefix and carrying on
+    builds a graph missing however much never arrived, and nothing downstream
+    can tell that from a graph of a smaller Wikidata."""
+    import bz2 as bz2_module
+
+    whole = bz2_module.compress(b"".join(
+        nt(f"Q{i}", "P19", f"Q{i + 1}") for i in range(4000)))
+    dump = tmp_path / "truthy.nt.bz2"
+    dump.write_bytes(whole[:len(whole) // 2])
+
+    with pytest.raises(RuntimeError, match="truncated or corrupt"):
+        list(wikidata.candidates(dump))
+
+
+@pytest.mark.skipif(not shutil.which("bzip2") or not shutil.which("grep"),
+                    reason="needs an external bzip2 and grep")
+def test_stopping_early_is_not_mistaken_for_a_truncated_dump(wikidata,
+                                                             tmp_path):
+    """A caller that breaks out kills the decompressor on purpose, and the
+    code it exits with says so rather than saying the file was bad."""
+    import bz2 as bz2_module
+
+    dump = tmp_path / "truthy.nt.bz2"
+    dump.write_bytes(bz2_module.compress(b"".join(
+        nt(f"Q{i}", "P19", f"Q{i + 1}") for i in range(4000))))
+
+    stream = wikidata.candidates(dump)
+    assert wikidata.triple(next(stream)) == (0, 1, 19)
+    stream.close()
+
+
+@pytest.mark.skipif(not shutil.which("bzip2") or not shutil.which("grep"),
+                    reason="needs an external bzip2 and grep")
 def test_the_shell_reader_agrees_with_the_python_one(wikidata, tmp_path,
                                                      monkeypatch):
     """The pipeline is the path that actually runs over the dump, so it is

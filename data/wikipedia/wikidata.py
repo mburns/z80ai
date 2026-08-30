@@ -35,6 +35,14 @@ have to agree about the schema, and the way that agreement was previously kept
 was that the graph existed on somebody's disk and nothing wrote down how. That
 is a pipeline which works until a machine is wiped.
 
+**The graph `--build` makes is not the graph those figures describe.** 766.5M
+edges is what the previous one held; this keeps entity-to-entity truthy
+statements and measures out at about 456M on the 2026-08-28 dump. The
+difference is statements `export` could never have used - literal values, and
+ranks below truthy - so the smaller graph is the same graph for every purpose
+here. Where a number below says 766.5M it is describing the old build, and is
+left alone rather than quietly rewritten to match.
+
 Keyed by Q-id rather than by title on purpose. A title is a fact about one
 snapshot of one wiki - it changes when an article is renamed, and 726 of them
 changed in this corpus the day the escaping was fixed. A Q-id does not, so the
@@ -209,10 +217,15 @@ NT_DIRECT = b"<http://www.wikidata.org/prop/direct/P"
 #: discards most of the file before the interpreter is involved.
 PREFILTER = "/prop/direct/P"
 
-#: Parallel bzip2 if this machine has one. The dump is tens of GB compressed
-#: and expands to many times that, so decompression *is* the runtime rather
-#: than a part of it - installing `lbzip2` first is worth more than any tuning
-#: below it.
+#: Parallel bzip2 if this machine has one. 43.3GB compressed expands to ~762GB,
+#: so decompression *is* the runtime rather than a part of it.
+#:
+#: `lbzip2` first because it is the one that parallelises a bzip2 file it did
+#: not write, by finding the block boundaries. `pbzip2` only parallelises what
+#: `pbzip2` compressed and falls back to one thread on anything else - measured
+#: on this dump at 10.0s against plain `bzip2`'s 10.1s for the same 60MB, which
+#: is to say no difference at all. It stays in the list because it costs
+#: nothing and helps on a file it did write; it is not the one to install.
 DECOMPRESSORS = (("lbzip2", "-dc"), ("pbzip2", "-dc"), ("bzip2", "-dc"))
 
 #: What `export` expects to find, and the only place it is written down.
@@ -281,14 +294,29 @@ def candidates(dump: Path) -> Iterator[bytes]:
     # a pipe nobody is reading.
     unpack.stdout.close()
     assert sieve.stdout is not None
+    drained = False
     try:
         yield from sieve.stdout
+        drained = True
     finally:
         sieve.stdout.close()
         for proc in (sieve, unpack):
             if proc.poll() is None:
                 proc.terminate()
             proc.wait()
+    # Only once the stream ended by itself: a caller that stopped early killed
+    # these on purpose and their codes say so.
+    #
+    # A truncated dump is the failure this exists for. Decompressing one ends
+    # the pipe cleanly and sets a code nobody was reading, so the build used to
+    # finish, report a plausible edge count and write a graph missing however
+    # much of Wikidata had not downloaded - which nothing downstream could
+    # detect, because a smaller graph is exactly what a smaller corpus makes.
+    if drained and unpack.returncode:
+        raise RuntimeError(
+            f"{tool[0]} exited {unpack.returncode} reading {dump}: the dump is "
+            f"truncated or corrupt, and the statements read before it stopped "
+            f"are a prefix rather than a graph")
 
 
 def build(dump: Path, out: Path) -> tuple[int, int]:

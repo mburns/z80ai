@@ -1140,6 +1140,32 @@ set of them: a Python set of 91.6M integers is several GB, and the ids are
 dense enough that one bit each is 16MB. Both tables load by `COPY` from
 parquet — 766M edges inserted one at a time is not a thing that finishes.
 
+### What it costs, measured on 60MB of the real dump
+
+| | |
+|---|---|
+| dump | 43.3 GB compressed, **~762 GB** of N-Triples (17.6×) |
+| lines | ~6.4 billion, of which **19.9%** carry `/prop/direct/P` |
+| kept | 35.9% of those are entity-to-entity — **~456M edges** |
+| decompression | 5.9 MB/s of compressed input, so **~2 hours** |
+| parsing | 176k lines/s into `triple`, which is the same rate bzip2 emits them |
+
+Decompression and parsing are neck and neck and run on different cores, so the
+pipeline costs about what decompression alone costs. `grep` spends 0.38s of CPU
+against bzip2's 10.15s for the same slice — it is free, hidden entirely behind
+the decompressor, and it is what keeps four lines in five away from Python.
+
+**`pbzip2` is not the parallel one to want.** It only splits files it
+compressed itself and falls back to a single thread on anything else: 10.0s
+against plain `bzip2`'s 10.1s on the same slice. `lbzip2` is the one that
+parallelises an arbitrary bzip2 file, and it is no longer in Homebrew.
+
+**456M edges rather than 766.5M.** The graph the older figures describe held
+more, because this keeps only entity-to-entity truthy statements — the rest are
+literal values and sub-truthy ranks, none of which `export` could ever have
+used, since it matches node to node. The smaller graph is the same graph for
+every purpose here.
+
 ### Mapping a relation does not cost a pass over the dump
 
 The export used to filter on `PROPERTY` in the query, which made the property
