@@ -384,6 +384,55 @@ def test_the_shell_reader_agrees_with_the_python_one(wikidata, tmp_path,
     assert [r for r in through_shell if r] == [(42, 350, 19), (350, 145, 17)]
 
 
+# --- resuming a build ---------------------------------------------------------
+
+
+def staged(wikidata, tmp_path, dump_name="latest-truthy.nt.bz2"):
+    """A finished stage: two parquet files and the receipt that vouches."""
+    out = tmp_path / "wikidata.lbdb"
+    edges, nodes, receipt = wikidata.staged_paths(out)
+    edges.write_bytes(b"")
+    nodes.write_bytes(b"")
+    receipt.write_text(f"{dump_name}\t120219957\t876694627\n")
+    return out
+
+
+def test_a_receipt_from_another_dump_is_refused(wikidata, tmp_path):
+    """Resuming across dumps would load one snapshot's edges and report the
+    other's name, and the graph would be neither."""
+    out = staged(wikidata, tmp_path, dump_name="last-months-truthy.nt.bz2")
+    with pytest.raises(SystemExit, match="was staged from"):
+        wikidata.build(Path("latest-truthy.nt.bz2"), out)
+
+
+def test_parquet_without_a_receipt_is_not_resumed_from(wikidata, tmp_path,
+                                                       monkeypatch):
+    """A parse killed part-way leaves parquet and no receipt, and that parquet
+    is a prefix. The receipt is written last precisely so it says so."""
+    out = tmp_path / "wikidata.lbdb"
+    edges, nodes, receipt = wikidata.staged_paths(out)
+    edges.write_bytes(b"")
+    nodes.write_bytes(b"")
+    assert not receipt.exists()
+
+    reparsed = []
+    monkeypatch.setattr(wikidata, "stage", lambda d, o: reparsed.append(d) or (1, 2))
+    monkeypatch.setattr(wikidata, "populate", lambda o: None)
+    wikidata.build(Path("latest-truthy.nt.bz2"), out)
+    assert reparsed == [Path("latest-truthy.nt.bz2")]
+
+
+def test_a_receipt_skips_the_parse(wikidata, tmp_path, monkeypatch):
+    """The whole point: a load that failed costs minutes, not the hours the
+    parse took."""
+    out = staged(wikidata, tmp_path)
+    monkeypatch.setattr(wikidata, "stage", lambda d, o: pytest.fail(
+        "resumed build re-parsed the dump"))
+    monkeypatch.setattr(wikidata, "populate", lambda o: None)
+    assert wikidata.build(Path("latest-truthy.nt.bz2"), out) == (
+        120219957, 876694627)
+
+
 # --- the file format ----------------------------------------------------------
 
 

@@ -35,13 +35,11 @@ have to agree about the schema, and the way that agreement was previously kept
 was that the graph existed on somebody's disk and nothing wrote down how. That
 is a pipeline which works until a machine is wiped.
 
-**The graph `--build` makes is not the graph those figures describe.** 766.5M
-edges is what the previous one held; this keeps entity-to-entity truthy
-statements and measures out at about 456M on the 2026-08-28 dump. The
-difference is statements `export` could never have used - literal values, and
-ranks below truthy - so the smaller graph is the same graph for every purpose
-here. Where a number below says 766.5M it is describing the old build, and is
-left alone rather than quietly rewritten to match.
+**The graph `--build` makes is not the graph those figures describe.** The
+2026-08-28 truthy dump gives **120,219,957 nodes and 876,694,627 edges**,
+against the 91.6M and 766.5M the older text quotes - a bigger Wikidata, two
+years on. Where a number elsewhere says 766.5M it is describing the previous
+build and is left alone rather than quietly rewritten.
 
 Keyed by Q-id rather than by title on purpose. A title is a fact about one
 snapshot of one wiki - it changes when an article is renamed, and 726 of them
@@ -238,6 +236,35 @@ REL_TABLE = ("CREATE REL TABLE wikidata_rel("
 #: Triples held before a parquet flush. 4M is ~96MB of int64 columns.
 BUILD_CHUNK = 4_000_000
 
+#: Edges per `COPY` into the rel table, and what the pool is allowed to hold.
+#: Both measured against the real 120M-node graph rather than guessed at, which
+#: took three attempts to learn:
+#:
+#: | pool | batch | |
+#: |---|---|---|
+#: | default (80% of 17GB) | 876.7M | pool exhausted, after 2.9h of parsing |
+#: | 4GB | 25M | pool exhausted |
+#: | 4GB | 5M | pool exhausted |
+#: | 4GB | nodes only | fine, 12s |
+#: | 8GB | 5M | **fine, 3s** |
+#: | 8GB | 25M | killed |
+#:
+#: The reading is that a rel `COPY` costs what the *node* count costs, not what
+#: the batch costs: it partitions across all 120M of them however few edges are
+#: handed to it. So a smaller batch does not rescue a small pool - only 4GB to
+#: 8GB did - and the batch size is about staying under the ceiling once the
+#: pool is big enough, not about getting under it.
+#:
+#: 5M is 176 statements over this graph at about three seconds each. Copying
+#: into a rel table that already holds rows is allowed and each statement
+#: commits what it read, which is what makes the batching possible at all.
+COPY_BATCH = 5_000_000
+
+#: Explicit, because the default is 80% of physical memory: a number a machine
+#: with other people on it cannot actually be given, and one it discovers it
+#: cannot be given at the *end* of a three-hour build rather than the start.
+BUFFER_POOL = 8 * 1024 * 1024 * 1024
+
 
 def triple(line: bytes) -> tuple[int, int, int] | None:
     """(subject, object, property) for an entity-to-entity truthy statement.
@@ -319,28 +346,27 @@ def candidates(dump: Path) -> Iterator[bytes]:
             f"are a prefix rather than a graph")
 
 
-def build(dump: Path, out: Path) -> tuple[int, int]:
-    """Turn a truthy N-Triples dump into the graph `export` reads.
+def staged_paths(out: Path) -> tuple[Path, Path, Path]:
+    """The parquet the parse writes, and the receipt that says it finished."""
+    return (out.with_suffix(".edges.parquet"), out.with_suffix(".nodes.parquet"),
+            out.with_suffix(".staged"))
 
-    Two parquet files and two COPYs rather than inserts: 766M edges one at a
-    time across the binding is not a thing that finishes.
 
-    The node list comes from a bitmap over the qids the edges mention rather
-    than from a set of them. A Python set of 91.6M integers is several GB on a
-    machine that has already been told to hold a parquet writer, and the ids
-    are dense enough that one bit each is 16MB.
+def stage(dump: Path, out: Path) -> tuple[int, int]:
+    """Parse the dump into parquet, and write a receipt when it is all there.
 
-    This is the slow one - hours, most of it decompression - and it is what a
-    re-export does *not* have to repeat. Only a newer Wikidata snapshot needs
-    it run again.
+    The slow half - hours, nearly all of it decompression - and the half worth
+    never doing twice. The receipt is written last and carries the dump's name,
+    so a parse that was killed part-way leaves parquet that `build` will not
+    resume from: a truncated stage is a prefix, and a prefix is the failure
+    this file already learned to refuse once.
     """
-    import ladybug as lb
     import numpy as np
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    edges_path = out.with_suffix(".edges.parquet")
-    nodes_path = out.with_suffix(".nodes.parquet")
+    edges_path, nodes_path, receipt = staged_paths(out)
+    receipt.unlink(missing_ok=True)
     schema = pa.schema([("subj", pa.int64()), ("obj", pa.int64()),
                         ("property", pa.int64())])
     subj: list[int] = []
@@ -382,16 +408,77 @@ def build(dump: Path, out: Path) -> tuple[int, int]:
     pq.write_table(pa.table({"qid": qids}), nodes_path)
     print(f"  {len(qids):,} nodes", flush=True)
 
-    con = lb.Connection(lb.Database(str(out)))
+    receipt.write_text(f"{dump.name}\t{len(qids)}\t{kept}\n")
+    return len(qids), kept
+
+
+def populate(out: Path) -> None:
+    """Load the staged parquet into a fresh graph.
+
+    **The edges go in several COPYs rather than one.** A rel COPY builds its
+    adjacency in the buffer pool, and one statement over 876M edges exhausts it
+    - which is a failure that arrives at the very end, after the hours, saying
+    only that the pool is full. Copying into a rel table that already has rows
+    is allowed, and each statement commits what it read.
+
+    The pool is sized explicitly for the same reason. Left alone, ladybug asks
+    for 80% of physical memory, which on a machine with other people on it is a
+    number it cannot actually be given.
+    """
+    import ladybug as lb
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    edges_path, nodes_path, _ = staged_paths(out)
+    # A partly-loaded graph from a previous attempt is not a starting point.
+    shutil.rmtree(out, ignore_errors=True)
+    Path(str(out)).unlink(missing_ok=True)
+
+    con = lb.Connection(lb.Database(str(out), buffer_pool_size=BUFFER_POOL))
     con.execute(NODE_TABLE)
     con.execute(REL_TABLE)
     con.execute(f"COPY wikidata_node FROM '{nodes_path}'")
-    con.execute(f"COPY wikidata_rel FROM '{edges_path}'")
-    # Only once both COPYs are in: a failure above should leave the hours of
+
+    slice_path = out.with_suffix(".slice.parquet")
+    reader = pq.ParquetFile(edges_path)
+    done = 0
+    for n, batch in enumerate(reader.iter_batches(batch_size=COPY_BATCH), 1):
+        pq.write_table(pa.Table.from_batches([batch]), slice_path)
+        con.execute(f"COPY wikidata_rel FROM '{slice_path}'")
+        done += batch.num_rows
+        print(f"  copied {done:,} edges ({n} statements)", flush=True)
+    slice_path.unlink(missing_ok=True)
+
+    # Only once every COPY is in: a failure above should leave the hours of
     # parsing on disk rather than make them be done again.
     edges_path.unlink()
     nodes_path.unlink()
-    return len(qids), kept
+
+
+def build(dump: Path, out: Path) -> tuple[int, int]:
+    """Turn a truthy N-Triples dump into the graph `export` reads.
+
+    Parsing and loading are separated by a receipt on disk, so a load that
+    fails - and the first one did, on the buffer pool - costs minutes to retry
+    rather than the hours the parse took. Delete the `.staged` file to force a
+    fresh parse.
+    """
+    edges_path, nodes_path, receipt = staged_paths(out)
+    if receipt.exists() and edges_path.exists() and nodes_path.exists():
+        name, staged_nodes, staged_edges = receipt.read_text().strip().split("\t")
+        if name != dump.name:
+            raise SystemExit(
+                f"{receipt} was staged from {name}, not {dump.name}. Delete it "
+                f"to parse this dump instead.")
+        nodes, edges = int(staged_nodes), int(staged_edges)
+        print(f"  resuming from {edges_path.name}: "
+              f"{nodes:,} nodes, {edges:,} edges already parsed")
+        populate(out)
+        return nodes, edges
+
+    nodes, edges = stage(dump, out)
+    populate(out)
+    return nodes, edges
 
 
 def export(dump: Path, out: Path, qids: set[int]) -> tuple[int, int, int]:

@@ -1140,15 +1140,23 @@ set of them: a Python set of 91.6M integers is several GB, and the ids are
 dense enough that one bit each is 16MB. Both tables load by `COPY` from
 parquet — 766M edges inserted one at a time is not a thing that finishes.
 
-### What it costs, measured on 60MB of the real dump
+### What it costs, run
 
 | | |
 |---|---|
-| dump | 43.3 GB compressed, **~762 GB** of N-Triples (17.6×) |
-| lines | ~6.4 billion, of which **19.9%** carry `/prop/direct/P` |
-| kept | 35.9% of those are entity-to-entity — **~456M edges** |
-| decompression | 5.9 MB/s of compressed input, so **~2 hours** |
-| parsing | 176k lines/s into `triple`, which is the same rate bzip2 emits them |
+| dump | 43.3 GB compressed, ~762 GB of N-Triples (17.6×) |
+| parse | **2.9 hours**, settling at 83k edges/s |
+| graph | **120,219,957 nodes, 876,694,627 edges** |
+| staged | 4.8 GB of edge parquet, 489 MB of node parquet |
+
+**A 60MB sample predicted 456M edges and the answer was 876.7M** — out by 1.9×,
+in the direction that flatters nothing here but is worth writing down. The head
+of the dump is not representative: low-numbered entities are the famous ones,
+carrying labels and descriptions in a hundred languages, so the share of lines
+that are entity-to-entity is far lower at the front of the file than in the
+bulk of it. The *rate* the sample predicted was right to within 6%; the volume
+was not. Extrapolating a total from the first 0.14% of a sorted file measures
+the sorting.
 
 Decompression and parsing are neck and neck and run on different cores, so the
 pipeline costs about what decompression alone costs. `grep` spends 0.38s of CPU
@@ -1160,11 +1168,35 @@ compressed itself and falls back to a single thread on anything else: 10.0s
 against plain `bzip2`'s 10.1s on the same slice. `lbzip2` is the one that
 parallelises an arbitrary bzip2 file, and it is no longer in Homebrew.
 
-**456M edges rather than 766.5M.** The graph the older figures describe held
-more, because this keeps only entity-to-entity truthy statements — the rest are
-literal values and sub-truthy ranks, none of which `export` could ever have
-used, since it matches node to node. The smaller graph is the same graph for
-every purpose here.
+**876.7M edges rather than 766.5M**, and 120.2M nodes rather than 91.6M. The
+older figures describe the previous build; this is a bigger Wikidata two years
+on, and the numbers elsewhere in this file are left as they were rather than
+quietly rewritten to match a graph they were not measured against.
+
+### The load is where it broke, and why it is now a separate half
+
+The first run parsed for 2.9 hours and then died on the last statement:
+
+```
+120,219,957 nodes
+RuntimeError: Buffer manager exception: Unable to allocate memory!
+The buffer pool is full and no memory could be freed!
+```
+
+A rel `COPY` builds its adjacency in the buffer pool, and one statement over
+876.7M edges exhausts it. Two changes, and a third so this can never cost the
+parse again:
+
+- **The edges load in batches of 25M.** Copying into a rel table that already
+  has rows is allowed, and each statement commits what it read.
+- **The pool is sized explicitly at 4GB.** Left alone ladybug asks for 80% of
+  physical memory, which on a machine with other people on it is a number it
+  cannot be given — and it finds out at the end rather than the beginning.
+- **Parsing and loading are separated by a receipt on disk.** `--build` resumes
+  from staged parquet, so a failed load costs minutes rather than three hours.
+  The receipt is written last and names the dump it came from, because a parse
+  killed part-way leaves parquet that must not be resumed from — the same
+  refuse-a-prefix rule the decompressor check follows.
 
 ### Mapping a relation does not cost a pass over the dump
 
