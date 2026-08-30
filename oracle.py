@@ -33,6 +33,20 @@ What it does with the failures is the point. A broken walk reports what it
 contains it" rather than "I don't know" - the difference between a machine with
 gaps and one that is merely unreliable.
 
+There are three of those failures now and they are ordered. A walk that got
+partway says where it stopped; a walk that got nowhere reports what the graph
+*does* hold about the subject, which is always true and never the question; and
+only when even the subject is unknown does the search index get asked. Over 600
+held-out silo questions that takes the paragraph-about-somebody-else answer from
+26.7% to 0.8%.
+
+`--backoff` is the one knob that trades honesty for coverage, and it defaults
+to 25 rather than 0 because this is a demo: when the first path finds no edge
+*and* the classifier's top two were close, the runner-up is tried and the answer
+is hedged - "Second Shift, if I have your meaning." Raising it answers more
+questions and answers more of them wrongly. `liboracle` still defaults to 0, so
+nothing that imports it changed.
+
 Run it with --plain to see the mechanism instead of the voice.
 """
 
@@ -196,11 +210,11 @@ def main() -> None:
                         help="Show the mechanism rather than the voice")
     parser.add_argument("--evaluate", type=Path,
                         help="Score a question|answer file instead")
-    parser.add_argument("--backoff", type=int, default=0, metavar="MARGIN",
+    parser.add_argument("--backoff", type=int, default=25, metavar="MARGIN",
                         help="Try the classifier's second choice when the "
                              "first finds no edge and the two were this close. "
-                             "0 (the default) never does; it answers more "
-                             "questions and answers more of them wrongly")
+                             "0 never does. Raising it answers more questions "
+                             "and answers more of them wrongly")
     args = parser.parse_args()
 
     oracle = load(args.db, args.relations, args.card, args.source,
