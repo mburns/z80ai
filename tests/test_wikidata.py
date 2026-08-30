@@ -8,6 +8,7 @@ and what happens when Wikidata says two things at once.
 from __future__ import annotations
 
 import gzip
+import shutil
 from pathlib import Path
 
 import pytest
@@ -249,6 +250,102 @@ def test_a_country_class_is_written_and_a_person_class_is_not(wikidata, corpus):
     assert typed == [("Carrollton, Mississippi", libgraph.TYPE_RELATION,
                       "country")]
     assert plan.counts["country"]["typed"] == 1
+
+
+# --- reading the dump ---------------------------------------------------------
+
+
+def nt(subj: str, prop: str, obj: str) -> bytes:
+    """One N-Triples line, in the shape the truthy dump writes them."""
+    e = "http://www.wikidata.org/entity/"
+    d = "http://www.wikidata.org/prop/direct/"
+    obj = f"<{e}{obj}>" if obj.startswith("Q") else obj
+    return f"<{e}{subj}> <{d}{prop}> {obj} .\n".encode()
+
+
+def test_an_entity_to_entity_statement_is_a_row(wikidata):
+    """Returned endpoints-first, because that is the order a rel COPY wants."""
+    assert wikidata.triple(nt("Q42", "P19", "Q350")) == (42, 350, 19)
+
+
+def test_a_literal_valued_statement_is_not_an_edge(wikidata):
+    """A birth date is a fact about an article rather than an edge to another
+    one, and the corpus already reads dates out of the infobox."""
+    assert wikidata.triple(
+        nt("Q42", "P569", '"1952-03-11T00:00:00Z"')) is None
+
+
+def test_a_label_is_not_an_edge(wikidata):
+    """Labels, descriptions and aliases are the bulk of the dump."""
+    assert wikidata.triple(
+        b'<http://www.wikidata.org/entity/Q42> '
+        b'<http://www.w3.org/2000/01/rdf-schema#label> "Douglas Adams"@en .\n'
+    ) is None
+
+
+def test_a_non_entity_subject_is_skipped(wikidata):
+    """A property can be the subject of a truthy statement - `P31 P31 Q...` -
+    and it is not a node in this graph."""
+    assert wikidata.triple(
+        b'<http://www.wikidata.org/entity/P31> '
+        b'<http://www.wikidata.org/prop/direct/P31> '
+        b'<http://www.wikidata.org/entity/Q18616576> .\n') is None
+
+
+def test_a_statement_id_is_not_an_entity(wikidata):
+    """`Q1234-deadbeef` parses as far as the digits and then does not."""
+    assert wikidata.triple(
+        b'<http://www.wikidata.org/entity/Q42-c8f1> '
+        b'<http://www.wikidata.org/prop/direct/P19> '
+        b'<http://www.wikidata.org/entity/Q350> .\n') is None
+
+
+def test_a_truncated_line_is_skipped(wikidata):
+    """The last line of an interrupted download is half a triple."""
+    assert wikidata.triple(b'<http://www.wikidata.org/entity/Q42> <http') is None
+
+
+def test_the_pure_python_reader_prefilters(wikidata, tmp_path, monkeypatch):
+    """The fallback for a machine with no external bzip2 or grep has to drop
+    the same lines the shell pipeline drops, or the two paths disagree about
+    what the dump contained."""
+    import bz2 as bz2_module
+
+    dump = tmp_path / "truthy.nt.bz2"
+    dump.write_bytes(bz2_module.compress(
+        nt("Q42", "P19", "Q350")
+        + b'<http://www.wikidata.org/entity/Q42> '
+        b'<http://www.w3.org/2000/01/rdf-schema#label> "Douglas Adams"@en .\n'
+        + nt("Q350", "P17", "Q145")))
+    monkeypatch.setattr(wikidata.shutil, "which", lambda _name: None)
+
+    rows = [wikidata.triple(line) for line in wikidata.candidates(dump)]
+    assert rows == [(42, 350, 19), (350, 145, 17)]
+
+
+@pytest.mark.skipif(not shutil.which("bzip2") or not shutil.which("grep"),
+                    reason="needs an external bzip2 and grep")
+def test_the_shell_reader_agrees_with_the_python_one(wikidata, tmp_path,
+                                                     monkeypatch):
+    """The pipeline is the path that actually runs over the dump, so it is
+    worth reading a real one through real processes rather than trusting that
+    two implementations of the same filter agree."""
+    import bz2 as bz2_module
+
+    body = (nt("Q42", "P19", "Q350")
+            + b'<http://www.wikidata.org/entity/Q42> '
+            b'<http://www.w3.org/2000/01/rdf-schema#label> "Adams"@en .\n'
+            + nt("Q42", "P569", '"1952-03-11T00:00:00Z"')
+            + nt("Q350", "P17", "Q145"))
+    dump = tmp_path / "truthy.nt.bz2"
+    dump.write_bytes(bz2_module.compress(body))
+
+    through_shell = [wikidata.triple(line) for line in wikidata.candidates(dump)]
+    monkeypatch.setattr(wikidata.shutil, "which", lambda _name: None)
+    through_python = [wikidata.triple(line) for line in wikidata.candidates(dump)]
+
+    assert through_shell == through_python
+    assert [r for r in through_shell if r] == [(42, 350, 19), (350, 145, 17)]
 
 
 # --- the file format ----------------------------------------------------------

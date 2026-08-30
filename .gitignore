@@ -22,6 +22,18 @@ dist/
 *.db-wal
 *.db-shm
 
+# The Wikidata truthy dump, the graph data/wikipedia/wikidata.py --build makes
+# from it, and the parquet it stages on the way. Tens of GB each; the dump is
+# on dumps.wikimedia.org and everything downstream of it is reproducible.
+*.nt.bz2
+*.lbdb
+*.lbdb.wal
+*.parquet
+
+# What --export cuts that graph down to. A few MB and cheap to remake, but it
+# is derived data and it carries the name of the dump it came from.
+wikidata.tsv.gz
+
 # Question sets fetched from their upstreams by data/questions/*.py, which
 # record the URLs they came from.
 data/questions/cache/
