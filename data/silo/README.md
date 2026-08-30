@@ -20,9 +20,10 @@ into a card. `schema.py` adds six tables and eleven views on top of that and
 explains why it is a separate database file.
 
 If you only read one section, read [where a question's time actually
-goes](#where-a-questions-time-actually-goes): on the real card the graph walk
-is 1.0% of a query and the classifier is 56% — and that is *after* halving the
-classifier, which halved the query with it.
+goes](#where-a-questions-time-actually-goes): on the real card the classifier is
+62% of a query and the graph walk has fallen below what the instrument can
+measure — and that is *after* halving the classifier, which halved the query
+with it.
 
 ## Why bother inventing a corpus
 
@@ -46,13 +47,13 @@ two of them are deliberately strong.
 | | |
 |---|---:|
 | people | 10,000 |
-| articles | 13,072 |
-| facts | 134,048 |
-| edges | 105,404 |
+| articles | 13,302 |
+| facts | 144,048 |
+| edges | 142,749 |
 | dwellings | 2,088 |
 | classes, crews and committees | 757 |
 | memberships | 13,698 |
-| the database | 39 MB |
+| the database | 44 MB |
 
 Everyone has two parents, a birth year, a death year or none, a dwelling, a
 job, a department, a shift and a school class. The living also have a work
@@ -81,10 +82,11 @@ arithmetic happens once, here.
 Three different things, and the corpus is built to keep them apart.
 
 **Stored** — one row each, no conclusions: `father_is`, `mother_is`,
-`child_of`, `spouse_of`, `lives_at`, `born_on`, `works_in`, `job_is`,
-`shift_is`, `crew_is`, `class_is`, `sits_on`, and the geography.
+`child_of`, `spouse_of`, `lives_at`, `moved_in_year`, `born_on`,
+`born_in_year`, `generation_is`, `died_in_year`, `fate_is`, `works_in`,
+`job_is`, `shift_is`, `crew_is`, `class_is`, `sits_on`, and the geography.
 
-**Derivable** — a view in `schema.py`, never a table. 105,404 stored edges
+**Derivable** — a view in `schema.py`, never a table. 142,749 stored edges
 imply **506,543 relationships** nobody wrote down:
 
 | view | rows | view | rows |
@@ -102,15 +104,16 @@ SELECT other, relation FROM relative WHERE person = 'Alexander E. Wong';
 ```
 
 None of those 69 rows is stored. What is stored about Alexander E. Wong is
-twelve edges — his parents, his wife, his flat, his job, his shift, his
-department, his class, his crew.
+fifteen edges — his parents, his wife, his flat and the year he took it, his
+job, his shift, his department, his class, his crew, his generation, and the
+year he was born.
 
 **Walkable** is a third and smaller set, and finding its edge is what
 `questions.py` is for.
 
 ## Can you reason over it?
 
-`python data/silo/questions.py` asks twenty-two questions three ways — a
+`python data/silo/questions.py` asks twenty-seven questions three ways — a
 `libgraph` graph walk, the SQL views, and a guess that ignores the question —
 over a sample of 2,000 people. Ground truth is computed in Python from `fact`,
 `residence` and `membership`; the walk reads `edge`.
@@ -139,6 +142,69 @@ beat them would not be worth the card it walks on.
 
 The 2% that "what is X's spouse's trade" misses is the remarried:
 `spouse_of` has two edges and `follow` takes the first.
+
+### Three questions the card could not be asked at all
+
+`born`, `died` and `fate` were `fact` rows with nothing to point at —
+`PROPERTY_RELATION` gave all three a relation of `None`, so *when was X born*
+had no path and landed on whichever of the twenty-one it looked most like.
+Giving the value a title makes it an edge object, and the walk reaches a year
+the same way it reaches a level. It costs 223 articles on top of the 13,072 that
+were there and 24,690 edges on top of 105,404, and it is the only kind of new
+question that is nearly free at both ends: one row in the card's step table, and
+no new hop.
+
+| | hops | walk | best guess |
+|---|---:|---:|---:|
+| what year was X born | 1 | 100% | **99.7% — the birth year of X's classmates** |
+| what year did X die | 1 | 100% | 2.9% — born plus 71, the median lifespan |
+| how did X die | 1 | 100% | **98.4% — always "Natural causes"** |
+
+**Two of those three walks are worth nothing as measurements**, and printing
+them next to the guess is the only way that is visible. A school class is an
+age cohort — all 484 of them span exactly one year, and the class is *named*
+after it, `Class of 135 (B)` — so knowing somebody's class is knowing their
+birth year, and the baseline is not merely strong but tautological. Cleanings
+are 1.7% of deaths, so "always natural causes" is right 98.4% of the time.
+
+They are still worth having, because the demo is not the measurement. A machine
+that cannot be asked when somebody was born fails the question in the worst
+way available to it: fluently, as though it had been asked something else. The
+capability is new even where the accuracy is not.
+
+The middle row is the one that is also a result. A death year is not derivable
+from anything a guesser holds — lifespans run 58 to 88 — and the walk gets it
+exactly.
+
+### The same lever, pulled a second time
+
+Two more values were sitting in the corpus with nothing pointing at them.
+`generation` was a `fact` *and* a `category` and not an edge; the year a
+tenancy started has been in `residence` since the first build and the graph
+could never be asked for it. Both are now `generation_is` and `moved_in_year`
+— 10,000 edges and 2,655, seven more articles, and no new hop.
+
+Ten paired seeds put what they cost the twenty-five classes already there at
+**−0.6 ± 0.6**, which is nothing, and `refuse` at +1.3 ± 4.2, which is also
+nothing. But they are the **weakest classes here**, at 47.4% held out against a
+52.7% mean, and the pair average hides why:
+
+- `moved_in_year` is a *year* question sitting next to `born_in_year` and a
+  *dwelling* question sitting next to `lives_at`, and it shares vocabulary with
+  both. It is the collision case, written knowingly.
+- `generation_is` asks something nothing else asks. It has no near neighbour to
+  lose to and no near neighbour to borrow from either.
+
+They ship at 47.4% because the alternative is not silence. **A question with no
+class does not fail — it lands on whatever it resembles and gets answered
+fluently**, which is the whole argument this file has been making since the
+`refuse` class went in. Being right about half the time is strictly better than
+that, and it costs the classes around them nothing measurable.
+
+`moved_in_year` also brings the corpus's one deliberate gap with it: like
+`lives_at`, it is written for the living only, because the graph carries the
+present and a move-in year for a flat somebody left in 118 answers a question
+about a household that no longer exists.
 
 ### The climb, and what a hop limit costs
 
@@ -205,8 +271,8 @@ the truth is that it cannot be asked:
 
 - **how many cousins does X have** — four hops, two of them inverses, then a
   count. A count is an aggregate; a path ends in a value.
-- **who is the oldest person on X's crew** — a maximum over a set the walk can
-  enumerate but not rank.
+- ~~**who is the oldest person on X's crew**~~ — [it ranks
+  now](#ranking-was-not-out-of-reach-either).
 - **is X related to Y** — an intersection of two ancestor sets. `ancestor` is a
   recursive CTE and there is no such thing as a recursive path.
 - **how many people live on X's floor** — the walk can circle the ring in 24
@@ -214,18 +280,63 @@ the truth is that it cannot be asked:
 
 That list is the actual finding. The reasoning an eZ80 can do is *composition*
 — follow this, then that, then that, in either direction — and it stops at
-aggregation, ranking, and set difference.
+aggregation, ranking, and set difference. **Two of the four have since come off
+it**, both by the same route: something that looked like an aggregate turned out
+to be a scan over a table that was already sorted.
+
+### Ranking was not out of reach either
+
+`libgraph.extreme` answers "who is the oldest on X's crew" in three steps, none
+of them an aggregate: one hop to the crew, the reverse table for its members —
+contiguous, so a scan — and one hop each to their birth year. Two index reads
+plus one per member, eleven for a crew, against a walk whose cost [cannot be
+measured at all](#where-a-questions-time-actually-goes).
+
+| | walk | best guess |
+|---|---:|---:|
+| who is the oldest on X's crew | 100% | 10.1% — X themselves |
+| who is the youngest on X's crew | 100% | 9.5% — X themselves |
+
+A crew is eleven people, so "it is probably you" is right about a ninth of the
+time, which is the honest baseline and not a straw man.
+
+**It could not have been asked before this month.** A maximum needs something
+to compare, and a birth year was a `fact` row with no edge until [it got a
+title](#three-questions-the-card-could-not-be-asked-at-all). Adding the year
+node to answer *when was X born* turned out to be what made *who is the oldest*
+reachable, which was not the reason for adding it.
+
+And what it compares is **document ids**, because a 24-bit compare is the only
+comparison the eZ80 has. That gives chronological order for one reason and it
+is not in the schema: `generate.write` emits year articles in ascending order
+and ids follow insertion. Sorting the same titles as text puts `Year 100`
+before `Year 11` before `Year 2`, so a build that ever assigned ids by title
+would leave every ranking answer confidently wrong with nothing on the screen
+to say so. `tests/test_silo.py` asserts both halves — that the ids ascend, and
+that text order would not have.
+
+Ties are scored as a set. Two people born in the same year are equally the
+eldest and the reverse table returns whichever it reaches first; marking that a
+miss would measure the tie-break rather than the ranking.
 
 ## Coverage is a decision here, not an accident
 
 ```
-child_of    8,800 subjects   88.0%  everyone with a parent
-works_in   10,000 subjects  100.0%  everyone
-class_is    9,983 subjects   99.8%  everyone who reached six
-lives_at    2,655 subjects   26.6%  the living only
-crew_is     2,561 subjects   25.6%  the living of working age
-sits_on     1,078 subjects   10.8%  committee members, past and present
+child_of       8,800 subjects   88.0%  everyone with a parent
+works_in      10,000 subjects  100.0%  everyone
+class_is       9,983 subjects   99.8%  everyone who reached six
+died_in_year   7,345 subjects   73.5%  the dead
+lives_at       2,655 subjects   26.6%  the living only
+crew_is        2,561 subjects   25.6%  the living of working age
+sits_on        1,078 subjects   10.8%  committee members, past and present
 ```
+
+`died_in_year` and `fate_is` are the one gap this corpus has **on purpose**.
+[A dense graph never says "I don't know"](#a-dense-graph-never-says-i-dont-know)
+is the problem they answer: every other classified path completes, so a
+misroute is a fluent wrong answer with no symptom. Asking when somebody still
+alive died is the one question where the walk stops for a reason a reader can
+check, and it stops for a quarter of the corpus.
 
 `lives_at` covers a quarter of the corpus because **the graph carries the
 present and the `residence` table carries all 220 years**. A graph has no
@@ -244,13 +355,23 @@ python data/silo/benchcard.py        # runs it in the emulator, ~2 min
 
 | | |
 |---|---:|
-| `SILO.bin` | 38.9 KB — program, path table and classifier |
-| `SILO.IDX` | 5.0 MB — 6,019 terms, 333,278 postings |
-| `SILO.DAT` | 1.2 MB — titles and leads, byte-pair packed |
-| `SILO.GRF` | 1.6 MB — 105,404 edges over 16 relations |
+| `SILO.bin` | 57.1 KB — program, path table and classifier |
+| `SILO.IDX` | 5.0 MB — 6,565 terms, 355,630 postings |
+| `SILO.DAT` | 1.3 MB — titles and leads, byte-pair packed |
+| `SILO.GRF` | 2.1 MB — 142,749 edges over 21 relations |
 | accumulator | 13 KB resident, one byte per article |
 
-All 20 phrases the classifier knows are paths the card can walk.
+26 of the 27 phrases the classifier knows are paths the card can walk. The
+twenty-seventh is `refuse`, which is [not a path on
+purpose](#giving-it-back-as-a-class-rather-than-a-threshold).
+
+`SILO.bin` read 38.9 KB here for longer than it was true: that is the figure
+from the 128-bucket encoder, and [widening it to
+256](#what-the-width-costs-on-the-card) took it to 55.9 KB in the same table
+that measured the five points it bought. The remaining 1.2 KB is the five
+classes added since — `born_in_year`, `died_in_year`, `fate_is`,
+`generation_is` and `moved_in_year` — which are 576 weights and five rows of
+path table between them.
 
 ### Where a question's time actually goes
 
@@ -260,25 +381,46 @@ without `--relations` — one that searches and neither classifies nor walks:
 
 | | share of a query |
 |---|---:|
-| the classifier — one forward pass, 30,592 two-bit weights | **55.8%** |
-| the search — BM25 over 13,072 articles | 44.2% |
-| the graph walk — four hops | 1.0% |
+| the classifier — one forward pass, 47,648 two-bit weights | **62.2%** |
+| the search — BM25 over 13,312 articles | 37.8% |
+| the graph walk — four hops | *below the noise* |
 
-**The graph is the cheap part, by a factor of fifty.** What the card pays for
-is deciding which question it was asked, not answering it. That is the opposite
-of where the effort has gone in this repository, and it is the useful thing to
-know before optimising anything.
+**The graph is not the cheap part any more, it is the unmeasurable part.** A
+question costs about 479,000 instructions and the same question on a card built
+without `--relations` costs 179,822, so the classifier is five eighths of it.
+What is left for the walk is a slope over six hop counts, and that slope comes
+out **negative** — −1,931 instructions per hop, which is smaller than the spread
+of any single row in the table above.
 
-Those shares are after [shrinking the
-classifier](#the-classifier-was-two-and-a-half-times-larger-than-it-needed-to-be).
-Before that the classifier alone was 78% of a query.
+The earlier reading was 1.0%, and the honest way to report the new one is not
+−1.6% but that the walk has dropped below what this instrument can resolve.
+Both readings support the same conclusion and the second supports it harder:
+what the card pays for is deciding which question it was asked, not answering
+it. That is the opposite of where the effort has gone in this repository, and it
+is the useful thing to know before optimising anything.
 
-A hop moves about **178 bytes** off the card: a binary search over 105,404
-fixed-width records is 17 probes of 7 bytes, which is what the measurement
-recovers. In instructions a hop is around 3,600 — a slope over five hop counts,
-and smaller than the spread of any single query, so it is quoted as *under 2% of
-a question* rather than as a constant. Quoting such a number to four digits is
-the mistake this repository already made once.
+The classifier's share went **up** from 55.8% for a reason that is not the five
+classes added since — those are 576 of its 47,648 weights, a bit over 1%. It is
+[the 256-bucket encoder](#what-the-width-costs-on-the-card), which doubled layer
+one and was never re-measured here. Before the classifier was
+[halved](#the-classifier-was-two-and-a-half-times-larger-than-it-needed-to-be)
+it was 78% of a query, so the width bought back rather more than half of that.
+
+That ratio is the standing result and the reason a new class is cheap: **a
+class is 96 weights and a hop is unmeasurable, while the encoder in front of
+them both is five eighths of the query.** Everything this corpus has learned
+about what to add follows from it.
+
+A hop moves about **142 bytes** off the card, down from 178: a binary search
+over 142,749 fixed-width records is 18 probes of 7 bytes, against 17 over the
+105,404 that figure was measured on. **The corpus grew by a third and bought
+one extra probe**, which is what `log2` promises and is worth seeing paid: at
+this shape a hop gets dearer by seven bytes every time the graph doubles, so
+the eZ80 could carry a corpus ten times this one for three more reads.
+
+Quoting the instruction figure to four digits is the mistake this repository
+already made once, and the negative slope is what that mistake looks like when
+it is caught.
 
 ### And the search half is already doing the right thing
 
@@ -483,10 +625,10 @@ python data/silo/sweep.py            # search-only cards, no classifier, ~7 min
 
 | people | articles | IDX MB | DAT MB | acc KB | of the card | absent | rare, 3 docs | common | docs |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 5,000 | 6,754 | 4.6 | 0.6 | 6.6 | 1.3% | 2,902 | 33,955 ±857 | 578,007 | 6,692 |
-| 10,000 | 13,072 | 5.0 | 1.2 | 12.8 | 2.6% | 3,834 | 35,510 ±1,239 | 1,116,258 | 13,010 |
-| 20,000 | 25,796 | 5.7 | 2.3 | 25.2 | 5.1% | 5,647 | 37,843 ±1,359 | 2,199,945 | 25,734 |
-| 37,000 | 47,141 | 6.9 | 4.4 | 46.0 | 9.4% | 8,755 | 40,813 ±1,207 | 4,018,058 | 47,079 |
+| 5,000 | 6,984 | 4.6 | 0.6 | 6.8 | 1.4% | 2,939 | 54,776 ±1,457 | 600,853 | 6,922 |
+| 10,000 | 13,302 | 5.0 | 1.2 | 13.0 | 2.6% | 3,834 | 57,248 ±2,892 | 1,139,072 | 13,240 |
+| 20,000 | 26,026 | 5.8 | 2.5 | 25.4 | 5.2% | 5,684 | 59,833 ±4,005 | 2,222,849 | 25,964 |
+| 37,000 | 47,371 | 7.0 | 4.8 | 46.3 | 9.4% | 8,792 | 62,426 ±2,404 | 4,041,041 | 47,309 |
 
 Three columns, and the middle one is the experiment: `absent` is a word no
 corpus holds, `rare` is the mean of five words holding at exactly three
@@ -498,9 +640,16 @@ to ask whether an article nobody searched for costs anything.
 
 | | |
 |---|---|
-| a query that finds nothing | **1,910 + 37 per page**, to the instruction at all four sizes |
-| three documents, above that floor | 31,053 / 31,676 / 32,196 / 32,058 — flat |
-| the widest term, per document | 85.9 / 85.5 / 85.3 / 85.2 |
+| a query that finds nothing | **1,910 + 37 per page**, to the instruction at three of four sizes |
+| three documents, above that floor | 51,837 / 53,414 / 54,149 / 53,634 — flat |
+| the widest term, per document | 86.4 / 85.7 / 85.4 / 85.2 |
+
+The `rare` column has moved twice while this file was being written, and
+**that is the sample rather than the cost**: the five words are drawn from
+whichever terms hold exactly three documents in *that* corpus, so a corpus with
+a few hundred more articles offers a different five. The middle row is the one
+the experiment is about — the same three documents cost the same above the
+floor however large the corpus around them — and it is as flat as it was.
 
 So the cost of a question is `1,910 + 37 × pages + 85 × documents touched`, and
 only the middle term knows how large the corpus is. **The conclusion the
@@ -517,7 +666,7 @@ against the 7.6 M the Wikipedia card's worst query costs it is nothing, and it
 is the reason the tiering exists at all. It is still the one cost in this
 design that a bigger corpus cannot avoid.
 
-`IDX` barely moves: 4.6 MB at 6,754 articles and 6.9 MB at 47,141, because
+`IDX` barely moves: 4.6 MB at 6,984 articles and 7.0 MB at 47,371, because
 `libsearch.NUM_BUCKETS` is 1 << 20 and the empty bucket table is 4 MB before a
 single posting is written. At this scale the index is mostly the table.
 
@@ -569,8 +718,9 @@ across it would have measured that instead:
 | card bytes | 4,961 | 4,961 |
 | routes correctly, trained phrasings | 95.8% | 95.6% |
 
-Both arms were measured before initials were joined, which is why neither
-matches the 366,655 the card costs now. The comparison is between them.
+Both arms were measured before initials were joined and before the encoder was
+widened, which is why neither matches [what the card costs
+now](#the-hop-limit-on-the-actual-machine). The comparison is between them.
 
 Near enough half the work for 0.2 points. **Card bytes do not move at all**,
 which is the cleanest confirmation that the classifier is arithmetic and not
@@ -797,6 +947,31 @@ text and a graph answer does not.
 That column read `2/20` until the entity lookup was fixed, and the two were not
 successes — they were two different people resolving to one document.
 
+Re-measured on the card this now builds, at the limit of 8 and eight names per
+generation rather than twenty:
+
+```
+  hops   instructions      +/-  card bytes    +/-  answered
+     1        484,650   10,544       4,646    116       8/8
+     2        476,713   19,439       4,706    122       8/8
+     3        482,960   32,692       5,070    362       8/8
+     4        484,602   24,875       5,117    165       8/8
+     5        468,650   21,015       5,122    103       8/8
+     6        475,643   32,756       5,384    167       8/8
+```
+
+**Generation 6 answers, and costs what every other generation costs.** That is
+the claim the limit was raised on, now made against the machine rather than
+against `libgraph`.
+
+The instruction counts are a third above the table before it and **none of that
+is the graph** — see [where a question's time actually
+goes](#where-a-questions-time-actually-goes), where the hop cost has fallen
+below what this instrument resolves and the classifier has taken the difference.
+`SILO.bin` grew from 38.9 KB to 55.9 KB when the encoder went to 256 buckets,
+and layer one at twice the width is twice the arithmetic; the five classes
+added since are 576 weights of 47,648, which is 1.2%.
+
 ### The limit counts values examined, not hops
 
 Everything above, and every comment in this repository, described `CLIMB_LIMIT`
@@ -984,6 +1159,16 @@ worth having measured before wishing a corpus were denser.
 to put a confidence cut-off, so the only way this machine can decline is to be
 *taught* declining — the way `examples/smalltalk` carries CLINC's out-of-scope
 utterances as an `IDK` class rather than as a rule.
+
+> **That first sentence was true of the reply and never of the arithmetic**, and
+> [the runner-up](#the-second-choice-was-there-all-along) is the correction. The
+> logits are computed either way; `classify` was throwing all but one of them
+> away. The margin between the top two has a median of 122 where the answer is
+> right and 42 where it is not, so a cut-off had somewhere to go the whole time.
+> The `refuse` class is still the right mechanism for the four shapes it names
+> — a threshold cannot know that a *count* is unreachable — and the paragraphs
+> below stand. What does not stand is the claim that this machine cannot tell
+> when it is unsure.
 
 `relationpaths.PATHS` now holds a twenty-first label, `refuse`, with twelve
 phrasings covering the four shapes above: a count over a set, a maximum over
@@ -1182,6 +1367,231 @@ at ±16 and ±22 points and the arms overlap completely; the effect only becomes
 legible at ten, and even there two of the ten seeds move the other way. That is
 a caution about the rest of this file rather than about this measurement.
 
+### So the next three classes were measured the same way, and are free
+
+`tools/class_cost.py` is that method as an instrument rather than as an
+afternoon: two arms per seed, the phrasebook with the new labels and the same
+phrasebook without them, paired so the spread that swamped the three-seed
+sweeps cancels. Ten seeds, held-out phrasings, everything else fixed.
+
+`shared` is held-out accuracy over the labels in **both** arms, which is the
+only comparison available — an arm that answers more kinds of question has a
+different denominator. `refuse` is scored as *did it refuse at all*.
+
+| | without | with | paired diff | t |
+|---|---:|---:|---:|---:|
+| shared | 53.7% | 52.8% | **−0.9 ± 2.0** | −0.45 |
+| refuse | 81.5% | 83.9% | +2.4 ± 8.2 | 0.29 |
+| `born_on` | 56.6% | 63.1% | +6.5 ± 4.3 | 1.53 |
+| the three new classes | — | **56.0%** | | |
+
+**Three classes cost nothing measurable**, and score above the mean of the
+classes they joined. That is the opposite of the counts result four sections
+up, where two classes took 18.6 points off `refuse` — and the difference is
+not size, since this arm adds one more class than that one did.
+
+The hypothesis the two results together suggest is that a new class is
+expensive exactly when it lands *inside* an existing region rather than beside
+it. `born_on count_born_on` had to separate "how many were born on X's level"
+from `refuse`'s "how many live on X's floor", which are a word apart. Nothing
+about a year or a fate is near any of `refuse`'s four shapes. Untested, and
+`class_cost.py` is where to test it next.
+
+At three seeds this looked like a four-point loss. It is not one, and being
+wrong the first time is the whole reason the tool exists.
+
+The `born_on` row is the one that was expected to be a cost and reads as a
+gain. Its two arms overlap heavily — one seed puts it at 7.5%, another at
+82.5%, because three held-out wordings out of twelve is most of what decides
+it — so 6.5 ± 4.3 is a direction rather than a number. What it is not is
+evidence of the collision the vocabulary was chosen to avoid.
+
+### And the hypothesis it suggested does not survive being tested
+
+The paragraph above proposes that a class is expensive when it lands *inside*
+an existing region and cheap when it lands beside one. The level count is the
+test: it is the class that cost 11.7 ± 5.6, and "how many were born on X's
+level" sits a word away from `refuse`'s "how many live on X's floor".
+
+Ten paired seeds against the twenty-five-class phrasebook that now ships:
+
+| | without | with | paired diff | t |
+|---|---:|---:|---:|---:|
+| shared | 53.2% | 53.6% | +0.4 ± 0.7 | 0.52 |
+| refuse | 83.9% | 80.3% | **−3.6 ± 2.1** | −1.69 |
+| `lives_at` | 35.2% | 32.5% | −2.7 ± 3.1 | −0.85 |
+| the level count | — | **65.2%** | | |
+
+**3.6 points, not 11.7.** The class that was supposed to be the expensive one
+is a third as expensive as recorded, and the gap between "inside" and "beside"
+is 2.7 points rather than twelve. The hypothesis is not supported.
+
+It is also not refuted, because **this is not a replication.** [#89](../../pull/89)
+deleted the level count's twelve wordings along with the class, so
+`relationpaths.CANDIDATES` holds twelve *new* ones written to the same brief.
+Two explanations fit the result and this measurement cannot separate them: the
+arm changed, or the sentences did. The second is the likelier — `refuse`'s ring
+count leans on *live*, *reside*, *population*, *souls* and *flats*, and a
+differently-written dozen can be much further from those than the originals
+were without anybody intending it.
+
+Which is the finding worth keeping, and it is about the file rather than the
+phrasebook: **an 11.7-point cost was recorded against inputs that no longer
+exist.** `CANDIDATES` is there so the next rejected class leaves its wordings
+behind, and so this row can be argued about with something in front of it.
+
+What it is not is licence to ship the level count. One unreplicated arm with
+confounded inputs is how a number gets into this file and stays there.
+
+## The second choice was there all along
+
+Everything above treats the classifier as though it emitted one answer. It
+emits a logit per class and `classify` returns the argmax of them, so the
+runner-up and the distance to it were computed and discarded on every question
+this file has ever measured. `libinfer.rank` stops discarding them. Over the
+silo's 3,000 held-out questions:
+
+| | |
+|---|---:|
+| right at rank 1 | 55.6% |
+| right in the top 2 | **69.4%** |
+| right in the top 3 | 75.7% |
+| rank 2 holds the answer rank 1 missed | **31.2% of misses** |
+
+**And the margin knows when it is wrong.** The gap between the top two logits
+has a median of 107 where the answer is right and 43 where it is not:
+
+| refuse below a margin of | refused | of those, wrong | accuracy of what is kept |
+|---:|---:|---:|---:|
+| — | 0.0% | — | 55.6% |
+| 11 | 10.2% | **68.7%** | 58.4% |
+| 37 | 30.6% | 65.0% | 64.7% |
+| 73 | 50.5% | 61.8% | 73.4% |
+
+That is a confidence signal from a machine [documented as having
+none](#giving-it-back-as-a-class-rather-than-a-threshold), and on the eZ80 it
+is a second running maximum inside `ARGMAX` — one more compare in a loop that
+already visits every logit.
+
+### What it buys, and what it costs, which is the same thing
+
+`liboracle.Oracle(backoff=n)` tries the runner-up when the first path finds no
+edge **and** the top two were closer than `n`. Over 600 held-out questions on
+the real card:
+
+Of 600 held-out questions, 168 had a first path with no edge. **Four out of
+five of the answers the runner-up supplies are to a different question**: 111
+answered ungated, 24 of them by the path the question actually asked for. That
+is not a bug in the backoff, it is what answering from the runner-up *means*,
+and it is the failure this file has argued against since its first paragraph —
+fluent, confident and wrong, with nothing on the screen to say so.
+
+So it is off by default and the margin gates it, because a first choice that
+wins by a mile and still finds nothing is more likely a real gap — asking when
+somebody still alive died — than a misroute:
+
+| gate | backed off | answered what was asked |
+|---|---:|---:|
+| never *(`backoff=0`)* | 0 of 168 | — |
+| `backoff=25` | 22 | **27.3%** |
+| `backoff=75` | 54 | 27.8% |
+| always | 111 | 21.6% |
+
+**The reasoning for the gate is better than the measurement of it.** On the
+card before this one it doubled the hit rate, 40.0% against 19.3%; on this one
+it adds about six points. Each is a single held-out split, so the difference
+between those two readings is not something to trust — what survives both is
+the direction and the shape of the trade, that gating answers fewer questions
+and is right about more of them, and not any particular size.
+
+A fact reached this way does not speak like one either — `liboracle.SECOND`
+renders it as *"Second Shift, if I have your meaning."* rather than *"Second
+Shift."*, which is the something on the screen.
+
+**None of this is a better oracle, it is a different one**, and which one is
+wanted depends on whether the machine is being measured or played with. A demo
+that must answer everything sets `backoff` high and accepts that a fifth of
+what it says is a reply to a question nobody asked. Everything else in this
+file was measured at 0 and still is.
+
+## The worst fallback was the one nobody looked at
+
+When no path walks, the oracle hands over an article. That has been the design
+since the beginning and the reasoning for it is in `liboracle`'s docstring: a
+strictly worse answer, marked as such. What the reasoning misses is *which*
+article — the search runs over the whole question, so a question the classifier
+misread resolves to whatever BM25 liked about the words in it, and the machine
+replies with a paragraph about somebody else.
+
+The subject is already known by then. `libgraph.record` reads it back out: the
+forward table is sorted by subject, so one person's edges are contiguous and a
+record is a binary search and a scan — the same shape as `count`, and about
+thirteen rows.
+
+```
+? when did sharon k smith die
+Not that I hold. On Sharon K. Smith the archive has: born Year 166, born on
+Level 59, father Dylan R. Smith, mother Claire X. Adams, trade Sheriff, works
+in Sheriff's Office, shift Second Shift, crew Sheriff's Office Second Crew 5,
+schooled with Class of 166 (B), lives at 10 100 A.
+```
+
+Over the same 600 held-out questions, by what the machine ended up saying:
+
+| | fact | partial | record | search |
+|---|---:|---:|---:|---:|
+| as it was | 68.0% | 4.0% | — | **28.0%** |
+| with records | 68.0% | 4.0% | 27.7% | **0.3%** |
+| records, `backoff=25` | 71.3% | 4.3% | 24.0% | 0.3% |
+| records, backoff always | **85.8%** | 4.7% | 9.2% | 0.3% |
+
+**The paragraph-about-somebody-else outcome goes from a quarter of all
+questions to three in a thousand**, and unlike the backoff this trades nothing: a
+record invents no answer, every word of it is an edge, and it is about the
+person the question named. So it is on by default where `backoff` is off.
+
+### And a fact said one word at a time
+
+`VOICE[FACT]` was `"{value}."` — a name and a full stop, whatever had been
+asked. `liboracle.SAYS` gives each path a sentence, keyed by the label the
+classifier already emits, so the answer says what was walked:
+
+```
+? who is the father of alexandra h anderson
+Her father is David K. Anderson.
+
+? which flat is alexander e wong in
+He lives at 138 800 C.
+```
+
+The pronoun comes from the subject's **`entity_type`** and not from its `sex`
+fact, which matters more than it looks: types are on the card and facts are
+not, so a pronoun read from `sex` would be a register the eZ80 could never
+speak in. `generate.write` already types every person `man` or `woman`.
+
+Where the corpus does not say — and Simple English Wikipedia types nobody —
+the fallback is **the subject's own name** rather than *they*. "They was born
+in Steventon" is what a pronoun fallback actually produces, and a name agrees
+with every verb these templates use: *Jane Austen was born in Steventon.*
+
+One ordering decision is load-bearing. A hedge outranks a sentence, so a
+[second-choice answer](#the-second-choice-was-there-all-along) still reads
+"Third Shift, if I have your meaning" rather than "He works Third Shift".
+Dressing up an answer to a question nobody asked is the failure this file
+keeps naming, not the fix for it.
+
+A path with no entry falls back to `{value}.`, which is what the machine said
+before this table existed — so a relation added to the corpus and forgotten
+here degrades to terse rather than to a `KeyError`.
+
+Two things the record is not. It is **not an answer**, and `oracle.py --evaluate`
+scores it zero on purpose — a listing of everything held about a person
+contains the answer to most one-hop questions about that person, so scoring
+its text would be the most flattering metric in this repository. And it is
+**not on the card**: this is `liboracle`, and the eZ80 still prints its article
+list. Whether 24 relation names and a scan are worth the program bytes there is
+a separate question, and the answer to it is not in this file.
+
 ## Using it as an oracle for authored fiction
 
 Everything above measures the card. This is what an author of a Silo-like
@@ -1192,13 +1602,19 @@ it is a constraint rather than a capability.
 
 Two things, and they do not overlap.
 
-**About people, from the graph.** Twenty-one question shapes — parent, spouse,
-job, shift, crew, class, dwelling, neighbour, section, birth year, and the
-compositions of those. A question in one of those shapes about somebody in the
-corpus is answered with a name and a full stop, in about 370,000 instructions,
-whatever the corpus size.
+**About people, from the graph.** Twenty-six question shapes — parent, spouse,
+job, shift, crew, class, dwelling, move-in year, neighbour, section, birth
+level, birth year, generation, death year, fate, and the compositions of those.
+A question in one of those shapes about somebody in the corpus is answered with
+a sentence naming what was walked, in about 470,000 instructions, whatever the
+corpus size.
 
-One of the twenty-one is answered with a **number** rather than a name: how
+Three of the twenty-six answer for only part of the corpus. `died_in_year` and
+`fate_is` reach the 73.5% who are dead; `moved_in_year` reaches the 26.6% who
+are alive and housed. Those are the places a classified path stops for a reason
+a reader can check, and everywhere else it completes.
+
+One of the twenty-six is answered with a **number** rather than a name: how
 many children somebody has. The machine prints the tally and a full stop, and
 zero is one of the things it can print — that is an answer, not a failure to
 find one. A second count, how many people were born on somebody's level, is
@@ -1251,12 +1667,21 @@ intersection, and these are the four shapes it stops at:
 | | why |
 |---|---|
 | how many cousins does X have | a count over a set; a path ends in a value |
-| who is the oldest on X's crew | a maximum over a set it can enumerate but not rank |
+| who is the oldest on X's crew | ~~a maximum it can enumerate but not rank~~ — [it ranks now](#ranking-was-not-out-of-reach-either) |
 | is X related to Y | an intersection of two recursive ancestor sets |
 | how many live on X's floor | a count around the ring: a program, not a query |
 
-They now route to `refuse` and are declined about half the time on wordings the
-classifier never saw. **The other half still misroute**, and predictably: a
+`libgraph.extreme` walks the second one and the classifier is not taught to ask
+for it, so **twelve of the forty-eight `refuse` wordings now decline a question
+the graph could answer**. That is the wrong way round and it is the state of
+the code rather than a decision: teaching it would be a twenty-sixth class,
+which is a `class_cost.py` run, and the crew wordings are the ones that already
+leak into `crew_is` most heavily. Whoever does it should read [what the level
+count did](#and-the-hypothesis-it-suggested-does-not-survive-being-tested)
+first.
+
+All four still route to `refuse` and are declined about half the time on
+wordings the classifier never saw. **The other half still misroute**, and predictably: a
 refusal whose words overlap an answerable path lands on that path. Anything
 phrased around a crew tends to reach `crew_is`.
 
@@ -1278,8 +1703,8 @@ it gets.
   packed bytes against 25 — and the ceiling is still a count, not a size, so
   neither is the constraint.
 - **Re-run `authored.py` after every `generate.py`**, which deletes them.
-- The classifier knows twenty-one shapes and one refusal. A question outside all
-  twenty-two does not fail; it lands on whichever of them it looks most like.
+- The classifier knows twenty-six shapes and one refusal. A question outside all
+  twenty-seven does not fail; it lands on whichever of them it looks most like.
 
 ### What this is not
 
@@ -1360,8 +1785,11 @@ lists**, and the second is shorter on purpose.
 What is genuinely out of reach is narrower than "aggregates", and worth stating
 precisely now that one of them has moved:
 
-- **a maximum** — "who is the oldest on X's crew" needs the values compared
-  rather than tallied, and the card reads ids, not birth years.
+- ~~**a maximum**~~ — this said "the card reads ids, not birth years", and
+  reading ids turned out to be [exactly what makes it
+  work](#ranking-was-not-out-of-reach-either): the ids ascend with the year, so
+  comparing them *is* comparing birth years. The sentence was right about the
+  mechanism and wrong about which way it cut.
 - **a count of a union** — "how many cousins" tallies the children of *two*
   parents' siblings, and one scan tallies one relation.
 - **"related on any line"** — the paternal line is answered below; any line
@@ -1443,6 +1871,52 @@ resolves one document and the classifier emits one path, so a question naming
 two people has nowhere to put the second. That is a pipeline change — two
 searches, two walks, one comparison — rather than a new capability, and the
 capability is what the table above measures.
+
+### The pipeline half, measured
+
+`liboracle.subjects` is that change on the Python side: search, take the words
+of what was found out of the question, search again. Over 400 pairs, with the
+questions phrased three ways:
+
+| | both found | in the order named | one only | wrong |
+|---|---:|---:|---:|---:|
+| pairs drawn at random | **99.5%** | 47.0% | 0.0% | 0.5% |
+| pairs sharing a surname | **96.0%** | 52.5% | 0.0% | 4.0% |
+| one-name questions | — | — | 100% | **0.0%** |
+
+**The order is a coin flip and that is not a defect here.** BM25 has no reason
+to prefer the name that was written first, and every question this shape can
+ask is symmetric — X and Y share a crew or they do not. A question that was
+*not* symmetric, "is X the father of Y", would need an order this cannot
+supply, and there is no such class.
+
+Two things had to be got right, and both were wrong first.
+
+**`mask` is the wrong tool**, though it looks like the right one. It removes
+every copy of the subject's words, so "is Alexander E. Wong related to Corey W.
+Wong" loses *both* surnames and the second search goes looking for a man called
+`corey w`, who exists and is somebody else. `residual` removes one copy of each
+word instead. That distinction only bites on a corpus where 2,264 people share
+a first and last name with somebody, which is to say on one that took the
+trouble to be realistic about families.
+
+**And BM25 does not decline.** Given `where was born` it returns whatever those
+words touch, so the first version invented a second subject for every
+single-name question. A second subject is now kept only if its own name is
+still in what is left of the question — a check on whether somebody was
+*named*, not on how strongly they scored, which is also the only such check
+available: the second element of a `Search` result is a BM25 score in one
+implementation and a phrase length in the other.
+
+The last row of that table is the one that makes the rest usable. Nothing is
+paid for a question naming one person, because `subjects` is called only when
+the classifier has already said the question is of the two-person shape.
+
+What is still missing is the eZ80's half — a second search whose answer goes
+somewhere, a step kind, and a routine that walks twice — and the wordings for
+it are in `relationpaths.CANDIDATES` rather than `PATHS`, because a `shared_`
+label in `PATHS` would build an inert row and the card would answer it with
+silence.
 
 ## What SQLite is doing
 
@@ -1538,7 +2012,7 @@ obvious reason.
 
 ## Reproducing it
 
-The database is not in git — 39 MB of derived data that three seconds rebuilds
+The database is not in git — 42 MB of derived data that three seconds rebuilds
 exactly. What is committed is the generator, and `--seed` is the whole
 provenance:
 

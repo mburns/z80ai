@@ -34,7 +34,7 @@ That is the whole reason this is a separate program from the search card.
 | | a question | a move | asking a person |
 |---|---:|---:|---:|
 | card bytes | ~4,600 | **0** | **0** |
-| instructions | ~370,000 | ~4,700 | ~7,000 |
+| instructions | ~470,000 | ~4,700 | ~7,000 |
 
 The oracle's figures are fine for a question and hopeless for a step. A player
 takes a step every few seconds and most steps are `DOWN`, so a move has to be
@@ -677,7 +677,7 @@ rather than a bound: the same three questions asked after twelve more moves
 read the same number of bytes, so the moves cost nothing at all rather than
 nearly nothing — a bound would pass a world that paged.
 
-The card is made by the test rather than being `data/silo.db`, which is 39 MB,
+The card is made by the test rather than being `data/silo.db`, which is 42 MB,
 gitignored and wants Faker. That is a real limit and worth stating plainly:
 this walks the *mechanism* over a corpus invented for it, and nothing in CI
 walks the corpus that ships.

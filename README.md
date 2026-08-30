@@ -156,6 +156,8 @@ Here the facts are all there and the answer is known for all ten thousand:
 | who is X's paternal grandfather | 2 | 100% | 45.1% — same surname, 56 years older |
 | which department does X's **father** work in | 2 | 100% | 28.8% — *whatever X does* |
 | which section does X's father's department sit in | 4 | 100% | — |
+| what year did X die | 1 | 100% | 2.9% — born plus the median lifespan |
+| how did X die | 1 | 100% | **98.4% — always "Natural causes"** |
 
 **The guess column is the point.** A synthetic dataset is the easiest place in
 the world to publish a flattering number, so two of those baselines are
@@ -163,11 +165,18 @@ deliberately strong: children take their father's surname, and 45% of people
 follow a parent into their department. A walk that could not beat them would
 not be worth the card it walks on.
 
-105,404 stored edges imply **506,543 relationships nobody wrote down** —
+The last row is the other half of that argument. Cleanings are 1.7% of deaths,
+so a machine that says "natural causes" and nothing else is right 98.4% of the
+time — the walk answering it exactly is a capability rather than a result, and
+the only way to tell those apart on a corpus somebody invented is to print the
+guess beside every number.
+
+142,749 stored edges imply **506,543 relationships nobody wrote down** —
 cousins, housemates, classmates, neighbours — as views rather than tables, so
 what is stored and what is worked out cannot be confused. And because it is the
 one corpus where the truth is known, it is where the costs are visible: on the
-real card the graph walk is **1.0%** of a query and the classifier is 56%.
+real card the classifier is **62%** of a query and the graph walk has fallen
+below what the measurement can resolve.
 
 ## Which budget is the claim about?
 
