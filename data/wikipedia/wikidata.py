@@ -34,10 +34,22 @@ export outlives the corpus it was cut against and the join is redone from
 
 ## What is exported
 
-Only statements where **both ends are articles in this corpus**, because an edge
+Every statement where **both ends are articles in this corpus**, because an edge
 whose object has no article is one the card can never name. That is what makes
-the file small: 766.5M edges in the dump, and about half a million that this
+the file small: 766.5M edges in the dump, and a few million that this
 encyclopedia could use.
+
+**Whatever the property, not only the mapped ones.** The export used to filter
+on `PROPERTY` in the query, which quietly made the property map part of the
+dump-scanning step: adding P57 meant rebuilding 22GB to answer a question the
+previous export had already read past. It does not any more, so the cost of a
+new relation is an edit to `PROPERTY` and a re-read of a file that is already on
+disk. `--survey` prints what is in the file and unmapped, biggest first, which
+is the same question `ingest.py --stats` answers for infobox fields.
+
+That leaves three reasons to go back to the dump, none of which is "we want one
+more relation": a newer Wikidata snapshot, a corpus whose article set changed,
+or a bug in `export` itself.
 """
 
 from __future__ import annotations
@@ -72,6 +84,21 @@ DB_PATH = Path(__file__).resolve().parent.parent / "simple_english_wikipedia.db"
 #: *language* it is where the language is spoken, which is how `English
 #: language` acquires ninety of them. The importer types the subject before
 #: taking one - see `build_plan`.
+#:
+#: This has to cover every property `data/questions/relations.py` builds a
+#: question class from, and for one release it did not: the classifier was
+#: trained to answer "who directed X" while the importer never fetched P57, so
+#: the only `created_by` edges on a film were the ones its infobox happened to
+#: tabulate - which is the 46% this whole file exists to get past. The two maps
+#: are kept in step by `test_wikidata.py`, not by hand.
+#:
+#: **The order is the precedence**, for the eight that land on `created_by`. A
+#: film has a director and a producer and a composer, and they are different
+#: people rather than one answer at three depths, so `choose` declines all
+#: three and the film gets nothing. The infobox path never had that problem
+#: because `libgraph.CANONICAL` ranks its fields - director outranks producer -
+#: and this is the same ranking in the same order. Containment is the exception
+#: and is still unioned: P131 and P17 are one question asked twice.
 PROPERTY = {
     19: "born_in",
     20: "died_in",
@@ -79,8 +106,16 @@ PROPERTY = {
     17: "located_in",
     36: "capital_is",
     26: "spouse_of",
-    170: "created_by",
-    50: "created_by",
+    57: "created_by",     # director
+    50: "created_by",     # author
+    170: "created_by",    # creator
+    86: "created_by",     # composer
+    676: "created_by",    # lyricist
+    178: "created_by",    # developer
+    162: "created_by",    # producer
+    84: "created_by",     # architect
+    364: "language_is",   # original language of work
+    37: "language_is",    # official language, which is a country's
     136: "genre_is",
 }
 
@@ -106,7 +141,15 @@ P_ADMIN_IN = 131
 P_COUNTRY = 17
 
 #: Written into the export so a file can say what it came from.
-FORMAT = 1
+#:
+#: 2 carries every property rather than the nine `PROPERTY` held when it was
+#: cut. A 1 is still readable - it is a subset - but `--survey` has nothing to
+#: report on one and a newly mapped property will silently find no statements,
+#: so the reader says so rather than letting that look like an absence of facts.
+FORMAT = 2
+
+#: The oldest export this can still read.
+FORMAT_MIN = 1
 
 #: What `derived` records as the producer of these rows. It is part of that
 #: table's primary key, so this can disagree with `regex` about the same person
@@ -151,17 +194,30 @@ def export(dump: Path, out: Path, qids: set[int]) -> tuple[int, int, int]:
     import pyarrow.parquet as pq
 
     con = lb.Connection(lb.Database(str(dump), read_only=True))
-    props = ",".join(str(p) for p in PROPERTY)
-    classes = ",".join(str(q) for q in CLASS)
     scratch = out.with_suffix(".raw.parquet")
+    chain_scratch = out.with_suffix(".chain.parquet")
 
+    # Unfiltered on purpose. The filter that used to live here - `r.property IN
+    # [nine numbers]` - is what made adding a relation cost another pass over
+    # 22GB, and the pass is not where the money goes: building the database is.
+    # It writes every edge to the scratch file instead, and the membership test
+    # below throws away the ones with no article at either end, which is most.
+    #
+    # Containment gets its own file, filtered, because the ancestry walk below
+    # reads its input CHAIN_DEPTH times. Six passes over every edge in Wikidata
+    # to find the two properties that mean "inside" is the one place where
+    # dropping the filter would have cost real time rather than disk.
     started = time.time()
     con.execute(
         "COPY (MATCH (a:wikidata_node)-[r:wikidata_rel]->(b:wikidata_node) "
-        f"WHERE r.property IN [{props}] "
-        f"   OR (r.property = {P_INSTANCE_OF} AND b.qid IN [{classes}]) "
         "RETURN a.qid AS subj, r.property AS prop, b.qid AS obj) "
         f"TO '{scratch}'")
+    contain = ",".join(str(p) for p in CONTAINMENT)
+    con.execute(
+        "COPY (MATCH (a:wikidata_node)-[r:wikidata_rel]->(b:wikidata_node) "
+        f"WHERE r.property IN [{contain}] "
+        "RETURN a.qid AS subj, r.property AS prop, b.qid AS obj) "
+        f"TO '{chain_scratch}'")
     print(f"  scanned in {time.time() - started:.0f}s", flush=True)
 
     corpus = np.sort(np.fromiter(qids, dtype=np.int64))
@@ -173,22 +229,24 @@ def export(dump: Path, out: Path, qids: set[int]) -> tuple[int, int, int]:
         hit: np.ndarray = table[i] == values
         return hit
 
-    def batches() -> Iterator[pa.RecordBatch]:
-        yield from pq.ParquetFile(scratch).iter_batches(batch_size=4_000_000)
+    def batches(path: Path = scratch) -> Iterator[pa.RecordBatch]:
+        yield from pq.ParquetFile(path).iter_batches(batch_size=4_000_000)
 
     # The containment chain, found by walking up from the corpus one hop at a
-    # time. Each round is a full pass, which is cheap and much simpler than
-    # holding 24M parent links in memory to walk them properly.
+    # time. Each round is a full pass of the containment file, which is cheap
+    # and much simpler than holding 24M parent links in memory to walk them
+    # properly. It is a full pass of *that* file rather than of every edge in
+    # Wikidata, which is why the second COPY above exists.
     chain: list[tuple[int, int, int]] = []
     seen = corpus
     frontier = corpus
     for _ in range(CHAIN_DEPTH):
         found: list[np.ndarray] = []
-        for batch in batches():
+        for batch in batches(chain_scratch):
             s = batch.column("subj").to_numpy()
             p = batch.column("prop").to_numpy()
             o = batch.column("obj").to_numpy()
-            keep = np.isin(p, CONTAINMENT) & among(s, frontier)
+            keep = among(s, frontier)
             if keep.any():
                 chain.extend(zip(s[keep].tolist(), p[keep].tolist(),
                                  o[keep].tolist(), strict=True))
@@ -201,11 +259,13 @@ def export(dump: Path, out: Path, qids: set[int]) -> tuple[int, int, int]:
             break
         seen = np.sort(np.concatenate([seen, frontier]))
 
+    # No `# property` lines any more. They recorded what `PROPERTY` happened to
+    # be on the day the file was cut, which is exactly the coupling this change
+    # removes - the map belongs to the importer, and a file that carries a stale
+    # copy of it is a file someone will eventually believe.
     statements = classed = 0
     with gzip.open(out, "wt", encoding="utf-8") as fh:
         fh.write(f"# format\t{FORMAT}\n# dump\t{dump.name}\n")
-        for prop, relation in sorted(PROPERTY.items()):
-            fh.write(f"# property\t{prop}\t{relation}\n")
         for batch in batches():
             s = batch.column("subj").to_numpy()
             p = batch.column("prop").to_numpy()
@@ -226,12 +286,21 @@ def export(dump: Path, out: Path, qids: set[int]) -> tuple[int, int, int]:
             fh.write(f"{subj}\t{prop}\t{obj}\tchain\n")
 
     scratch.unlink()
+    chain_scratch.unlink()
     return statements, classed, len(set(chain))
 
 
 def read_export(path: Path) -> tuple[list[tuple[int, int, int]],
                                      dict[int, set[int]], dict[str, str]]:
-    """(statements, containment parents, header) from an export."""
+    """(statements, containment parents, header) from an export.
+
+    Only the properties `PROPERTY` maps are kept. A format 2 file holds every
+    property the dump had for these articles, which is the point of it - but
+    materialising all of them costs memory for rows nothing downstream can read,
+    and `build_plan` would meet a property it has no relation for. `--survey`
+    counts the rest without building any of this.
+    """
+    wanted = set(PROPERTY) | {P_INSTANCE_OF}
     rows: list[tuple[int, int, int]] = []
     parents: dict[int, set[int]] = defaultdict(set)
     header: dict[str, str] = {}
@@ -247,12 +316,63 @@ def read_export(path: Path) -> tuple[list[tuple[int, int, int]],
             if len(fields) > 3 and fields[3] == "chain":
                 parents[subj].add(obj)
             else:
-                rows.append((subj, prop, obj))
+                if prop in wanted:
+                    rows.append((subj, prop, obj))
                 if prop in CONTAINMENT:
                     # A statement about a corpus article is also a link in the
                     # chain; it is written once and read as both.
                     parents[subj].add(obj)
     return rows, parents, header
+
+
+def survey(path: Path) -> tuple[dict[int, int], dict[str, str]]:
+    """How many statements the export holds per property, and its header.
+
+    Streamed rather than collected: the file this reads is the one that holds
+    every property, and the whole reason to ask is that nobody knows yet which
+    of them is worth a relation. Chain rows are scaffolding and are not counted.
+    """
+    counts: dict[int, int] = defaultdict(int)
+    header: dict[str, str] = {}
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            if line.startswith("#"):
+                parts = line[1:].split("\t")
+                if len(parts) >= 2:
+                    header[parts[0].strip()] = parts[1].strip()
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) > 3 and fields[3] == "chain":
+                continue
+            counts[int(fields[1])] += 1
+    return dict(counts), header
+
+
+def report_survey(counts: dict[int, int], header: dict[str, str],
+                  limit: int = 40) -> None:
+    """Print the export's properties, unmapped first and biggest first.
+
+    The unmapped list is the same thing `ingest.py --stats` prints for infobox
+    fields it does not understand: the corpus saying what it knows that nothing
+    yet reads. A property here costs a `PROPERTY` entry and no dump work.
+    """
+    if header.get("format") == "1":
+        print("this export was cut against a fixed property list (format 1), "
+              "so an absence here is not an absence of facts. Re-export to "
+              "survey properly.")
+    mapped = {p: n for p, n in counts.items() if p in PROPERTY}
+    unmapped = {p: n for p, n in counts.items() if p not in PROPERTY}
+    print(f"\n{sum(counts.values()):,} statements over {len(counts):,} "
+          f"properties; {len(mapped)} mapped, {len(unmapped)} not\n")
+    print(f"{'mapped':>12s}  {'statements':>12s}  relation")
+    for prop, n in sorted(mapped.items(), key=lambda kv: -kv[1]):
+        print(f"{'P' + str(prop):>12s}  {n:>12,}  {PROPERTY[prop]}")
+    print(f"\n{'unmapped':>12s}  {'statements':>12s}  "
+          f"https://www.wikidata.org/wiki/Property:Pn")
+    for prop, n in sorted(unmapped.items(), key=lambda kv: -kv[1])[:limit]:
+        print(f"{'P' + str(prop):>12s}  {n:>12,}")
+    if len(unmapped) > limit:
+        print(f"{'':>12s}  and {len(unmapped) - limit:,} more")
 
 
 def inside(child: int, ancestor: int, parents: dict[int, set[int]]) -> bool:
@@ -348,8 +468,8 @@ def choose(values: set[int], parents: dict[int, set[int]]) -> int | None:
 #: What a subject/relation pair was decided to be, in the order the outcomes
 #: matter. `refine` is the only one that changes an answer the card already
 #: gives, which is why it is counted apart from `gap`.
-OUTCOMES = ("gap", "refine", "agree", "kept", "declined", "untyped",
-            "coarser", "typed")
+OUTCOMES = ("gap", "refine", "agree", "kept", "declined", "outranked",
+            "untyped", "coarser", "typed")
 
 
 class Plan:
@@ -401,14 +521,22 @@ def build_plan(facts: dict[int, dict[int, set[int]]],
     # language does not acquire the ninety countries it is spoken in; and the
     # two properties that mean containment are unioned before anything is
     # chosen between, because they are one question asked twice.
+    #
+    # Everything else is a precedence rather than a union, in `PROPERTY` order:
+    # a director and a producer are two answers, not two depths of one, and
+    # unioning them only reaches `choose` to be declined.
+    order = list(PROPERTY)
     merged: dict[str, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
-    for prop, subjects in facts.items():
+    for prop in sorted(facts, key=order.index):
         relation = PROPERTY[prop]
-        for subject, values in subjects.items():
+        for subject, values in facts[prop].items():
             if prop == P_COUNTRY and subject not in placed:
                 plan.note(relation, "untyped")
                 continue
-            merged[relation][subject] |= values
+            if prop in CONTAINMENT or subject not in merged[relation]:
+                merged[relation][subject] |= values
+            else:
+                plan.note(relation, "outranked")
 
     for relation in sorted(merged):
         current = existing.get(relation, {})
@@ -516,7 +644,7 @@ def corpus_edges(db: sqlite3.Connection, source: str
 
 
 #: Column widths for the report, one per entry in OUTCOMES.
-WIDTHS = (9, 8, 8, 8, 9, 8, 8, 7)
+WIDTHS = (9, 8, 8, 8, 9, 10, 8, 8, 7)
 
 
 def _columns(counts: dict[str, int]) -> str:
@@ -569,10 +697,23 @@ def load(db: sqlite3.Connection, source: str, path: Path
          ) -> tuple[Plan, dict[str, Any]]:
     """Read an export, decide against the corpus, and hand back the plan."""
     rows, parents, header = read_export(path)
+    version = int(header.get("format", FORMAT))
+    if not FORMAT_MIN <= version <= FORMAT:
+        raise SystemExit(f"{path} is format {version}; this reads "
+                         f"{FORMAT_MIN} to {FORMAT}")
     titles = sitelinks(db, source)
     facts, classes, placed = resolve(rows, titles)
     print(f"{len(rows):,} statements and {len(parents):,} containment links "
           f"from {header.get('dump', '?')}, against {len(titles):,} sitelinks")
+    if version < FORMAT:
+        # Worth saying out loud, because the symptom of importing an old export
+        # after mapping a new property is that the new relation is simply
+        # absent - which looks exactly like Wikidata not knowing anything.
+        unseen = sorted(set(PROPERTY) - {p for _s, p, _o in rows})
+        if unseen:
+            print(f"  format {version} export: it was cut before "
+                  f"{', '.join('P' + str(p) for p in unseen)} were mapped, so "
+                  f"those are absent here rather than absent from Wikidata")
     existing = corpus_edges(db, source)
     plan = build_plan(facts, parents, existing, placed, titles)
     countries = {e for (e,) in db.execute(
@@ -654,7 +795,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--rebuild-graph", action="store_true",
                         help="Put the imported rows on the card. Without this "
                              "they sit in `derived` and nothing walks them.")
+    parser.add_argument("--survey", type=Path, metavar="WIKIDATA.TSV.GZ",
+                        help="Print what the export holds per property, "
+                             "unmapped first, and write nothing")
     args = parser.parse_args(argv)
+
+    # Before the database, because this reads only the export - which is what
+    # makes "what else is in here" answerable on a machine that has the file
+    # and not the 500MB corpus.
+    if args.survey:
+        counts, header = survey(args.survey)
+        report_survey(counts, header)
+        return
 
     writing = bool(args.write)
     db = sqlite3.connect(args.db) if writing else sqlite3.connect(
@@ -677,7 +829,8 @@ def main(argv: list[str] | None = None) -> None:
 
     path = args.score or args.write
     if not path:
-        parser.error("nothing to do: pass --export, --score or --write")
+        parser.error("nothing to do: pass --export, --survey, --score "
+                     "or --write")
 
     plan, extra = load(db, args.source, path)
     report(plan)

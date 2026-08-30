@@ -94,10 +94,11 @@ def test_unrelated_values_are_declined(wikidata):
 # --- what the plan decides ----------------------------------------------------
 
 
-def plan_for(wikidata, facts, existing, placed=None, parents=PARENTS):
+def plan_for(wikidata, facts, existing, placed=None, parents=PARENTS, extra=None):
     titles = {CARROLLTON: "Carrollton, Mississippi", MISSISSIPPI: "Mississippi",
               USA: "United States", EVEREST: "Mount Everest", CHINA: "China",
               NEPAL: "Nepal", CARROLL_COUNTY: "Carroll County"}
+    titles.update(extra or {})
     return wikidata.build_plan(facts, parents, existing,
                                placed if placed is not None else set(titles),
                                titles)
@@ -175,6 +176,61 @@ def test_a_relation_that_is_not_containment_is_still_typed_freely(wikidata):
     assert plan.rows == [("Mount Everest", "born_in", "China")]
 
 
+# --- several properties landing on one relation -------------------------------
+
+# Eight properties are `created_by`, and a film has several of them at once.
+# Unlike the two that mean containment, they are answers to different questions
+# rather than one answer at several depths.
+FILM, DIRECTOR, CODIRECTOR, PRODUCER = 30, 31, 32, 33
+CREDITS = {FILM: "The Matrix", DIRECTOR: "Lana Wachowski",
+           CODIRECTOR: "Lilly Wachowski", PRODUCER: "Joel Silver"}
+
+
+def test_a_director_outranks_a_producer(wikidata):
+    """Unioning the two would reach `choose` as values that do not nest and be
+    declined, so the film would get nothing at all. The infobox path never had
+    that problem because `libgraph.CANONICAL` ranks its fields, and `PROPERTY`
+    is in the same order for the same reason."""
+    plan = plan_for(wikidata, {57: {FILM: {DIRECTOR}}, 162: {FILM: {PRODUCER}}},
+                    {}, extra=CREDITS)
+    assert plan.rows == [("The Matrix", "created_by", "Lana Wachowski")]
+    assert plan.counts["created_by"]["outranked"] == 1
+
+
+def test_an_outranked_property_is_not_a_fallback(wikidata):
+    """Two directors is an ambiguous answer to "who directed", and the producer
+    is not the repair for it - declining is. Falling through would answer a
+    question nobody asked, fluently."""
+    plan = plan_for(wikidata, {57: {FILM: {DIRECTOR, CODIRECTOR}},
+                               162: {FILM: {PRODUCER}}}, {}, extra=CREDITS)
+    assert plan.rows == []
+    assert plan.counts["created_by"]["declined"] == 1
+
+
+def test_an_original_language_outranks_an_official_one(wikidata):
+    """Both are `language_is`, and `libgraph.CANONICAL` puts plain `language`
+    ahead of `official_language` for the same reason: one is what the thing is
+    in, the other is what its country legislates."""
+    plan = plan_for(wikidata, {364: {FILM: {DIRECTOR}}, 37: {FILM: {PRODUCER}}},
+                    {}, extra=CREDITS)
+    assert plan.rows == [("The Matrix", "language_is", "Lana Wachowski")]
+
+
+def test_the_importer_fetches_every_property_the_questions_ask_about(
+        wikidata, repo_root):
+    """A question class whose property was never exported can only be answered
+    from the 46% of articles carrying an infobox, which is the coverage this
+    file exists to get past. That is not hypothetical: the classifier was
+    trained on "who directed X" for a release in which the import skipped P57.
+    """
+    relations = conftest.load_script(
+        str(Path(repo_root) / "data" / "questions" / "relations.py"),
+        "wd_relations")
+    asked = {int(p[1:]): r for p, r in relations.PROPERTY_RELATION.items()}
+    assert not set(asked) - set(wikidata.PROPERTY)
+    assert {p: wikidata.PROPERTY[p] for p in asked} == asked
+
+
 # --- what a thing is, rather than where it is ---------------------------------
 
 
@@ -198,9 +254,9 @@ def test_a_country_class_is_written_and_a_person_class_is_not(wikidata, corpus):
 # --- the file format ----------------------------------------------------------
 
 
-def write_export(path: Path, body: str) -> Path:
+def write_export(path: Path, body: str, version: int = 1) -> Path:
     with gzip.open(path, "wt", encoding="utf-8") as fh:
-        fh.write("# format\t1\n# dump\twikidata.lbdb\n" + body)
+        fh.write(f"# format\t{version}\n# dump\twikidata.lbdb\n" + body)
     return path
 
 
@@ -224,6 +280,46 @@ def test_a_containment_statement_is_also_a_chain_link(wikidata, tmp_path):
     rows, parents, _ = wikidata.read_export(path)
     assert rows == [(CARROLLTON, 131, MISSISSIPPI)]
     assert parents[CARROLLTON] == {MISSISSIPPI}
+
+
+# P106 is `occupation`, which this corpus does not map to any relation. A
+# format 2 export is full of properties like it, on purpose.
+UNMAPPED = 106
+
+
+def test_an_unmapped_property_is_read_past(wikidata, tmp_path):
+    """The export carries every property so that mapping a new one costs no
+    pass over the dump. Materialising them all would cost memory for rows
+    nothing can read, and hand `build_plan` a property with no relation."""
+    path = write_export(tmp_path / "e.tsv.gz",
+                        f"{CARROLLTON}\t19\t{MISSISSIPPI}\n"
+                        f"{CARROLLTON}\t{UNMAPPED}\t{USA}\n", version=2)
+    rows, _parents, _ = wikidata.read_export(path)
+    assert rows == [(CARROLLTON, 19, MISSISSIPPI)]
+
+
+def test_the_survey_counts_what_the_import_reads_past(wikidata, tmp_path):
+    """The point of keeping unmapped properties is being able to ask which one
+    is worth a relation next, so the thing that reads past them at import has
+    to be countable at survey."""
+    path = write_export(tmp_path / "e.tsv.gz",
+                        f"{CARROLLTON}\t19\t{MISSISSIPPI}\n"
+                        f"{CARROLLTON}\t{UNMAPPED}\t{USA}\n"
+                        f"{EVEREST}\t{UNMAPPED}\t{CHINA}\n"
+                        f"{CARROLL_COUNTY}\t131\t{MISSISSIPPI}\tchain\n",
+                        version=2)
+    counts, header = wikidata.survey(path)
+    assert counts == {19: 1, UNMAPPED: 2}
+    assert header["format"] == "2"
+
+
+def test_a_mapped_property_is_not_reported_as_unmapped(wikidata, tmp_path):
+    """P37 was unmapped until it was not, and the survey has to follow
+    `PROPERTY` rather than a list of its own."""
+    path = write_export(tmp_path / "e.tsv.gz",
+                        f"{CARROLLTON}\t37\t{USA}\n", version=2)
+    counts, _ = wikidata.survey(path)
+    assert set(counts) <= set(wikidata.PROPERTY)
 
 
 # --- writing ------------------------------------------------------------------

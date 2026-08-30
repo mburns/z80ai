@@ -1106,9 +1106,42 @@ is read with the standard library.
 
 ```bash
 python data/wikipedia/wikidata.py --export wikidata.lbdb -o wikidata.tsv.gz
+python data/wikipedia/wikidata.py --survey wikidata.tsv.gz         # needs no corpus
 python data/wikipedia/wikidata.py --score wikidata.tsv.gz          # writes nothing
 python data/wikipedia/wikidata.py --write wikidata.tsv.gz --rebuild-graph
 ```
+
+### Mapping a relation does not cost a pass over the dump
+
+The export used to filter on `PROPERTY` in the query, which made the property
+map part of the *dump-scanning* step: adding P57 meant going back to 22GB to
+answer a question the previous scan had already read past and discarded. Since
+format 2 it keeps **every** property with both ends in the corpus, so the cost
+of a new relation is an edit to `PROPERTY` and a re-read of a file already on
+disk — seconds, and no `ladybug`.
+
+That leaves three reasons to re-export, none of which is "we want one more
+relation": a newer Wikidata snapshot, a corpus whose article set changed, or a
+bug in `export`. The scan is unfiltered now and the scratch parquet is
+correspondingly larger, which is the right trade — building the database is
+where the hours go, and that is unchanged.
+
+`--survey` prints what the file holds per property, unmapped first and biggest
+first, which is the same question `ingest.py --stats` answers for infobox
+fields it does not understand. It reads only the export, so it works on a
+machine that has the file and not the 500MB corpus.
+
+An older format 1 export still imports. It was cut against a fixed list of
+nine, so `--score` says which newly mapped properties are absent from the
+*file* rather than from Wikidata — the two look identical otherwise, and the
+symptom of confusing them is a relation that silently never appears.
+
+**A relation costs more than a `PROPERTY` entry.** It needs a question class in
+`data/questions/relations.py` to be askable, and `MIN_EXAMPLES = 150` is a real
+floor — a class the crowdsourced corpus cannot fill is one the classifier
+answers from the prior. On the card a relation id is one byte with `INVERSE` in
+the high bit, so **127 is the hard ceiling** and eleven are used; edges are 7
+bytes each, stored twice, so the graph file grows linearly with what is mapped.
 
 Keyed by Q-id, not by title. A title is a fact about one snapshot — 726 of them
 changed the day the escaping was fixed — so the export outlives the corpus it
@@ -1128,7 +1161,7 @@ were failing for a reason and pulled the rate down — this file says so twice.
 This one adds the containment those subjects needed to climb in the same pass
 that adds the subjects.
 
-### Three rules, each because the version without it was wrong
+### Four rules, each because the version without it was wrong
 
 **A country is only taken for something Wikidata puts administratively inside
 something else.** `country` on a place is where it is; on a *language* it is
@@ -1147,6 +1180,34 @@ marking it as one. 14,680 declined, about ten thousand of them genres.
 provably inside what the corpus already said it replaces it — `Mississippi` to
 `Carrollton, Mississippi`. That is only an improvement if the finer answer still
 reaches a country, so 924 are refused because it would not.
+
+**Where several properties mean one relation, they are ranked rather than
+merged.** Containment is the exception — P131 and P17 are one question asked
+twice, so they union and the innermost wins. The eight that land on `created_by`
+are not: a film's director, producer and composer are three different people,
+and unioning them hands `choose` three values that do not nest, so it declines
+and the film gets nothing. The infobox path never had this problem because
+`libgraph.CANONICAL` ranks its fields — director outranks producer — and
+`PROPERTY` is now written in that same order, with the ranking *being* the
+order. An outranked property is not a fallback: two directors is an ambiguous
+answer to "who directed", and the producer is not the repair for it.
+
+### The importer fetched fewer properties than the questions asked about
+
+`relations.py` builds a question class per Wikidata property and mapped sixteen
+of them; `wikidata.py` exported nine. The seven in the gap were **P57**
+(director), **P86** (composer), **P162** (producer), **P676** (lyricist),
+**P84** (architect), **P178** (developer) and **P364** (original language) — so
+the classifier was trained to answer "who directed X" against a graph whose
+only `created_by` edge on a film was whatever that film's infobox tabulated,
+which is the 46% this import exists to get past. `language_is` had no Wikidata
+source at all; **P37** (official language) is mapped too, which is the same
+relation asked of a country rather than of a work.
+
+They are in `PROPERTY` now, and `test_wikidata.py` asserts the two maps agree
+rather than leaving it to be noticed again. **The numbers above and the 3.1MB
+export were measured against the nine**; re-running `--export` is what says what
+the seventeen are worth.
 
 ### What a country is, asked rather than voted on
 
