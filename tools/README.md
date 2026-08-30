@@ -1,5 +1,29 @@
 # tools/
 
+## `grammar_pilot.py` — what another dozen wordings are worth
+
+```bash
+python tools/grammar_pilot.py                 # 5 seeds, four arms
+python tools/grammar_pilot.py --balance       # weight the loss by class size
+```
+
+`data/silo/README.md` drew a phrasing curve that was still climbing at nine
+wordings and then stopped, because nine is what `relationpaths.py` happened to
+contain. Everything tried against that number since was a change to the encoder
+or the architecture, and none of it moved the number much.
+
+This grows the phrasebook in groups — five paths, then five more, then the
+remaining ten — and scores every arm on a **byte-identical** held-out set.
+That is the whole difficulty: a path given twelve more wordings while still
+holding out three has a held-out set with more neighbours to learn from, so it
+scores better for a reason that is not grammar. `relationpaths.EXTRA` is
+training-only for that reason, and `tests/test_silo.py` asserts the arms nest.
+
+The answer was **55.4% to 65.3%**, and the shape of it matters more than the
+number: at five paths grown, 80% of the gain came out of the other classes; at
+twenty, 12% did. A measurement stopped at the first group says grammar is
+zero-sum, and says it with a straight face.
+
 ## `class_cost.py` — what a new phrasebook class costs the old ones
 
 ```bash

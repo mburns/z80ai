@@ -363,6 +363,86 @@ def test_every_generation_now_reaches_its_founder(silo):
     assert max(reached) <= libgraph.CLIMB_LIMIT - 1
 
 
+def test_extra_wordings_train_without_moving_what_is_scored(silo):
+    """The property the whole phrasing measurement rests on.
+
+    `relationpaths.EXTRA` exists to ask whether more grammar is worth anything,
+    and the answer is only meaningful if both arms are scored on the same
+    questions. It broke once already and did not announce itself: drawing the
+    extra wordings' subjects from the shared `Random` advanced it, so every
+    path after the first extended one shuffled differently and reserved
+    different wordings, while both arms still looked like they held out three
+    apiece.
+
+    Held-out *order* is allowed to differ - `shuffle(train)` consumes randomness
+    in proportion to the training set, which is longer in one arm - and order is
+    not something a score can see.
+    """
+    import sys
+
+    if str(REPO / "data" / "silo") not in sys.path:  # pragma: no cover
+        sys.path.insert(0, str(REPO / "data" / "silo"))
+    import relationpaths
+
+    _, schema, db = silo
+    have = {r for (r,) in db.execute(
+        "SELECT DISTINCT relation FROM edge WHERE source = ?", (schema.SOURCE,))}
+
+    plain, plain_unseen = relationpaths.build(db, have, 2, 3, 0, extra=False)
+    more, more_unseen = relationpaths.build(db, have, 2, 3, 0, extra=True)
+
+    assert sorted(plain_unseen) == sorted(more_unseen)
+    assert set(plain) < set(more), "the extra arm must only ever add rows"
+    assert len(more) - len(plain) == 2 * sum(
+        len(v) for v in relationpaths.EXTRA.values())
+
+    # And the same for a *subset*, which is how the three-arm run works: each
+    # arm grows a different group and all three must be scored on one set.
+    first, first_unseen = relationpaths.build(
+        db, have, 2, 3, 0, extra=relationpaths.FIRST_FIVE)
+    assert sorted(first_unseen) == sorted(plain_unseen)
+    assert set(plain) < set(first) < set(more)
+    groups = (relationpaths.FIRST_FIVE, relationpaths.SECOND_FIVE,
+              relationpaths.REMAINING_TEN)
+    for i, group in enumerate(groups):
+        for other in groups[i + 1:]:
+            assert group.isdisjoint(other)
+    assert set(relationpaths.EXTRA) == set().union(*groups)
+
+    # And nothing in EXTRA may be reserved, which is the other half of why it
+    # is not simply appended to PATHS.
+    written = {w for v in relationpaths.EXTRA.values() for w in v}
+    assert not {q for q, _ in more_unseen} & written
+
+
+def test_every_answerable_path_ends_on_the_same_grammar(silo):
+    """Twenty-one trained wordings apiece, by two different routes.
+
+    Six paths were taken to twenty-four *inside* `PATHS` by the prefix repair
+    and hold out three of those; the other twenty hold out three of twelve and
+    take another twelve from `EXTRA`. Both arrive at twenty-one, and the
+    measurement that says growth is worth something only holds if they do -
+    a class left on nine is not merely behind, it loses five points to its
+    neighbours having grown.
+
+    `refuse` is exempt: it has forty-eight wordings of its own and is four
+    question shapes rather than one.
+    """
+    import sys
+
+    if str(REPO / "data" / "silo") not in sys.path:  # pragma: no cover
+        sys.path.insert(0, str(REPO / "data" / "silo"))
+    import relationpaths
+
+    import libgraphcard
+
+    for path, wordings in relationpaths.PATHS.items():
+        if path == libgraphcard.REFUSE_PATH:
+            continue
+        trained = len(wordings) - 3 + len(relationpaths.EXTRA.get(path, ()))
+        assert trained == 21, f"{path} trains on {trained} wordings, not 21"
+
+
 def test_a_year_sorts_by_document_id_and_not_by_its_title(silo):
     """What makes ranking reachable, and it is not written down in the schema.
 
