@@ -58,6 +58,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from random import Random
+from statistics import median
 from typing import TYPE_CHECKING
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -93,6 +94,7 @@ class Archive:
     shift: dict[str, str] = field(default_factory=dict)
     address: dict[str, str] = field(default_factory=dict)
     birth_level: dict[str, str] = field(default_factory=dict)
+    fate: dict[str, str] = field(default_factory=dict)
     school: dict[str, str] = field(default_factory=dict)
     crew: dict[str, str] = field(default_factory=dict)
     home: dict[str, tuple[int, int, str, int, int]] = field(default_factory=dict)
@@ -124,7 +126,8 @@ def load(db: sqlite3.Connection) -> Archive:
     numeric = {"born": a.born, "died": a.died, "generation": a.generation}
     textual = {"father": a.father, "mother": a.mother, "department": a.department,
                "occupation": a.job, "shift": a.shift, "address": a.address,
-               "birth_level": a.birth_level, "class": a.school, "crew": a.crew}
+               "birth_level": a.birth_level, "class": a.school, "crew": a.crew,
+               "fate": a.fate}
     for subject, prop, value, num in db.execute(
             "SELECT subject, property, value, num FROM fact WHERE source = ?",
             (SOURCE,)):
@@ -204,6 +207,29 @@ def _living_neighbours(a: Archive, x: str) -> set[str]:
     return {n for n in _neighbours(a, x) if a.alive(n)}
 
 
+def _eldest(a: Archive, group: str, membership: dict[str, str]) -> set[str]:
+    """Everyone in `group` born in the earliest year anybody in it was.
+
+    A set rather than one name, because two people born in the same year are
+    equally the eldest and the walk returns whichever the reverse table reaches
+    first. Scoring one right answer against a tie it cannot break would measure
+    the tie-break rather than the ranking.
+    """
+    members = [p for p, g in membership.items() if g == group]
+    if not members:
+        return set()
+    first = min(a.born[p] for p in members)
+    return {p for p in members if a.born[p] == first}
+
+
+def _youngest(a: Archive, group: str, membership: dict[str, str]) -> set[str]:
+    members = [p for p, g in membership.items() if g == group]
+    if not members:
+        return set()
+    last = max(a.born[p] for p in members)
+    return {p for p in members if a.born[p] == last}
+
+
 # --- the questions ------------------------------------------------------------
 
 
@@ -212,9 +238,11 @@ class Question:
     """One question, three answers, and what it costs to ask."""
 
     label: str
-    #: 'value' - a forward path returns the whole answer
-    #: 'set'   - the answer is a set and a path returns one member of it
-    #: 'none'  - no path expresses it; the reason is in `note`
+    #: 'value'   - a forward path returns the whole answer
+    #: 'set'     - the answer is a set and a path returns one member of it
+    #: 'extreme' - a hop, a scan of the reverse table, and a lookup each: the
+    #:             `path` is (group, key, 'first'|'last')
+    #: 'none'    - no path expresses it; the reason is in `note`
     kind: str
     truth: Callable[[Archive, str], set[str]]
     path: list[str] = field(default_factory=list)
@@ -235,6 +263,16 @@ def questions(a: Archive) -> list[Question]:
     top_department = _commonest(a.department)
     top_shift = _commonest(a.shift)
     top_section = Counter(section_of(h[0]) for h in a.home.values()).most_common(1)[0][0]
+    top_fate = _commonest(a.fate)
+    # A school class is an age cohort and every one of the 484 spans exactly one
+    # year - the class is *named* after it, `Class of 135 (B)` - so knowing
+    # somebody's class is knowing their birth year. That puts the baseline for
+    # "what year was X born" at 99.7%, short of 100% only for the 17 who never
+    # reached six. Not a straw man and not beatable, which is worth printing
+    # rather than hiding: the walk answering it is a new capability, not a new
+    # result.
+    class_year = {cls: a.born[p] for p, cls in a.school.items()}
+    median_span = int(median(a.died[p] - a.born[p] for p in a.died))
 
     def same_surname_elder(a: Archive, x: str, male: bool, gap: int) -> set[str]:
         """The best guess a surname alone supports.
@@ -262,6 +300,24 @@ def questions(a: Archive) -> list[Question]:
                  guess_label=f"always {top_shift!r}"),
         Question("which level was X born on", "value",
                  lambda a, x: {a.birth_level[x]}, ["born_on"]),
+        # Three questions the card could not be asked at all until `born`,
+        # `died` and `fate` stopped being bare `fact` rows and got titles to
+        # point at. The walk is a lookup and scores like one; the guess column
+        # is where the interest is, and on two of these it is brutal.
+        Question("what year was X born", "value",
+                 lambda a, x: {generate.year(a.born[x])}, ["born_in_year"],
+                 guess=lambda a, x: {generate.year(class_year[a.school[x]])}
+                 if x in a.school else set(),
+                 guess_label="the birth year of X's classmates"),
+        Question("what year did X die", "value",
+                 lambda a, x: {generate.year(a.died[x])}, ["died_in_year"],
+                 asks=lambda a, x: not a.alive(x),
+                 guess=lambda a, x: {generate.year(a.born[x] + median_span)},
+                 guess_label=f"born plus {median_span}, the median lifespan"),
+        Question("how did X die", "value", lambda a, x: {a.fate[x]},
+                 ["fate_is"], asks=lambda a, x: not a.alive(x),
+                 guess=lambda a, x: {top_fate},
+                 guess_label=f"always {top_fate!r}"),
 
         Question("who is X's paternal grandfather", "value", _grandfather,
                  ["father_is", "father_is"],
@@ -349,15 +405,28 @@ def questions(a: Archive) -> list[Question]:
                  ["born_on", "count_born_on"],
                  asks=lambda a, x: x in a.birth_level,
                  note="a hop to the level, then count what points back at it"),
+        # Listed below as unreachable until `born_in_year` gave the comparison
+        # an edge to read. A maximum is a scan with a held-best, the same shape
+        # the count turned out to be - and it compares document ids, which is
+        # the only comparison the eZ80 has.
+        Question("who is the oldest on X's crew", "extreme",
+                 lambda a, x: _eldest(a, a.crew[x], a.crew),
+                 ["crew_is", "born_in_year", "first"],
+                 asks=lambda a, x: bool(a.crew.get(x)),
+                 guess=lambda a, x: {x},
+                 guess_label="X themselves"),
+        Question("who is the youngest on X's crew", "extreme",
+                 lambda a, x: _youngest(a, a.crew[x], a.crew),
+                 ["crew_is", "born_in_year", "last"],
+                 asks=lambda a, x: bool(a.crew.get(x)),
+                 guess=lambda a, x: {x},
+                 guess_label="X themselves"),
         Question("how many cousins does X have", "none",
                  lambda a, x: set(), asks=lambda a, x: True,
                  note="four hops of which two are inverses, and the count has "
                       "to be of the *union* over two parents' siblings - a "
                       "single scan tallies one relation, not a set built from "
                       "several"),
-        Question("who is the oldest person on X's crew", "none",
-                 lambda a, x: set(), asks=lambda a, x: x in a.crew,
-                 note="a maximum over a set the walk can enumerate but not rank"),
         Question("is X related to Y, on any line", "none",
                  lambda a, x: set(),
                  note="an intersection of two ancestor sets, and the `ancestor` "
@@ -397,6 +466,12 @@ def _walk(db: sqlite3.Connection, subject: str, q: Question) -> set[str]:
                     out.update(libgraph.inverse(db, SOURCE, door, "lives_at",
                                                 limit=8))
         return out - {subject}
+    if q.kind == "extreme":
+        # group, key, and whether the last one is wanted rather than the first.
+        group, key, want = q.path
+        got = libgraph.extreme(db, SOURCE, subject, group, key,
+                               last=want == "last")
+        return {got[0]} if got else set()
     if q.kind == "set":
         first = q.path[0]
         if len(q.path) == 1:
@@ -450,8 +525,15 @@ def run(db: sqlite3.Connection, a: Archive, subjects: list[str],
                 continue
             truth = q.truth(a, x)
             got = _walk(db, x, q)
-            score.hops += len(q.path)
-            hit = bool(got & truth) if q.kind == "set" else got == truth
+            # An `extreme` is two index reads and one per member of the set, so
+            # its `path` length is not a hop count and the column is left blank
+            # rather than filled with a number that means something else.
+            score.hops += 0 if q.kind == "extreme" else len(q.path)
+            # `extreme` scores like a set: two people born in the same year are
+            # equally the eldest, and which one the reverse table reaches first
+            # is a tie-break rather than a ranking.
+            hit = (got == truth if q.kind == "value"
+                   else bool(got & truth))
             score.walked += bool(hit)
             score.guessed += bool(q.guess(a, x) & truth)
             if q.kind == "set":
@@ -497,6 +579,19 @@ def report(db: sqlite3.Connection, a: Archive, subjects: list[str],
         print(f"  {q.label:<52} {s.rate(s.walked):>7} {s.recall:>7} "
               f"{s.precision:>7}   n={s.asked:,}")
         print(f"      {q.note}")
+
+    print("\nA maximum over a set, which was listed below as out of reach.")
+    print("A hop to the group, a scan of the reverse table, and one lookup per")
+    print("member - and the comparison is of document ids, the only comparison")
+    print("the eZ80 has. It gives the right order only because year articles")
+    print("are written in ascending order; `tests/test_silo.py` pins that")
+    print(f"  {'':<52} {'walk':>7} {'guess':>7}")
+    for q, s in scored:
+        if q.kind != "extreme":
+            continue
+        print(f"  {q.label:<52} {s.rate(s.walked):>7} "
+              f"{s.rate(s.guessed):>7}   n={s.asked:,}")
+        print(f"      guessing: {q.guess_label}")
 
     print("\nNot a path at any length")
     for q, s in scored:
@@ -602,6 +697,9 @@ def _coverage(db: sqlite3.Connection, a: Archive) -> None:
     for relation, note in (("child_of", "everyone with a parent"),
                            ("works_in", "everyone"),
                            ("class_is", "everyone who reached six"),
+                           ("died_in_year", "the dead - the one gap the corpus "
+                                            "has on purpose, since a dense "
+                                            "graph never says it does not know"),
                            ("lives_at", "the living only - the graph carries "
                                         "the present, `residence` carries all "
                                         f"{NOW} years"),
@@ -609,7 +707,7 @@ def _coverage(db: sqlite3.Connection, a: Archive) -> None:
                            ("sits_on", "committee members, past and present")):
         n = db.execute("SELECT COUNT(DISTINCT subject) FROM edge WHERE source = ? "
                        "AND relation = ?", (SOURCE, relation)).fetchone()[0]
-        print(f"  {relation:<10} {n:>6,} subjects  {100 * n / len(a.people):5.1f}%"
+        print(f"  {relation:<13} {n:>6,} subjects  {100 * n / len(a.people):5.1f}%"
               f"  {note}")
 
 

@@ -179,6 +179,83 @@ PATHS: dict[str, tuple[str, ...]] = {
         "what level is {s} native to", "{s}'s birth level is what",
         "where did {s} first draw breath", "which deck was {s} born on",
     ),
+    # Three classes over what used to be `fact` rows with nothing to point at.
+    # `born_in_year` shares its central token with `born_on` above and there is
+    # no honest way around that - "born" is the word - so the separation has to
+    # come from the rest of the sentence: everything here asks *when* and
+    # nothing here says level, floor or deck. That is the same repair the
+    # grandmother paths got, made in advance rather than after the confusion
+    # matrix showed it, and `tools/phrasebook_diversity.py` is the check.
+    "born_in_year": (
+        "what year was {s} born", "when was {s} born",
+        "which year did {s} arrive", "name the year {s} was born",
+        "{s} was born in which year", "what is {s}'s birth year",
+        "tell me the year of {s}'s birth", "{s}'s year of birth is what",
+        "{s} was born when", "the year of {s}'s birth",
+        "what does the record give for {s}'s birth year",
+        "which year is entered against {s}'s birth",
+    ),
+    "died_in_year": (
+        "what year did {s} die", "when did {s} die",
+        "which year did {s} die in", "name the year {s} died",
+        "{s} died in which year", "what is {s}'s year of death",
+        "tell me when {s} died", "{s}'s death year is what",
+        "when did {s} pass", "the year {s} was lost",
+        "what year is entered against {s}'s death",
+        "when was {s} taken off the roll",
+    ),
+    # Two more values the corpus already held with nothing pointing at them:
+    # `generation` was a `fact` and a `category` and not an edge, and the year
+    # a tenancy started has been in `residence` since the first build. Ten
+    # paired seeds put the cost of both at -0.6 +/- 0.6, which is nothing.
+    #
+    # They score **47.4%** held out against a 52.7% mean, the weakest classes
+    # here. `moved_in_year` is a year question next to `born_in_year` and a
+    # dwelling question next to `lives_at`, and it shares vocabulary with both;
+    # `generation_is` asks something nothing else asks and has no near
+    # neighbour to lose to, which makes the pair's average the wrong summary of
+    # either. They ship anyway: without a class these questions do not fail,
+    # they land on whatever they resemble and get answered fluently.
+    "generation_is": (
+        "which generation is {s}",
+        "what generation does {s} belong to",
+        "how far down from the founders is {s}",
+        "name {s}'s generation",
+        "{s} is of which generation",
+        "how many generations after the founders is {s}",
+        "what is {s}'s remove from the founding",
+        "which cohort of descent is {s}",
+        "tell me {s}'s generation",
+        "{s} stands how far from the founders",
+        "what generation is entered against {s}",
+        "how deep in the line is {s}",
+    ),
+    "moved_in_year": (
+        "when did {s} move in",
+        "what year did {s} take that flat",
+        "how long has {s} lived there",
+        "when did {s} take up residence",
+        "name the year {s} moved",
+        "{s} moved in which year",
+        "since when has {s} been at that address",
+        "what year does {s}'s tenancy start",
+        "when was {s} housed there",
+        "tell me when {s} took the flat",
+        "what year is entered against {s}'s move",
+        "{s} has held that door since when",
+    ),
+    # Deliberately short of "died" and "death", which belong to the class above
+    # and are most of it. What distinguishes these two questions in English is
+    # `how` against `when`, and three characters is not much for an encoder
+    # that hashes trigrams - so the vocabulary does the work instead.
+    "fate_is": (
+        "how did {s} die", "what happened to {s}",
+        "was {s} sent to clean", "what became of {s}",
+        "how did {s} end", "tell me the manner of {s}'s end",
+        "did {s} go out to clean", "what does the record give as {s}'s fate",
+        "{s}'s fate is what", "was it a cleaning for {s}",
+        "what is written against {s}'s fate", "what finished {s}",
+    ),
     "class_is": (
         "which class was {s} in", "what class did {s} attend",
         "name {s}'s class", "{s} was in which class",
@@ -456,6 +533,71 @@ PATHS: dict[str, tuple[str, ...]] = {
         "tell me how many share {s}'s floor",
         "how big is the population where {s} lives",
         "number of residents on {s}'s level",
+    ),
+}
+
+#: Labels written down but **not shipped**, kept so the measurement that
+#: rejected them can be run again. `tools/class_cost.py --added` reads this as
+#: well as `PATHS`, and puts anything it finds here in the *with* arm only.
+#:
+#: This exists because [#89](../../pull/89) deleted `born_on count_born_on`'s
+#: wordings along with the class, which left `data/silo/README.md` asserting a
+#: cost - 11.7 +/- 5.6 points off the refusal class - that nothing could
+#: reproduce. A negative result whose inputs are gone is an anecdote.
+#:
+#: The wordings below are **not** the ones that measurement used, because those
+#: are not in the history either. They are written to the same brief: re-use
+#: `born` and `level`, which are exactly the tokens `refuse`'s ring count uses,
+#: since the collision under test is between "how many were *born* on X's
+#: level" and "how many *live* on X's floor".
+#: Two of these name **two** people, and `{s}` is filled with one name. They
+#: are here rather than in `PATHS` for a reason the card enforces: it resolves
+#: one document per question, so a `shared_` step has nowhere to put the second
+#: subject and `paths_for` would write an inert row. `liboracle.subjects` does
+#: the two searches on the Python side and finds both names 99.5% of the time;
+#: what is missing is the eZ80's half.
+CANDIDATES: dict[str, tuple[str, ...]] = {
+    "shared_crew_is": (
+        "are {s} and the sheriff on the same crew",
+        "do {s} and i serve together",
+        "is {s} on my crew",
+        "does {s} share a crew with the sheriff",
+        "are {s} and i crewmates",
+        "is {s} rostered with me",
+        "do {s} and the sheriff work the same gang",
+        "is {s} on the same work team as me",
+        "are {s} and i on one crew",
+        "does {s} crew with the sheriff",
+        "is {s} a crewmate of mine",
+        "tell me if {s} and i share a crew",
+    ),
+    "shared_founding_father": (
+        "is {s} related to me",
+        "are {s} and i related",
+        "is {s} any relation to the sheriff",
+        "do {s} and i share a founder",
+        "am i kin to {s}",
+        "is there any blood between {s} and me",
+        "are {s} and the sheriff of one line",
+        "do {s} and i come from the same founder",
+        "is {s} a relative of mine",
+        "tell me whether {s} and i are related",
+        "what relation is {s} to me",
+        "how is {s} related to the sheriff",
+    ),
+    "born_on count_born_on": (
+        "how many people were born on {s}'s level",
+        "how many were born on the same level as {s}",
+        "count the births on {s}'s level",
+        "how many share {s}'s birth level",
+        "what is the birth count for {s}'s level",
+        "how many people were born where {s} was born",
+        "number of births on {s}'s deck",
+        "how many arrived on {s}'s level",
+        "tell me how many births {s}'s level has seen",
+        "count everybody born on {s}'s floor",
+        "the level {s} was born on saw how many births",
+        "how many births are recorded for {s}'s level",
     ),
 }
 

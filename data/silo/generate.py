@@ -209,6 +209,12 @@ EARLY_DEATH = 0.04
 #: Share of deaths that were a cleaning rather than an ending.
 CLEANING_RATE = 0.015
 
+#: How a death is recorded. Written down once because each of these is now an
+#: article and an edge object as well as a `fact` value, and a corpus that
+#: spells a fate two ways is a corpus where the walk and the table disagree
+#: about something nobody planted.
+FATES: tuple[str, ...] = ("Cleaning", "Natural causes")
+
 SCHOOL = (6, 16)
 WORKING_AGE = 16
 CLASS_SIZE = 26
@@ -501,8 +507,7 @@ def _die(rng: Random, people: list[Person]) -> None:
         if death > NOW:
             continue
         person.died = death
-        person.fate = ("Cleaning" if rng.random() < CLEANING_RATE
-                       else "Natural causes")
+        person.fate = (FATES[0] if rng.random() < CLEANING_RATE else FATES[1])
 
 
 # --- dwellings ----------------------------------------------------------------
@@ -767,21 +772,53 @@ def level(n: int) -> str:
     return f"Level {n}"
 
 
+def year(n: int) -> str:
+    """A year, as something the graph can point at.
+
+    `born` and `died` were `fact` rows and nothing else - numbers with no
+    entity behind them, so `PROPERTY_RELATION` gave them no relation and the
+    card could not be asked when anybody was born. Giving the value a title
+    makes it an edge object, and the walk reaches it the same way it reaches a
+    level: one hop to a name. What it costs is one article per year anything
+    happened in, which is 221 of them.
+    """
+    return f"Year {n}"
+
+
+def generation(n: int) -> str:
+    """A generation, as something the graph can point at.
+
+    Already a `category` - `Generation 4` has been filed against every person
+    since the first build - and already a `fact` with no relation. This is the
+    same value a third time, as an edge, which is the only one of the three the
+    card can walk.
+    """
+    return f"Generation {n}"
+
+
 def _lead(world: World, p: Person) -> str:
     """A paragraph of prose per person, for the search index to chew on.
 
     Every fact in it is also an edge, which makes this a fair place to ask what
     the graph buys over full-text search of the leads: the answer is in the
     text for a reader, and getting it out of the text is comprehension.
+
+    The converse matters too and is easier to break. A relation the graph can
+    walk and the prose never mentions is a question a *reader* of this corpus
+    cannot answer, which quietly turns the comparison above into a comparison
+    of two different corpora. Every relation `_person_edges` yields is named
+    somewhere below for that reason.
     """
     who = "He" if p.male else "She"
     out = [f"{p.name} was born in year {p.born} on {level(p.birth_level)} "
-           f"of {SILO}."]
+           f"of {SILO}, in {generation(p.generation)}."]
     parents = [q.name for q in world.parents(p)]
     if parents:
         out.append(f"{who} is the child of {' and '.join(parents)}.")
     out.append(f"{who} works as a {p.job} in {p.department} on {p.shift}, "
                f"and lives at {p.address} in {section_of(p.home[0] if p.home else 1)}.")
+    if p.alive and p.home:
+        out.append(f"{who} has held that door since year {p.moved}.")
     if p.spouses:
         married = " and later ".join(world.people[i].name for i in p.spouses)
         out.append(f"{who} married {married}.")
@@ -802,6 +839,7 @@ def _facts(world: World, p: Person) -> Iterator[tuple[str, int, str, str, float 
     yield "generation", 0, str(p.generation), "number", float(p.generation)
     yield "birth_level", 0, level(p.birth_level), "text", None
     yield "address", 0, p.address, "text", None
+    yield "moved", 0, str(p.moved), "number", float(p.moved)
     yield "occupation", 0, p.job, "text", None
     yield "department", 0, p.department, "text", None
     yield "shift", 0, p.shift, "text", None
@@ -847,17 +885,33 @@ def _person_edges(world: World, p: Person) -> Iterator[tuple[str, str]]:
     for spouse in p.spouses:
         yield "spouse_of", world.people[spouse].name
     yield "born_on", level(p.birth_level)
+    yield "born_in_year", year(p.born)
+    yield "generation_is", generation(p.generation)
     yield "works_in", p.department
     yield "job_is", p.job
     yield "shift_is", p.shift
     if p.alive:
         yield "lives_at", p.address
+        # The year the tenancy started, which `residence` has carried all
+        # along and the graph could not be asked for. Only for the living, for
+        # the same reason `lives_at` is: the graph carries the present, and a
+        # move-in year for a flat somebody left in 118 answers a question about
+        # a household that no longer exists.
+        yield "moved_in_year", year(p.moved)
     if p.school:
         yield "class_is", p.school
     if p.crew:
         yield "crew_is", p.crew
     for seat, _, _ in p.seats:
         yield "sits_on", seat
+    # The living have neither, which is the one gap this corpus has on purpose.
+    # Everywhere else a classified path completes, so a misroute answers
+    # fluently and wrongly with no symptom; here "when did she die" about
+    # somebody alive finds no edge and the machine says so.
+    if p.died is not None:
+        yield "died_in_year", year(p.died)
+        if p.fate:
+            yield "fate_is", p.fate
 
 
 def _categories(p: Person) -> Iterator[str]:
@@ -876,9 +930,19 @@ PROPERTY_RELATION: dict[str, str | None] = {
     "father": "father_is", "mother": "mother_is", "spouse": "spouse_of",
     "address": "lives_at", "birth_level": "born_on", "department": "works_in",
     "occupation": "job_is", "shift": "shift_is", "class": "class_is",
-    "crew": "crew_is", "committee": "sits_on",
-    "born": None, "died": None, "generation": None, "fate": None, "sex": None,
+    "crew": "crew_is", "committee": "sits_on", "moved": "moved_in_year",
+    "born": "born_in_year", "died": "died_in_year", "fate": "fate_is",
+    "generation": "generation_is",
+    #: `sex` stays `None` and stays a `fact`. It is on the card as an
+    #: `entity_type` - `man` and `woman` - which is what `liboracle.pronoun`
+    #: reads, and an edge as well would be the same value in three places.
+    "sex": None,
 }
+# `born` and `died` are the two properties whose `fact` value and edge object
+# are different strings - the fact is a bare number, because `num` is what a
+# range query needs, and the edge points at `year(n)`. `birth_level` already
+# worked that way, since `Level 42` is a place and 42 is not, and a year is the
+# same decision made later. Everything else spells the value one way.
 
 
 def write(db: sqlite3.Connection, world: World, seed: int,
@@ -923,6 +987,29 @@ def write(db: sqlite3.Connection, world: World, seed: int,
         articles.append((SOURCE, name, f"{name} is a {group.kind} of {SILO}, "
                                        f"formed in year {group.formed}."))
         types.append((SOURCE, group.kind, name))
+    # Years anything happened in, rather than all 220 of them: a year nothing
+    # lands on is an article nothing points at, and `_dwelling_articles`
+    # already sets the precedent of writing only what exists. The planter moves
+    # deaths, so this is computed after it has run.
+    #
+    # Every relation pointing at a year has to be represented here. An edge to
+    # a title no article carries is not an error anywhere - `buildwikigraph`
+    # drops it and the card answers with silence - so the set below is the one
+    # place that has to be kept in step with `_person_edges`.
+    for n in sorted({p.born for p in world.people}
+                    | {p.died for p in world.people if p.died is not None}
+                    | {p.moved for p in world.people if p.alive and p.home}):
+        articles.append((SOURCE, year(n), f"{year(n)} of {SILO}."))
+        types.append((SOURCE, "year", year(n)))
+    for fate in FATES:
+        articles.append((SOURCE, fate,
+                         f"{fate} is one of the two ways {SILO} records a death."))
+        types.append((SOURCE, "fate", fate))
+    for g in range(len(GENERATIONS)):
+        articles.append((SOURCE, generation(g),
+                         f"{generation(g)} of {SILO}, counted from the "
+                         f"founders."))
+        types.append((SOURCE, "generation", generation(g)))
 
     articles += _dwelling_articles(world)
     edges += _dwelling_edges(world)

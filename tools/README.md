@@ -1,5 +1,30 @@
 # tools/
 
+## `class_cost.py` — what a new phrasebook class costs the old ones
+
+```bash
+python tools/class_cost.py --added born_in_year died_in_year fate_is
+python tools/class_cost.py --added count_born_on --seeds 10 --watch born_on
+```
+
+A new path is nearly free on the card and is not free in the classifier, which
+has to find a region in trigram space for it somewhere between the regions it
+already has. `data/silo/README.md` measured that twice and got two different
+answers — 18.6 points off the refusal class for two count classes, 6.9 for one
+of them, which is nothing — and the difference between those conclusions was
+entirely the seeds.
+
+So this trains **two arms per seed**, the phrasebook with the new labels and the
+same phrasebook without them, paired so the spread that swamps a three-seed
+sweep cancels. `shared` scores only the labels present in both arms, because an
+arm answering more kinds of question has a different denominator. `refuse` is
+scored as *did it refuse at all*, which is the only distinction the eZ80 makes.
+`--watch` reports named labels on their own, for a collision you expect.
+
+Ten seeds is roughly ninety minutes. Three seeds is not enough — that is the
+whole reason this exists, and it caught its author reporting a four-point loss
+that turned out to be −0.9 ± 2.0.
+
 ## `optest.py` — validate the eZ80 emulator against a real one
 
 The eZ80 backend's speed comes from instructions that exist only on the eZ80 in

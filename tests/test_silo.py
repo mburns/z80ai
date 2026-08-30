@@ -363,6 +363,65 @@ def test_every_generation_now_reaches_its_founder(silo):
     assert max(reached) <= libgraph.CLIMB_LIMIT - 1
 
 
+def test_a_year_sorts_by_document_id_and_not_by_its_title(silo):
+    """What makes ranking reachable, and it is not written down in the schema.
+
+    `libgraph.extreme` finds the oldest person in a group by comparing the
+    document ids of their birth years, because a 24-bit compare is the only
+    comparison the eZ80 has. That gives chronological order only because
+    `generate.write` emits year articles in ascending order and ids follow
+    insertion.
+
+    Sorting the same titles as *text* does not: `Year 100` comes before
+    `Year 11`, which comes before `Year 2`. So a build that ever assigned ids
+    by title would leave every ranking question confidently wrong with nothing
+    to show for it, and this is the assertion that would fail instead.
+    """
+    _, schema, db = silo
+    rows = db.execute(
+        "SELECT id, title FROM article WHERE source = ? AND title LIKE 'Year %' "
+        "ORDER BY id", (schema.SOURCE,)).fetchall()
+    assert rows, "no year articles; born_in_year has nothing to point at"
+
+    years = [int(title.split()[1]) for _, title in rows]
+    assert years == sorted(years), "document ids do not ascend with the year"
+
+    # The other half of the point: text order would have been wrong, so the
+    # property above is a real decision and not a tautology.
+    by_text = [int(t.split()[1]) for _, t in sorted(rows, key=lambda r: r[1])]
+    assert by_text != sorted(by_text)
+
+
+def test_the_eldest_of_a_group_is_a_scan_and_a_compare(silo):
+    """A maximum was listed as out of reach and is not, for the same reason a
+    count was not: the reverse table is sorted, so a group is contiguous."""
+    import libgraph
+
+    _, schema, db = silo
+    who, crew = db.execute(
+        "SELECT subject, object FROM edge WHERE source = ? AND relation = "
+        "'crew_is' LIMIT 1", (schema.SOURCE,)).fetchone()
+
+    members = {p for (p,) in db.execute(
+        "SELECT subject FROM edge WHERE source = ? AND relation = 'crew_is' "
+        "AND object = ?", (schema.SOURCE, crew))}
+    born = dict(db.execute(
+        "SELECT subject, CAST(num AS INTEGER) FROM fact WHERE source = ? "
+        "AND property = 'born'", (schema.SOURCE,)))
+
+    got = libgraph.extreme(db, schema.SOURCE, who, "crew_is", "born_in_year")
+    assert got is not None
+    name, value = got
+    assert name in members
+    assert born[name] == min(born[p] for p in members)
+    assert value == f"Year {born[name]}"
+
+    last = libgraph.extreme(db, schema.SOURCE, who, "crew_is", "born_in_year",
+                            last=True)
+    assert last is not None
+    assert born[last[0]] == max(born[p] for p in members)
+
+
 def test_the_hop_limit_is_still_what_stops_a_climb(silo, monkeypatch):
     """The limit is a real cost of running where a loop must terminate.
 

@@ -51,7 +51,7 @@ DB_PATH = Path(__file__).resolve().parent / "data" / "simple_english_wikipedia.d
 
 
 def load(db_path: Path, relations: Path | None, card: Path | None,
-         source: str) -> liboracle.Oracle:
+         source: str, backoff: int = 0) -> liboracle.Oracle:
     if not db_path.exists():
         raise SystemExit(
             f"no database at {db_path}\n"
@@ -69,7 +69,8 @@ def load(db_path: Path, relations: Path | None, card: Path | None,
                                       card.with_suffix(".DAT"))
     else:
         search = _DatabaseSearch(db, source)
-    return liboracle.Oracle(db, source=source, relations=model, search=search)
+    return liboracle.Oracle(db, source=source, relations=model, search=search,
+                            backoff=backoff)
 
 
 #: Words that name a relation rather than an entity. "What is the capital of
@@ -138,7 +139,10 @@ def answer(oracle: liboracle.Oracle, question: str, plain: bool) -> None:
         print(f"  relations {' -> '.join(response.relations) or '-'}")
         print(f"  path      {' -> '.join(response.path) or '-'}")
         print(f"  kind      {response.kind}"
-              + (f", stopped at {response.missing}" if response.missing else ""))
+              + (f", stopped at {response.missing}" if response.missing else "")
+              + (", from the second choice" if response.second_choice else ""))
+        if response.margin is not None:
+            print(f"  margin    {response.margin}")
         print(f"  value     {response.value}")
     else:
         print(liboracle.speak(response))
@@ -149,6 +153,12 @@ def evaluate(oracle: liboracle.Oracle, path: Path) -> None:
 
     Separated by kind, because an oracle that answers 30% with facts and falls
     back the rest is a different machine from one that answers 30% and guesses.
+
+    A `record` scores zero by construction: it has no `value`, and giving it
+    one would be the most flattering metric in this repository. A listing of
+    everything held about a person contains the answer to most one-hop
+    questions about that person, so scoring the text would turn a refusal to
+    answer into near-perfect accuracy.
     """
     import libdata
 
@@ -162,8 +172,8 @@ def evaluate(oracle: liboracle.Oracle, path: Path) -> None:
     total = sum(len(v) for v in kinds.values())
     print(f"{total:,} questions\n")
     print(f"  {'kind':<10}{'share':>8}{'right':>8}")
-    for kind in (liboracle.FACT, liboracle.PARTIAL, liboracle.SEARCH,
-                 liboracle.UNKNOWN):
+    for kind in (liboracle.FACT, liboracle.PARTIAL, liboracle.RECORD,
+                 liboracle.SEARCH, liboracle.UNKNOWN):
         hits = kinds.get(kind, [])
         if hits:
             print(f"  {kind:<10}{len(hits) / total:>7.1%}"
@@ -186,9 +196,15 @@ def main() -> None:
                         help="Show the mechanism rather than the voice")
     parser.add_argument("--evaluate", type=Path,
                         help="Score a question|answer file instead")
+    parser.add_argument("--backoff", type=int, default=0, metavar="MARGIN",
+                        help="Try the classifier's second choice when the "
+                             "first finds no edge and the two were this close. "
+                             "0 (the default) never does; it answers more "
+                             "questions and answers more of them wrongly")
     args = parser.parse_args()
 
-    oracle = load(args.db, args.relations, args.card, args.source)
+    oracle = load(args.db, args.relations, args.card, args.source,
+                  backoff=args.backoff)
 
     if args.evaluate:
         evaluate(oracle, args.evaluate)
