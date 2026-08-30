@@ -910,12 +910,47 @@ carrying twenty-one wordings while everybody else carried nine, and that
 advantage is gone. Six of them are the prefix-repaired paths. `refuse` is the
 seventh, and its forty-eight wordings are four question shapes rather than one.
 
-**What is not established** is where this stops. Three points make a curve that
-is still climbing, and the wordings are twenty dozen written by one hand over
-two afternoons — `tools/phrasebook_diversity.py` says they broadened rather
-than padded, within-class similarity falling on sixteen of twenty paths, but a
-stranger's dozen would be less like these than these are like each other. What
-a fourth dozen is worth is the measurement this section is now short of.
+### A third dozen, and the curve bends
+
+The paragraph that used to be here said where this stops was not established
+and named the measurement: another dozen for five paths, taking them from
+twenty-one wordings to thirty-three while everybody else stays at twenty-one.
+`relationpaths.EXTRA_THIRD` is it, and five paired seeds say the return halves:
+
+| the same five paths hold | held out |
+|---:|---:|
+| 9 wordings | 39.2% |
+| 21 | 52.5% |
+| 33 | **58.4%** |
+
+**+5.9 ± 1.2 (t = 5.05)**, against +13.3 for the dozen before it. Still real,
+still significant, and half the size.
+
+| | all | three | paired diff | t |
+|---|---:|---:|---:|---:|
+| the five grown again | 52.5% | **58.4%** | +5.9 ± 1.2 | 5.05 |
+| second five | 59.3% | 61.5% | +2.2 ± 2.2 | 1.01 |
+| last ten | 78.8% | 78.7% | −0.1 ± 2.2 | −0.04 |
+| already at 21, plus `refuse` | 59.3% | 59.9% | +0.6 ± 1.6 | 0.35 |
+| **overall** | 65.3% | **66.9%** | +1.6 ± 0.8 | 2.05 |
+
+**And this time nobody paid for it.** Not one of the other three groups moved
+outside its own noise, where the first pilot took 3.2 points off twenty-one
+classes to give seventeen to five. That completes the picture the redistribution
+table was drawing: territory is taken when a class grows past its neighbours and
+not when it grows alongside them, and at twenty-one wordings apiece there is no
+past to grow into.
+
+So the arithmetic for the rest of it, which is 180 more sentences: 20 paths at
++5.9 each is +142 questions, about **+4.4 points**, landing the corpus near 70%.
+That is still the second-largest lever in this file and it is half of what the
+last one was worth. Whether it is worth an afternoon is a judgement rather than
+a measurement, and the measurement is now here to make it with.
+
+What remains unmeasured is the same caveat one dozen further out: three dozen
+wordings by one hand are more like each other than three dozen strangers'
+would be, and every number above is a lower bound on what a fourth would buy
+somebody who writes differently.
 
 ### Before writing more wordings, the encoder had 128 buckets
 

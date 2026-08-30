@@ -73,6 +73,7 @@ from bucket_sweep import buckets
 def one_arm(db: sqlite3.Connection, have: set[str], seed: int, held_out: int,
             epochs: int, hidden: list[int], bucket_count: int,
             extra: frozenset[str], balance: bool = False,
+            third: frozenset[str] = frozenset(),
             ) -> tuple[dict[str, tuple[int, int]], int]:
     """(per-class hits and totals, training rows) for one arm.
 
@@ -88,7 +89,8 @@ def one_arm(db: sqlite3.Connection, have: set[str], seed: int, held_out: int,
 
     with buckets(bucket_count):
         train, unseen = relationpaths.build(
-            db, have, relationpaths.PER_TEMPLATE, held_out, seed, extra=extra)
+            db, have, relationpaths.PER_TEMPLATE, held_out, seed, extra=extra,
+            third=third)
         model, _o, _m = classify.train(
             train, hidden, epochs, 0.01, seed=seed, split_seed=seed,
             val_frac=0.1, accum_bits=24, position_bands=libinfer.FLAT,
@@ -146,10 +148,14 @@ def main() -> None:
     # which is the whole difference between a redistribution that would vanish
     # if everybody grew and one that would not.
     ten = relationpaths.FIRST_FIVE | relationpaths.SECOND_FIVE
-    arms = {"none": frozenset(),
-            "first": relationpaths.FIRST_FIVE,
-            "both": ten,
-            "all": ten | relationpaths.REMAINING_TEN}
+    everything_grown = ten | relationpaths.REMAINING_TEN
+    # (second dozen, third dozen). `three` is the tail of the curve: everybody
+    # on twenty-one wordings, and the first five on thirty-three.
+    arms = {"none": (frozenset(), frozenset()),
+            "first": (relationpaths.FIRST_FIVE, frozenset()),
+            "both": (ten, frozenset()),
+            "all": (everything_grown, frozenset()),
+            "three": (everything_grown, frozenset(relationpaths.EXTRA_THIRD))}
     groups = {"first five": relationpaths.FIRST_FIVE,
               "second five": relationpaths.SECOND_FIVE,
               "last ten": relationpaths.REMAINING_TEN,
@@ -167,16 +173,18 @@ def main() -> None:
           + "".join(f"{g:>19}" for g in groups))
     print("-" * (22 + 19 * len(groups)))
     for seed in range(args.seeds):
-        for name, grow in arms.items():
+        for name, (grow, grow_more) in arms.items():
             per_class, n = one_arm(db, have, seed, args.held_out, args.epochs,
-                                   hidden, args.buckets, grow, args.balance)
+                                   hidden, args.buckets, grow, args.balance,
+                                   grow_more)
             runs[name].append(per_class)
             print(f"{seed:>5}{name:>8}{n:>9,}"
                   + "".join(f"{share(per_class, w):>19.1%}"
                             for w in groups.values()), flush=True)
 
     for lo_name, hi_name in (("none", "first"), ("first", "both"),
-                             ("both", "all"), ("none", "all")):
+                             ("both", "all"), ("none", "all"),
+                             ("all", "three")):
         print(f"\n{lo_name} -> {hi_name}")
         print(f"{'':>22}{lo_name:>8}{hi_name:>8}{'paired diff':>15}{'t':>7}")
         print("-" * 60)

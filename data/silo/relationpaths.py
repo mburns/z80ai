@@ -937,6 +937,88 @@ EXTRA: dict[str, tuple[str, ...]] = {
     ),
 }
 
+#: A *third* dozen, for the five paths the pilot grew first. Same rules as
+#: `EXTRA` - training only, never reserved - and the same purpose one step
+#: further out: the curve from nine wordings to twenty-one is still climbing at
+#: t=7.33, and nothing says where it stops.
+#:
+#: Five paths rather than twenty, because that is what the first pilot cost and
+#: what it was worth. If a third dozen is flat here it is flat everywhere and
+#: 240 more sentences need not be written; if it is not, this is the cheapest
+#: possible way to have found out.
+EXTRA_THIRD: dict[str, tuple[str, ...]] = {
+    "child_of_of": (
+        "who did {s} bring into the silo",
+        "which names hang below {s}",
+        "point me at {s}'s children",
+        "who is descended one step from {s}",
+        "{s}'s issue",
+        "who did {s} beget",
+        "what young has {s}",
+        "who stands under {s} in the line",
+        "read me {s}'s children",
+        "who came of {s}",
+        "{s} is mother or father to whom",
+        "who in the archive was born to {s}",
+    ),
+    "works_in": (
+        "which house does {s} serve",
+        "point me at {s}'s department",
+        "{s} is on whose books",
+        "read me the department for {s}",
+        "which of the fourteen has {s}",
+        "what is {s} employed under",
+        "{s} labours for which department",
+        "which department signs for {s}",
+        "name the house {s} works for",
+        "{s} is attached to what",
+        "which department would claim {s}",
+        "what department does the roll give {s}",
+    ),
+    "shift_is": (
+        "which watch has {s}",
+        "point me at {s}'s shift",
+        "read me the shift for {s}",
+        "which of the three is {s} down for",
+        "when is {s} at work",
+        "{s} answers the bell when",
+        "what rotation does the roll give {s}",
+        "{s} is on at what time",
+        "which shift signs for {s}",
+        "name the watch {s} stands",
+        "{s} works which part of the day",
+        "what shift does the roster give {s}",
+    ),
+    "job_is": (
+        "what is {s} employed to do",
+        "point me at {s}'s trade",
+        "read me the occupation for {s}",
+        "what craft has {s}",
+        "{s} is trained as what",
+        "which trade signs for {s}",
+        "name the work {s} was set to",
+        "{s} does what in the silo",
+        "what does the roll give as {s}'s trade",
+        "which calling is {s}'s",
+        "{s} holds what position",
+        "what is {s} down to do",
+    ),
+    "crew_is": (
+        "which crew signs for {s}",
+        "point me at {s}'s crew",
+        "read me the crew for {s}",
+        "who does {s} turn out with",
+        "{s} is mustered where",
+        "name the crew {s} answers to",
+        "which gang would claim {s}",
+        "{s} works under which crew",
+        "what crew does the roster give {s}",
+        "which team is {s} down for",
+        "{s} stands with which crew",
+        "whose crew is {s} on",
+    ),
+}
+
 #: The three groups `EXTRA` was written in, so the pilot can grow them one at a
 #: time and watch what happens to everybody else. The point of the second five
 #: was that the first five's gain came 80-88% out of their neighbours, and two
@@ -1025,6 +1107,7 @@ def build(db: sqlite3.Connection, have: set[str], per_template: int,
           hold_out: int, seed: int,
           masked: bool = False, phrasings: int | None = None,
           extra: bool | Collection[str] = False,
+          third: bool | Collection[str] = False,
           ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """(training pairs, held-out pairs), split by phrasing rather than by row.
 
@@ -1043,6 +1126,7 @@ def build(db: sqlite3.Connection, have: set[str], per_template: int,
     would measure the sentences.
     """
     grow = set(EXTRA) if extra is True else set(extra or ())
+    grow_more = set(EXTRA_THIRD) if third is True else set(third or ())
     rng = Random(seed)
     # A stream per extended path, and neither of those two words is spare.
     #
@@ -1073,13 +1157,18 @@ def build(db: sqlite3.Connection, have: set[str], per_template: int,
             block = names[i * per_template:(i + 1) * per_template]
             rows = [(_ask(template, name, masked), path) for name in block]
             (unseen if template in reserved else train).extend(rows)
-        if path in grow:
-            # Drawn separately so the subjects are the corpus's own for this
-            # path, the same way the block above draws them - a wording trained
-            # against names that cannot carry the relation teaches the phrasing
-            # against an answer of nothing.
-            more = EXTRA[path]
-            spare = Random((seed + 1) * 1_000_003 + extra_order.index(path))
+        # Drawn separately so the subjects are the corpus's own for this path,
+        # the same way the block above draws them - a wording trained against
+        # names that cannot carry the relation teaches the phrasing against an
+        # answer of nothing. The two batches get streams of their own for the
+        # same reason they get one at all: a path's rows must not depend on
+        # which *other* paths were grown in the same build.
+        for batch, table in ((grow, EXTRA), (grow_more, EXTRA_THIRD)):
+            if path not in batch:
+                continue
+            more = table[path]
+            spare = Random((seed + 1) * 1_000_003 + extra_order.index(path)
+                           + (0 if table is EXTRA else 500_009))
             drawn = subjects(db, path, have, per_template * len(more), spare)
             for i, template in enumerate(more):
                 block = drawn[i * per_template:(i + 1) * per_template]
@@ -1163,6 +1252,10 @@ def main() -> None:
     ap.add_argument("--no-extra", action="store_true",
                     help="Leave out EXTRA's twelve-per-path, which is what "
                          "every measurement before it was made against")
+    ap.add_argument("--third", action="store_true",
+                    help="Also use EXTRA_THIRD, which covers five paths of "
+                         "twenty and is a measurement rather than an asset: "
+                         "worth +5.9 to those five and +1.6 to the corpus")
     args = ap.parse_args()
 
     if args.emit == "held-out" and not args.held_out_templates:
@@ -1190,7 +1283,8 @@ def main() -> None:
     # number in `data/silo/README.md` that predates it.
     train, unseen = build(db, have, args.per_template, args.held_out_templates,
                           args.seed, masked=args.mask,
-                          phrasings=args.phrasings, extra=not args.no_extra)
+                          phrasings=args.phrasings, extra=not args.no_extra,
+                          third=args.third)
     pairs = unseen if args.emit == "held-out" else train
     counts = Counter(path for _, path in pairs)
 
