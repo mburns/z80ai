@@ -173,6 +173,21 @@ CLIMB_LIMIT = libgraphcard.CLIMB_LIMIT
 #: ever printed titles it read off the card.
 COUNT = "count_"
 
+#: Prefix for a path asked about **two** subjects rather than one: walk the
+#: relation after it from both ends and say whether they meet. `shared_crew_is`
+#: is "are X and Y on the same crew"; `shared_founding_father` is as close to
+#: "are they related" as a paternal line gets.
+#:
+#: `common` has answered these since it was written and nothing could ask,
+#: because the pipeline resolved one document per question. `liboracle.subjects`
+#: is the second one - two searches, and it finds both names 99.5% of the time.
+#:
+#: The eZ80 does not carry this either, and what it needs is the same shape as
+#: the count: a second search whose result goes somewhere, a step kind, and a
+#: routine that walks twice and compares two 24-bit ids. The comparison is the
+#: cheap part; the second search is the change.
+SHARED = "shared_"
+
 #: An entity has to be named a country by this many independent infoboxes for
 #: the corpus to be taken at its word. At 3 that is 193 claims, which `demote`
 #: then cuts to 143 by dropping the ones the containment contradicts; at 1 it
@@ -880,6 +895,68 @@ def inverse(db: sqlite3.Connection, source: str, obj: str,
     return [s for (s,) in db.execute(
         "SELECT subject FROM edge WHERE source = ? AND object = ? "
         "AND relation = ? LIMIT ?", (source, obj, relation, limit))]
+
+
+def record(db: sqlite3.Connection, source: str, subject: str,
+           limit: int = 24) -> list[tuple[str, str]]:
+    """Everything the graph holds about one subject, as (relation, object).
+
+    The forward table is sorted by subject, so one entity's edges are
+    contiguous: this is a binary search and a scan, the same shape as ``count``
+    and for the same reason. Thirteen rows for a living silo resident.
+
+    It exists for the case where a question was understood well enough to find
+    *who* it was about and not well enough to walk anything - which on a dense
+    corpus is the classifier's fault rather than the graph's. Saying what is
+    held about that person is always coherent, always true, and needs no guess
+    about which question was meant. Handing back an article instead answers a
+    question nobody asked, in prose, at forty times the card bytes.
+    """
+    return [(r, o) for r, o in db.execute(
+        "SELECT relation, object FROM edge WHERE source = ? AND subject = ? "
+        "ORDER BY relation LIMIT ?", (source, subject, limit))]
+
+
+def extreme(db: sqlite3.Connection, source: str, subject: str, group: str,
+            key: str, last: bool = False,
+            limit: int = 64) -> tuple[str, str] | None:
+    """The member of ``subject``'s ``group`` whose ``key`` sorts first or last.
+
+    "Who is the oldest person on X's crew" - listed here and in
+    `data/silo/README.md` as a maximum over a set, and therefore out of reach.
+    It is not, for the same reason ``count`` was not: three steps, none of them
+    an aggregate.
+
+        one hop           subject -> the crew, through ``group``
+        the reverse table its members, contiguous, so a scan
+        one hop each      member -> the value, through ``key``
+
+    That is 2 + n index lookups where n is the size of the set - eleven for a
+    crew - against a walk that `data/silo/README.md` cannot measure the cost
+    of at all.
+
+    **What makes it work is that the comparison is of document ids**, which is
+    the only thing the eZ80 can compare, and ids come from the order articles
+    were written rather than from their titles. `data/silo/generate.py` emits
+    year articles in ascending order, so `Year 76` has a lower id than `Year
+    148` and comparing ids *is* comparing years. Nothing enforces that in the
+    schema, which is why `tests/test_silo.py` asserts it: sorting the same
+    titles as text puts `Year 100` before `Year 11`, and a machine ranking by
+    that would be confidently, silently wrong about everybody's age.
+
+    Returns (member, value) or None if the group has no members with a value.
+    """
+    rows = db.execute(
+        "SELECT m.subject, k.object FROM edge g "
+        "JOIN edge m ON m.source = g.source AND m.relation = g.relation "
+        "             AND m.object = g.object "
+        "JOIN edge k ON k.source = g.source AND k.subject = m.subject "
+        "             AND k.relation = ? "
+        "JOIN article a ON a.source = g.source AND a.title = k.object "
+        "WHERE g.source = ? AND g.subject = ? AND g.relation = ? "
+        f"ORDER BY a.id {'DESC' if last else 'ASC'} LIMIT ?",
+        (key, source, subject, group, limit)).fetchall()
+    return (rows[0][0], rows[0][1]) if rows else None
 
 
 def count(db: sqlite3.Connection, source: str, obj: str, relation: str) -> int:
