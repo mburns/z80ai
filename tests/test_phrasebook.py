@@ -56,6 +56,35 @@ def test_a_character_model_refuses_to_classify():
     model.phrases = None
     with pytest.raises(ValueError, match="no phrasebook"):
         libinfer.classify(model, "ANYTHING")
+    with pytest.raises(ValueError, match="no phrasebook"):
+        libinfer.rank(model, "ANYTHING")
+
+
+def test_rank_agrees_with_classify_about_the_winner():
+    """`rank` exists to expose the runner-up, not to change the winner.
+
+    If these two ever disagree the oracle answers one question and the card
+    answers another, which is the failure mode nothing downstream can see.
+    """
+    model = make_phrasebook(PHRASES)
+    for query in ("FREEZE MY ACCOUNT", "IS MY FLIGHT LATE", "WHAT IS A QUARK"):
+        ranked = libinfer.rank(model, query, accum_bits=24, top=len(PHRASES))
+        assert ranked[0][0] == libinfer.classify(model, query, accum_bits=24)
+        assert [s for _, s in ranked] == sorted(
+            (s for _, s in ranked), reverse=True)
+
+
+def test_the_margin_is_the_gap_between_the_top_two():
+    model = make_phrasebook(PHRASES)
+    ranked = libinfer.rank(model, "FREEZE MY ACCOUNT", accum_bits=24)
+    assert libinfer.margin(ranked) == ranked[0][1] - ranked[1][1]
+    assert libinfer.margin(ranked) >= 0
+
+
+def test_one_choice_is_infinitely_far_ahead_of_nothing():
+    """A threshold test should not need a special case for a single class."""
+    model = make_phrasebook(PHRASES)
+    assert libinfer.margin(libinfer.rank(model, "ANY", top=1)) > 1_000_000
 
 
 def test_phrases_and_accum_bits_survive_a_round_trip(tmp_path):

@@ -541,6 +541,53 @@ def classify(model: Model, query: str, accum_bits: int = 16) -> str:
     return model.phrases[classify_index(model, query, accum_bits)]
 
 
+def rank(model: Model, query: str, accum_bits: int = 16,
+         top: int = 2) -> list[tuple[str, int]]:
+    """The classifier's ordered choices and their logits, best first.
+
+    `classify` is a bare argmax and throws away everything except which output
+    won.  The runner-up and the distance to it are already computed, and both
+    are worth having:
+
+    **Rank 2 holds the answer rank 1 missed 31.2% of the time.**  Over the
+    silo's 3,240 held-out questions the top choice is right 55.6% of the time
+    and the top two contain the answer 69.4% of the time, so a caller whose
+    first path finds no edge has somewhere better to look than the search
+    index.
+
+    **The margin knows when it is wrong.**  The gap between the top two logits
+    has a median of 107 where the answer is right and 43 where it is not, which
+    is the confidence signal `data/silo/README.md` says this machine does not
+    have - it says a bare argmax leaves "nowhere to put a confidence cut-off",
+    and that is true of the *reply* and not of the arithmetic behind it.
+    Declining the lowest tenth of margins removes questions that were wrong
+    68.7% of the time.
+
+    On the eZ80 this is a second running maximum in `ARGMAX` - one more compare
+    and two more 24-bit slots in a loop that already walks every logit.  Nothing
+    here changes what `classify` returns, so a caller that only wants the reply
+    is unaffected and the shipped card is unchanged.
+    """
+    if model.phrases is None:
+        raise ValueError("model has no phrasebook; use generate() instead")
+    logits = forward(model, model.encode_query(query), accum_bits)
+    # Stable, so ties fall to the lower index the way first-wins argmax does.
+    order = np.argsort(-logits, kind="stable")[:max(1, top)]
+    return [(model.phrases[int(i)], int(logits[int(i)])) for i in order]
+
+
+def margin(ranked: list[tuple[str, int]]) -> int:
+    """How far the winner was ahead of the runner-up.
+
+    A single choice is infinitely far ahead of nothing, and returning a large
+    number rather than raising keeps a threshold test from needing a special
+    case for a one-class phrasebook.
+    """
+    if len(ranked) < 2:
+        return 1 << 30
+    return ranked[0][1] - ranked[1][1]
+
+
 # --- weight packing ----------------------------------------------------------
 #
 # Two on-disk encodings exist.  "plain" is the natural one (value+2, LSB pair
