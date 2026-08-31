@@ -915,7 +915,12 @@ seventh, and its forty-eight wordings are four question shapes rather than one.
 The paragraph that used to be here said where this stops was not established
 and named the measurement: another dozen for five paths, taking them from
 twenty-one wordings to thirty-three while everybody else stays at twenty-one.
-`relationpaths.EXTRA_THIRD` is it, and five paired seeds say the return halves:
+`relationpaths.EXTRA_THIRD` is it.
+
+**Measured when it held only those five**, which is a pilot and not the state of
+the file — re-running `tools/grammar_pilot.py` today gives the second table
+below, because `EXTRA_THIRD` covers all twenty now. Five paired seeds said the
+return halves:
 
 | the same five paths hold | held out |
 |---:|---:|
@@ -941,16 +946,56 @@ table was drawing: territory is taken when a class grows past its neighbours and
 not when it grows alongside them, and at twenty-one wordings apiece there is no
 past to grow into.
 
-So the arithmetic for the rest of it, which is 180 more sentences: 20 paths at
-+5.9 each is +142 questions, about **+4.4 points**, landing the corpus near 70%.
-That is still the second-largest lever in this file and it is half of what the
-last one was worth. Whether it is worth an afternoon is a judgement rather than
-a measurement, and the measurement is now here to make it with.
+The other fifteen paths then got theirs, which is 180 more sentences and the
+whole corpus on **thirty-three wordings apiece**:
 
-What remains unmeasured is the same caveat one dozen further out: three dozen
-wordings by one hand are more like each other than three dozen strangers'
-would be, and every number above is a lower bound on what a fourth would buy
-somebody who writes differently.
+| | all (21) | three (33) | paired diff | t |
+|---|---:|---:|---:|---:|
+| first five | 52.5% | 59.1% | +6.6 ± 2.8 | 2.38 |
+| second five | 59.3% | 63.8% | +4.5 ± 2.7 | 1.66 |
+| last ten | 78.8% | 84.0% | +5.2 ± 1.9 | 2.70 |
+| already at 21, plus `refuse` | 59.3% | 56.6% | −2.7 ± 2.7 | −1.01 |
+| **overall** | 65.3% | **68.5%** | **+3.3 ± 0.5** | 6.06 |
+
+So the whole curve, every path holding the same number of ways to ask:
+
+| wordings per path | held out | what the last dozen bought |
+|---:|---:|---:|
+| 9 | 55.4% | — |
+| 21 | 65.3% | **+9.8** |
+| 33 | **68.5%** | **+3.3** |
+
+Diminishing and not yet flat. 18% of the third dozen's gain came out of the
+seven that did not grow, against 12% for the second — both small enough to be
+the same story: territory moves when a class grows past its neighbours, and
+these grew alongside them.
+
+### The diversity check made a prediction and did not earn it
+
+`tools/phrasebook_diversity.py` has always been run as a checkbox — see the
+number fall, proceed. The third dozen was the first chance to ask whether it
+*predicts* anything, because it failed: within-class similarity fell for only 9
+of 20 paths against 16 of 20 for the second dozen, and cross-class similarity
+rose to 0.192 from 0.177. Fifteen of those paths were written in one register —
+somebody at a terminal talking to a filing system — so the frame carries no
+class information and the head noun does all the work.
+
+The prediction was on the record before the run: materially less than the +4.4
+that extrapolating the five-path result implied. It came in at **+3.3**, which
+is 25% short and is also what ordinary diminishing returns look like. The two
+cannot be told apart here.
+
+Nor does the within-experiment comparison settle it. The five paths whose third
+dozen was written freely gained 6.6 against 4.5 and 5.2 for the fifteen written
+to a register — the right direction, and confounded, because those five also
+started from the lowest baseline and [worse classes gain
+most](#twelve-more-wordings-are-worth-seventeen-points-to-the-class-that-gets-them).
+The register-written `last ten` gained 5.2 from a baseline of 78.8%, which is
+the row that argues hardest against the register mattering much.
+
+**So the metric flags padding and is not shown to predict yield.** That is a
+smaller claim than it was being used for, and worth writing down before
+somebody uses a similarity score to decide not to write sentences.
 
 ### Before writing more wordings, the encoder had 128 buckets
 
@@ -1639,20 +1684,20 @@ silo's 3,000 held-out questions:
 
 | | |
 |---|---:|
-| right at rank 1 | 64.0% |
-| right in the top 2 | **77.7%** |
-| right in the top 3 | 84.0% |
-| rank 2 holds the answer rank 1 missed | **38.2% of misses** |
+| right at rank 1 | 66.8% |
+| right in the top 2 | **81.1%** |
+| right in the top 3 | 87.3% |
+| rank 2 holds the answer rank 1 missed | **43.3% of misses** |
 
 **And the margin knows when it is wrong.** The gap between the top two logits
-has a median of 101 where the answer is right and 32 where it is not:
+has a median of 86 where the answer is right and 26 where it is not:
 
 | refuse below a margin of | refused | of those, wrong | accuracy of what is kept |
 |---:|---:|---:|---:|
-| — | 0.0% | — | 64.0% |
-| 10 | 10.6% | **72.6%** | 68.3% |
-| 35 | 30.3% | 65.3% | 76.7% |
-| 67 | 50.1% | 58.1% | 86.1% |
+| — | 0.0% | — | 66.8% |
+| 9 | 10.8% | **69.6%** | 71.2% |
+| 31 | 30.3% | 61.9% | 79.2% |
+| 61 | 50.2% | 53.5% | 87.2% |
 
 That is a confidence signal from a machine [documented as having
 none](#giving-it-back-as-a-class-rather-than-a-threshold), and on the eZ80 it
@@ -1665,9 +1710,9 @@ already visits every logit.
 edge **and** the top two were closer than `n`. Over 600 held-out questions on
 the real card:
 
-Of 600 held-out questions, 160 had a first path with no edge. **Five out of six
-of the answers the runner-up supplies are to a different question**: 85
-answered ungated, 14 of them by the path the question actually asked for. That
+Of 600 held-out questions, 127 had a first path with no edge. **Two out of three
+of the answers the runner-up supplies are to a different question**: 88
+answered ungated, 27 of them by the path the question actually asked for. That
 is not a bug in the backoff, it is what answering from the runner-up *means*,
 and it is the failure this file has argued against since its first paragraph —
 fluent, confident and wrong, with nothing on the screen to say so.
@@ -1678,17 +1723,18 @@ somebody still alive died — than a misroute:
 
 | gate | backed off | answered what was asked |
 |---|---:|---:|
-| never *(`backoff=0`)* | 0 of 160 | — |
-| `backoff=25` | 25 | **32.0%** |
-| `backoff=75` | 57 | 22.8% |
-| always | 85 | 16.5% |
+| never *(`backoff=0`)* | 0 of 127 | — |
+| `backoff=25` | 31 | **48.4%** |
+| `backoff=75` | 56 | 42.9% |
+| always | 88 | 30.7% |
 
-**The reasoning for the gate is better than the measurement of it.** Three
-cards have been measured now and the tight gate is worth roughly double the
-loose one on two of them — 40.0% against 19.3%, and 32.0% against 16.5% — and
-six points on the third. Each is a single held-out split, so the size is not
-something to trust; what survives all three is the direction and the shape of
-the trade, that gating answers fewer questions and is right about more of them.
+**The reasoning for the gate is better than the measurement of it.** Four cards
+have been measured now and the tight gate beats the loose one on every one, by
+between six points and a factor of two — 40.0% against 19.3%, 32.0% against
+16.5%, 48.4% against 30.7%. Each is a single held-out split, so no particular
+size is worth trusting; what survives all four is the direction and the shape
+of the trade, that gating answers fewer questions and is right about more of
+them.
 
 A fact reached this way does not speak like one either — `liboracle.SECOND`
 renders it as *"Second Shift, if I have your meaning."* rather than *"Second
@@ -1726,13 +1772,13 @@ Over the same 600 held-out questions, by what the machine ended up saying:
 
 | | fact | partial | record | search |
 |---|---:|---:|---:|---:|
-| as it was | 68.0% | 5.3% | — | **26.7%** |
-| with records | 68.0% | 5.3% | 25.8% | **0.8%** |
-| records, `backoff=25` | 72.2% | 5.3% | 21.7% | 0.8% |
-| records, backoff always | **81.7%** | 5.8% | 11.7% | 0.8% |
+| as it was | 75.8% | 3.0% | — | **21.2%** |
+| with records | 75.8% | 3.0% | 20.5% | **0.7%** |
+| records, `backoff=25` | 80.5% | 3.5% | 15.3% | 0.7% |
+| records, backoff always | **89.7%** | 3.8% | 6.2% | 0.3% |
 
-**The paragraph-about-somebody-else outcome goes from a quarter of all
-questions to eight in a thousand**, and unlike the backoff this trades nothing: a
+**The paragraph-about-somebody-else outcome goes from a fifth of all
+questions to seven in a thousand**, and unlike the backoff this trades nothing: a
 record invents no answer, every word of it is an edge, and it is about the
 person the question named. So it is on by default where `backoff` is off.
 
