@@ -72,6 +72,7 @@ import argparse
 import sqlite3
 import sys
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from random import Random
@@ -605,6 +606,440 @@ CANDIDATES: dict[str, tuple[str, ...]] = {
 #: class size, and `classify.py --balance` levels them anyway.
 PER_TEMPLATE = 40
 
+#: Twelve more wordings for five paths, used for **training only**.
+#:
+#: `data/silo/README.md` ends the phrasing-curve section saying "extending
+#: every path to twenty-four and holding out six would settle it", and the
+#: reason nobody has is that the comparison is easy to get wrong. A path given
+#: twelve more wordings while still holding out three has a held-out set with
+#: more neighbours to learn from, so its score rises for a reason that is not
+#: grammar - `tools/phrasebook_diversity.py` measured novelty falling from
+#: 0.188 to 0.100 on `mother_is` when the six paths were extended.
+#:
+#: Keeping these out of `PATHS` is what removes that confound. `build(extra=
+#: True)` appends them to the *training* half and never reserves them, so both
+#: arms are scored on an identical held-out set and the only thing moving is
+#: how much English the model was shown. That is the same design the learning
+#: curve already used, carried past the nine wordings it stopped at.
+#:
+#: The five are chosen to span the range rather than to flatter it: at the
+#: last measurement `child_of_of` scored 3.3% held out, `works_in` 24.2%,
+#: `shift_is` 29.2%, `job_is` 40.8% and `crew_is` 56.7%. If more grammar is
+#: worth something it should be worth most at the bottom.
+#:
+#: They are frames rather than synonyms, which is the distinction the six-path
+#: repair turned on. `child_of_of` is the clearest case in the corpus: its
+#: three held-out wordings were all "name/tell me a child of X", a frame none
+#: of the nine it trained on used, and they scattered over seven classes with
+#: no winner. That is not a collision with a neighbour, it is having no region
+#: at all for a sentence shape the model never saw.
+EXTRA: dict[str, tuple[str, ...]] = {
+    "child_of_of": (
+        "{s}'s children",
+        "list the children of {s}",
+        "who did {s} bring up",
+        "name everybody born to {s}",
+        "whose parent is {s}",
+        "{s} raised whom",
+        "who does the record give as {s}'s issue",
+        "which young ones are {s}'s",
+        "the children of {s} are who",
+        "say who {s} fathered or mothered",
+        "give me the kids of {s}",
+        "who looks up {s} as a parent",
+    ),
+    "works_in": (
+        "{s}'s department",
+        "under which department is {s} filed",
+        "{s} answers to which department",
+        "what does {s}'s badge say",
+        "which arm of the silo has {s}",
+        "{s} draws pay from where",
+        "where is {s} posted",
+        "the department of {s} is what",
+        "which staff list carries {s}",
+        "{s} reports to which department",
+        "what is {s}'s posting",
+        "which department claims {s}",
+    ),
+    "shift_is": (
+        "{s}'s shift",
+        "{s} stands which watch",
+        "{s} clocks on when",
+        "which of the three does {s} work",
+        "{s} is down for which watch",
+        "what are {s}'s hours",
+        "the shift of {s} is what",
+        "when is {s} on duty",
+        "which turn does {s} take",
+        "{s} keeps which hours",
+        "what time does {s} start",
+        "which roster has {s}",
+    ),
+    "job_is": (
+        "{s}'s trade",
+        "{s} is what by trade",
+        "what does the ledger call {s}",
+        "which trade is {s} trained to",
+        "{s} is down as what",
+        "under what title does {s} serve",
+        "the occupation of {s} is what",
+        "what skill does {s} have",
+        "{s} was apprenticed to what",
+        "what is {s} by profession",
+        "give me {s}'s post",
+        "what trade did {s} learn",
+    ),
+    "crew_is": (
+        "{s}'s crew",
+        "{s} musters with whom",
+        "which detail is {s} assigned to",
+        "{s} turns out with which lot",
+        "who does {s} labour beside",
+        "which working party has {s}",
+        "the crew of {s} is what",
+        "{s} is posted to which gang",
+        "which squad does {s} run with",
+        "name the party {s} works with",
+        "{s} is one of which crew",
+        "which band of workers has {s}",
+    ),
+    # --- the second five ------------------------------------------------------
+    #
+    # Disjoint from the first, and picked to match its difficulty rather than
+    # its subject matter: the first five averaged 39.2% held out and these five
+    # average 38.2%. `tools/grammar_pilot.py --group second` runs them, and
+    # `--group both` is the measurement that matters - whether the first five
+    # keep their seventeen points once somebody else is growing too.
+    "works_in located_in": (
+        "{s}'s department is on which level",
+        "how far up is {s}'s work",
+        "which landing do i want for {s}'s department",
+        "the floor {s} works on is what",
+        "{s} goes to which level for work",
+        "at what depth does {s} work",
+        "which level holds the place {s} works",
+        "give me the floor for {s}'s department",
+        "how deep is {s}'s workplace",
+        "{s} climbs to which level",
+        "what level is entered for {s}'s department",
+        "where in the stair is {s}'s work",
+    ),
+    "count_child_of": (
+        "{s}'s child count",
+        "how large is {s}'s family",
+        "how many young did {s} have",
+        "put a number on {s}'s children",
+        "{s} is down for how many",
+        "how many names list {s} as a parent",
+        "the size of {s}'s brood is what",
+        "how many entries has {s} fathered or mothered",
+        "reckon up the children of {s}",
+        "how many does {s}'s line come to",
+        "what number of children is entered for {s}",
+        "how many did {s} put on the register",
+    ),
+    "founding_father": (
+        "{s}'s founder",
+        "which of the first is {s} out of",
+        "run {s}'s male line to its head",
+        "who stands at the top of {s}'s line",
+        "the founder behind {s} is who",
+        "which first-generation man leads to {s}",
+        "give me the head of {s}'s line",
+        "{s} comes down from whom",
+        "who is at the root for {s}",
+        "what founding name is {s} under",
+        "trace the fathers above {s}",
+        "which founder owns {s}'s line",
+    ),
+    "lives_at": (
+        "{s}'s address",
+        "which door is {s}'s",
+        "where is {s} housed",
+        "give me {s}'s flat",
+        "{s} is at which address",
+        "look up where {s} is quartered",
+        "the dwelling of {s} is what",
+        "which apartment is entered for {s}",
+        "where does the register put {s}",
+        "{s} keeps which rooms",
+        "what address is down for {s}",
+        "which flat has {s} in it",
+    ),
+    "spouse_of": (
+        "{s}'s wife or husband",
+        "who stood up with {s}",
+        "give me the name {s} married",
+        "which match did {s} make",
+        "who is joined to {s}",
+        "the marriage of {s} was to whom",
+        "who took {s} to wife or husband",
+        "whom is {s} bound to",
+        "what name is entered beside {s} as married",
+        "who did {s} take",
+        "{s} is wed to whom",
+        "look up {s}'s match",
+    ),
+    # --- and the rest of them -------------------------------------------------
+    #
+    # The ten paths still on twelve wordings, which is what "finishing" means:
+    # every class except `refuse` then trains on twenty-one. The six that were
+    # given a second dozen by the prefix repair already do, because their extra
+    # twelve went into `PATHS` rather than here - a path with 24 wordings holding
+    # out 3 trains on 21, and so does a path with 12 holding out 3 plus 12 here.
+    "born_on": (
+        "{s}'s birth level",
+        "on which floor did {s} start",
+        "which level does the register give for {s}'s birth",
+        "give me the level {s} came from",
+        "{s} is a child of which floor",
+        "what level bore {s}",
+        "which landing was {s} born on",
+        "the level of {s}'s birth is what",
+        "how deep was {s} born",
+        "which floor does {s} count as home",
+        "what level is entered for {s}'s birth",
+        "{s} began life on which level",
+    ),
+    "born_in_year": (
+        "{s}'s birth year",
+        "in what year did {s} first appear",
+        "give me the year {s} came into the silo",
+        "which year does the register give for {s}",
+        "{s} dates from when",
+        "what year stands beside {s}'s name",
+        "how long ago was {s} born",
+        "the year {s} arrived is what",
+        "{s} was entered in which year",
+        "look up the year of {s}'s birth",
+        "what year does {s} count from",
+        "{s}'s first year is which",
+    ),
+    "died_in_year": (
+        "{s}'s death year",
+        "in what year was {s} lost",
+        "give me the year {s} ended",
+        "which year does the register close {s}",
+        "{s} was struck off in which year",
+        "the year of {s}'s death is what",
+        "look up when {s} was buried",
+        "what year did {s} stop",
+        "{s} lasted until when",
+        "which year ends {s}'s record",
+        "when was {s}'s name closed",
+        "what year is down for {s}'s death",
+    ),
+    # Numbers and depth rather than founders and lines, because
+    # `founding_father` has just been given twelve wordings of its own and half
+    # of them are about running a line to its head.
+    "generation_is": (
+        "{s}'s generation",
+        "how many removes is {s}",
+        "which cohort does {s} count in",
+        "give me the generation number for {s}",
+        "{s} sits at which depth of descent",
+        "what number generation is {s}",
+        "which of the seven is {s}",
+        "how many steps down is {s}",
+        "the generation of {s} is what",
+        "what generation number is entered for {s}",
+        "{s} belongs to which numbered generation",
+        "look up {s}'s generation",
+    ),
+    "moved_in_year": (
+        "{s}'s move-in year",
+        "what year was {s} given that flat",
+        "how long has that door been {s}'s",
+        "which year does {s}'s tenancy begin",
+        "{s} took those rooms when",
+        "give me the year {s} was housed",
+        "the year {s} moved is what",
+        "since which year has {s} lived there",
+        "when was that address entered for {s}",
+        "look up when {s} was quartered there",
+        "what year did {s} settle",
+        "{s} came to that flat in which year",
+    ),
+    "fate_is": (
+        "{s}'s fate",
+        "what does the roll say became of {s}",
+        "was {s} put out",
+        "give me the manner of {s}'s ending",
+        "what is {s} recorded as",
+        "was {s} one of the cleanings",
+        "the fate of {s} is what",
+        "in what way did {s} go",
+        "what ending is entered for {s}",
+        "did they send {s} out",
+        "look up how {s} finished",
+        "what is set down for {s}'s ending",
+    ),
+    # Six of these twelve lead with the father, which is the repair the
+    # grandparent paths needed: the pair differs by two words and the shorter
+    # one has just grown, so the longer one has to say *whose* department it
+    # means before it says department.
+    "father_is works_in": (
+        "{s}'s father's department",
+        "the man who fathered {s} works where",
+        "{s}'s dad is posted where",
+        "give me the department of {s}'s father",
+        "which department employs the father of {s}",
+        "{s}'s father draws pay from where",
+        "what is {s}'s father's posting",
+        "where does the father of {s} spend his shift",
+        "which staff list carries {s}'s father",
+        "{s}'s father answers to which department",
+        "look up the department for {s}'s father",
+        "the department of {s}'s father is what",
+    ),
+    "spouse_of job_is": (
+        "{s}'s spouse's trade",
+        "what is the one {s} married by trade",
+        "give me the post of {s}'s wife or husband",
+        "which trade does {s}'s match hold",
+        "the occupation of {s}'s spouse is what",
+        "what does the ledger call {s}'s spouse",
+        "what skill has the person {s} wed",
+        "under what title does {s}'s spouse serve",
+        "{s}'s husband or wife is what by trade",
+        "look up the trade of {s}'s spouse",
+        "what is {s}'s partner by profession",
+        "what trade did {s}'s spouse learn",
+    ),
+    "lives_at in_section": (
+        "{s}'s section",
+        "which end of the silo is {s} at",
+        "give me the section of {s}'s address",
+        "is {s} housed high or low",
+        "the section {s} lives in is what",
+        "which band of levels holds {s}'s home",
+        "what quarter of the silo does {s} live in",
+        "which section is entered for {s}'s flat",
+        "{s}'s home falls in which part",
+        "look up the section for {s}",
+        "in which reach of the silo does {s} live",
+        "{s} is quartered in which section",
+    ),
+    "lives_at next_along lives_at_of": (
+        "{s}'s neighbours",
+        "who is round the ring from {s}",
+        "give me the name next door to {s}",
+        "which flat adjoins {s} and who is in it",
+        "who is {s}'s closest door",
+        "name whoever lives alongside {s}",
+        "the neighbour of {s} is who",
+        "who would {s} hear through the wall",
+        "which household sits beside {s}",
+        "look up who is next to {s}",
+        "who occupies the flat by {s}",
+        "who is {s}'s door neighbour",
+    ),
+}
+
+#: A *third* dozen, for the five paths the pilot grew first. Same rules as
+#: `EXTRA` - training only, never reserved - and the same purpose one step
+#: further out: the curve from nine wordings to twenty-one is still climbing at
+#: t=7.33, and nothing says where it stops.
+#:
+#: Five paths rather than twenty, because that is what the first pilot cost and
+#: what it was worth. If a third dozen is flat here it is flat everywhere and
+#: 240 more sentences need not be written; if it is not, this is the cheapest
+#: possible way to have found out.
+EXTRA_THIRD: dict[str, tuple[str, ...]] = {
+    "child_of_of": (
+        "who did {s} bring into the silo",
+        "which names hang below {s}",
+        "point me at {s}'s children",
+        "who is descended one step from {s}",
+        "{s}'s issue",
+        "who did {s} beget",
+        "what young has {s}",
+        "who stands under {s} in the line",
+        "read me {s}'s children",
+        "who came of {s}",
+        "{s} is mother or father to whom",
+        "who in the archive was born to {s}",
+    ),
+    "works_in": (
+        "which house does {s} serve",
+        "point me at {s}'s department",
+        "{s} is on whose books",
+        "read me the department for {s}",
+        "which of the fourteen has {s}",
+        "what is {s} employed under",
+        "{s} labours for which department",
+        "which department signs for {s}",
+        "name the house {s} works for",
+        "{s} is attached to what",
+        "which department would claim {s}",
+        "what department does the roll give {s}",
+    ),
+    "shift_is": (
+        "which watch has {s}",
+        "point me at {s}'s shift",
+        "read me the shift for {s}",
+        "which of the three is {s} down for",
+        "when is {s} at work",
+        "{s} answers the bell when",
+        "what rotation does the roll give {s}",
+        "{s} is on at what time",
+        "which shift signs for {s}",
+        "name the watch {s} stands",
+        "{s} works which part of the day",
+        "what shift does the roster give {s}",
+    ),
+    "job_is": (
+        "what is {s} employed to do",
+        "point me at {s}'s trade",
+        "read me the occupation for {s}",
+        "what craft has {s}",
+        "{s} is trained as what",
+        "which trade signs for {s}",
+        "name the work {s} was set to",
+        "{s} does what in the silo",
+        "what does the roll give as {s}'s trade",
+        "which calling is {s}'s",
+        "{s} holds what position",
+        "what is {s} down to do",
+    ),
+    "crew_is": (
+        "which crew signs for {s}",
+        "point me at {s}'s crew",
+        "read me the crew for {s}",
+        "who does {s} turn out with",
+        "{s} is mustered where",
+        "name the crew {s} answers to",
+        "which gang would claim {s}",
+        "{s} works under which crew",
+        "what crew does the roster give {s}",
+        "which team is {s} down for",
+        "{s} stands with which crew",
+        "whose crew is {s} on",
+    ),
+}
+
+#: The three groups `EXTRA` was written in, so the pilot can grow them one at a
+#: time and watch what happens to everybody else. The point of the second five
+#: was that the first five's gain came 80-88% out of their neighbours, and two
+#: arms cannot tell a redistribution that would vanish if everybody grew from
+#: one that would not. It did vanish, mostly: at ten grown the share taken from
+#: the rest fell to 55% and the corpus gained 2.3 points.
+#:
+#: `REMAINING_TEN` is the rest of them. Every path except `refuse` trains on
+#: twenty-one wordings with all three grown - the six the prefix repair already
+#: took to twenty-four are there by a different route and arrive at the same
+#: number.
+FIRST_FIVE = frozenset({
+    "child_of_of", "works_in", "shift_is", "job_is", "crew_is"})
+SECOND_FIVE = frozenset({
+    "works_in located_in", "count_child_of", "founding_father", "lives_at",
+    "spouse_of"})
+REMAINING_TEN = frozenset({
+    "born_on", "born_in_year", "died_in_year", "generation_is",
+    "moved_in_year", "fate_is", "father_is works_in", "spouse_of job_is",
+    "lives_at in_section", "lives_at next_along lives_at_of"})
+
 
 def resolve(word: str, have: set[str]) -> tuple[str, bool]:
     """(relation, is it read backwards) - the same reading `paths_for` makes.
@@ -671,6 +1106,8 @@ def _ask(template: str, name: str, masked: bool) -> str:
 def build(db: sqlite3.Connection, have: set[str], per_template: int,
           hold_out: int, seed: int,
           masked: bool = False, phrasings: int | None = None,
+          extra: bool | Collection[str] = False,
+          third: bool | Collection[str] = False,
           ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """(training pairs, held-out pairs), split by phrasing rather than by row.
 
@@ -679,8 +1116,32 @@ def build(db: sqlite3.Connection, have: set[str], per_template: int,
     `data/silo/README.md` is drawn: the evaluation set is identical at every
     point on it, so the only thing moving is how much of the grammar the model
     was shown.
+
+    ``extra`` adds `EXTRA`'s wordings to the training half - `True` for every
+    path that has them, or a collection of path names for some of them. They
+    are never reserved and never counted against ``phrasings``, so the held-out
+    set is **identical** with and without, which is the whole reason they live
+    outside `PATHS`. Shuffling twenty-four wordings reserves a different three
+    than shuffling twelve, and comparing two arms scored on different sentences
+    would measure the sentences.
     """
+    grow = set(EXTRA) if extra is True else set(extra or ())
+    grow_more = set(EXTRA_THIRD) if third is True else set(third or ())
     rng = Random(seed)
+    # A stream per extended path, and neither of those two words is spare.
+    #
+    # *A stream of its own*, because drawing the extra wordings' subjects from
+    # `rng` would advance it, so every path after the first extended one would
+    # shuffle differently and reserve different wordings - precisely the
+    # confound `extra` exists to avoid, and it does not announce itself: both
+    # arms still look like they hold out three apiece.
+    #
+    # *Per path*, because one shared spare stream is consumed in `PATHS` order,
+    # so growing `spouse_of` as well would change which names `works_in`'s
+    # extra rows are asked about. Harmless in expectation and still a variable
+    # nobody needs: keyed this way, a path's extra rows depend on the seed and
+    # on nothing else that happens in the same build.
+    extra_order = sorted(EXTRA)
     train: list[tuple[str, str]] = []
     unseen: list[tuple[str, str]] = []
     for path, templates in PATHS.items():
@@ -696,6 +1157,23 @@ def build(db: sqlite3.Connection, have: set[str], per_template: int,
             block = names[i * per_template:(i + 1) * per_template]
             rows = [(_ask(template, name, masked), path) for name in block]
             (unseen if template in reserved else train).extend(rows)
+        # Drawn separately so the subjects are the corpus's own for this path,
+        # the same way the block above draws them - a wording trained against
+        # names that cannot carry the relation teaches the phrasing against an
+        # answer of nothing. The two batches get streams of their own for the
+        # same reason they get one at all: a path's rows must not depend on
+        # which *other* paths were grown in the same build.
+        for batch, table in ((grow, EXTRA), (grow_more, EXTRA_THIRD)):
+            if path not in batch:
+                continue
+            more = table[path]
+            spare = Random((seed + 1) * 1_000_003 + extra_order.index(path)
+                           + (0 if table is EXTRA else 500_009))
+            drawn = subjects(db, path, have, per_template * len(more), spare)
+            for i, template in enumerate(more):
+                block = drawn[i * per_template:(i + 1) * per_template]
+                train.extend((_ask(template, name, masked), path)
+                             for name in block)
     rng.shuffle(train)
     rng.shuffle(unseen)
     return train, unseen
@@ -771,6 +1249,13 @@ def main() -> None:
                     help="Take the subject back out of each question before "
                          "printing it - see liboracle.mask")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--no-extra", action="store_true",
+                    help="Leave out EXTRA's twelve-per-path, which is what "
+                         "every measurement before it was made against")
+    ap.add_argument("--third", action="store_true",
+                    help="Also use EXTRA_THIRD, which covers five paths of "
+                         "twenty and is a measurement rather than an asset: "
+                         "worth +5.9 to those five and +1.6 to the corpus")
     args = ap.parse_args()
 
     if args.emit == "held-out" and not args.held_out_templates:
@@ -792,9 +1277,14 @@ def main() -> None:
         for word in path.split():
             resolve(word, have)
 
+    # `extra` on by default, because it is what the card should carry: 55.4% to
+    # 65.3% held out, and every path on twenty-one wordings rather than six of
+    # them on twenty-one and twenty on nine. `--no-extra` reproduces every
+    # number in `data/silo/README.md` that predates it.
     train, unseen = build(db, have, args.per_template, args.held_out_templates,
                           args.seed, masked=args.mask,
-                          phrasings=args.phrasings)
+                          phrasings=args.phrasings, extra=not args.no_extra,
+                          third=args.third)
     pairs = unseen if args.emit == "held-out" else train
     counts = Counter(path for _, path in pairs)
 

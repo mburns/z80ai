@@ -549,19 +549,19 @@ def rank(model: Model, query: str, accum_bits: int = 16,
     won.  The runner-up and the distance to it are already computed, and both
     are worth having:
 
-    **Rank 2 holds the answer rank 1 missed 31.2% of the time.**  Over the
-    silo's 3,240 held-out questions the top choice is right 55.6% of the time
-    and the top two contain the answer 69.4% of the time, so a caller whose
+    **Rank 2 holds the answer rank 1 missed 38.2% of the time.**  Over the
+    silo's 3,240 held-out questions the top choice is right 64.0% of the time
+    and the top two contain the answer 77.7% of the time, so a caller whose
     first path finds no edge has somewhere better to look than the search
     index.
 
     **The margin knows when it is wrong.**  The gap between the top two logits
-    has a median of 107 where the answer is right and 43 where it is not, which
+    has a median of 101 where the answer is right and 32 where it is not, which
     is the confidence signal `data/silo/README.md` says this machine does not
     have - it says a bare argmax leaves "nowhere to put a confidence cut-off",
     and that is true of the *reply* and not of the arithmetic behind it.
     Declining the lowest tenth of margins removes questions that were wrong
-    68.7% of the time.
+    72.6% of the time.
 
     On the eZ80 this is a second running maximum in `ARGMAX` - one more compare
     and two more 24-bit slots in a loop that already walks every logit.  Nothing

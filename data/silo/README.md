@@ -733,6 +733,11 @@ not position bands, not halving the model. All three were changes to the
 encoder or the architecture. So the remaining question was whether the limit is
 the machine at all, and it is not.
 
+> This section was right and is the only one in this file that got to be right
+> twice. Writing the wordings it asks for took the number to **65.3%** — see
+> [the rest of them](#and-the-rest-of-them-554-to-653). Everything below is the
+> argument that made it worth doing.
+
 Train on **k** of the nine wordings left after the held-out three, evaluate on
 the same three at every point, three seeds each:
 
@@ -765,6 +770,187 @@ measurement is how the numbers in this repository have gone wrong before. The
 test is to write more wordings and re-run this — with the caveat that a second
 dozen written by the same hand on the same afternoon will be more like the
 first dozen than a stranger's would be, which would understate the gain.
+
+### Twelve more wordings are worth seventeen points to the class that gets them
+
+`tools/grammar_pilot.py` is that test at a fifth of the price: twelve more
+wordings for five paths rather than for all twenty-six, chosen to span the
+range — `child_of_of` was at 3.3% held out, `crew_is` at 56.7%.
+
+They live in `relationpaths.EXTRA` and are **training-only**, which is what
+makes the comparison honest. A path given twelve more wordings while still
+holding out three has a held-out set with more neighbours to learn from, so it
+scores better for a reason that is not grammar; here the held-out three are
+drawn from the original twelve and are identical in both arms. Five paired
+seeds:
+
+| | 12 | 24 | paired diff | t |
+|---|---:|---:|---:|---:|
+| the five extended | 39.2% | **56.1%** | **+16.9 ± 3.9** | 4.30 |
+| the twenty-one that did not | 59.1% | 55.9% | **−3.2 ± 0.9** | −3.43 |
+| **overall** | 55.4% | 55.9% | +0.5 ± 0.9 | 0.54 |
+
+**Twelve wordings are worth about seventeen points to the path that gets
+them** — the largest effect anything in this file has had on the held-out
+number, against +7.5 for the bucket sweep — and the prediction held, that the
+worst classes gain most:
+
+| | 12 | 24 | |
+|---|---:|---:|---:|
+| `shift_is` | 38.7% | 67.0% | **+28.3**, t = 5.63 |
+| `child_of_of` | 20.2% | 47.0% | **+26.8**, t = 5.21 |
+| `works_in` | 34.3% | 48.2% | +13.8, t = 2.42 |
+| `job_is` | 34.7% | 44.5% | +9.8, t = 1.41 |
+| `crew_is` | 68.0% | 73.8% | +5.8, t = 0.77 |
+
+`child_of_of` is the clearest case of the mechanism in the corpus. Its three
+held-out wordings were all *"name / tell me a child of X"* — one sentence
+shape, and one none of the nine it trained on used — and they scattered over
+seven classes with no winner. That is not a collision with a neighbour, it is
+having no region at all for a frame the model never saw.
+
+**And at this point the corpus appeared to gain nothing** — which is the part
+the [next section](#a-second-five-and-the-conclusion-above-is-wrong) overturns,
+so read the arithmetic below as a description of five classes growing rather
+than of grammar. The twenty-one untouched paths lost 3.2 points:
+
+|  | five gain | rest lose | net |
+|---|---:|---:|---:|
+| unbalanced | +101 questions | −81 | +21 of 3,240 |
+| balanced | +83 | −73 | +10 of 3,240 |
+
+**Redistribution accounts for 80–88% of the gain.** Territory moves; almost
+nothing is created.
+
+Two explanations were tested and refused. It is not the **prior**: the extended
+classes also gain twice the training rows, so `classify.train(balance=True)`
+was run to weight the loss by inverse class frequency, and the damage did not
+move — −2.9 ± 0.6 against −3.2 ± 0.9. And it is not **capacity**, which would
+scatter the losses; they go to the five specifically. Of the 117 extra misses
+the twenty-one take, 114 land on one of the five.
+
+So a class with twenty-one wordings covers more of trigram space than one with
+nine, and grows into whatever was next to it. What that does *not* establish —
+and what the next section had to be run to find out — is whether the growth
+stops being taken from somebody once everybody is doing it.
+
+### A second five, and the conclusion above is wrong
+
+The paragraph this replaces said the conserved sum leaned towards growth being
+zero-sum whoever does it, and named the measurement that would settle it: a
+second, disjoint five — matched for difficulty, 38.2% held out against the
+first group's 39.2% — with three arms rather than two.
+
+It does not lean that way. Five paired seeds:
+
+| | none | first | both | |
+|---|---:|---:|---:|---|
+| first five | 39.2% | **56.2%** | 53.1% | +13.9 over none, t = 3.29 |
+| second five | 44.7% | 40.3% | **60.1%** | +15.3 over none, t = 8.32 |
+| the other sixteen | 63.4% | 60.3% | 58.4% | −5.0, t = −4.55 |
+| **overall** | 55.4% | 55.8% | **57.7%** | **+2.3 ± 0.7, t = 3.36** |
+
+**Growing the second five raised the corpus by 1.9 ± 0.8 points (t = 2.37) on
+its own**, and ten grown classes are worth +2.3 against none. Zero-sum is
+refused: the second group's gain did not come out of the first, which gave
+back 3.2 points of its seventeen and not significantly (t = −1.56).
+
+What actually changes with coverage is how much of the gain is taken rather
+than made:
+
+| classes grown | gained | lost by the rest | net | redistribution |
+|---:|---:|---:|---:|---:|
+| 5 of 27 | +101 questions | −81 | +21 | **80%** |
+| 10 of 27 | +175 | −96 | +79 | **55%** |
+
+The first pilot was not measuring a ceiling, it was measuring **five classes
+outgrowing twenty-one**. Broaden the growth and a larger share of it is new.
+
+### And the rest of them: 55.4% to 65.3%
+
+Ten paths were still on twelve wordings, so they got twelve more. `EXTRA` now
+holds 240 sentences and **every path except `refuse` trains on twenty-one** —
+the six the prefix repair took to twenty-four arrive at the same number by the
+other route, and `tests/test_silo.py` asserts it, because a class left behind
+is not merely behind.
+
+| | none | first | both | all | none → all |
+|---|---:|---:|---:|---:|---|
+| first five | 39.2% | 56.2% | 53.2% | 52.5% | **+13.3**, t = 3.61 |
+| second five | 44.7% | 40.3% | 59.5% | 59.3% | **+14.6**, t = 7.07 |
+| last ten | 62.5% | — | 56.0% | **78.8%** | **+16.3**, t = 5.36 |
+| already at 21, plus `refuse` | 64.6% | — | 61.8% | 59.3% | −5.2, t = −3.48 |
+| **overall** | **55.4%** | 55.8% | 57.6% | **65.3%** | **+9.8 ± 1.3, t = 7.33** |
+
+**Nearly ten points**, which is more than every other repair in this file put
+together — the bucket sweep, the previous record, was worth 7.5.
+
+Growing the last ten was worth **+7.6 ± 1.2 (t = 6.15)** on its own, and the
+fifteen classes grown before them gave back nothing for it: −0.7 and −0.2, both
+inside the noise. Whatever the first pilot was measuring, it was not a ceiling.
+
+### The curve is the finding, not any point on it
+
+| classes grown | gained | lost by the rest | net | **taken rather than made** |
+|---:|---:|---:|---:|---:|
+| 5 of 27 | +101 questions | −81 | +21 | **80%** |
+| 10 of 27 | +175 | −96 | +79 | **55%** |
+| 20 of 27 | +363 | −44 | +319 | **12%** |
+
+Redistribution does not merely shrink as coverage broadens, it nearly
+disappears. At five grown, four fifths of the gain came out of somebody else's
+region; at twenty, one eighth does. The first pilot's conserved sum was a fact
+about **five classes outgrowing twenty-one**, and reading it as a fact about
+grammar was the mistake — one this file made in print and is leaving in print
+two sections above.
+
+The only group that ends up worse is the seven that were not grown, and they
+are worse for a reason that is now the whole point: they were the ones already
+carrying twenty-one wordings while everybody else carried nine, and that
+advantage is gone. Six of them are the prefix-repaired paths. `refuse` is the
+seventh, and its forty-eight wordings are four question shapes rather than one.
+
+### A third dozen, and the curve bends
+
+The paragraph that used to be here said where this stops was not established
+and named the measurement: another dozen for five paths, taking them from
+twenty-one wordings to thirty-three while everybody else stays at twenty-one.
+`relationpaths.EXTRA_THIRD` is it, and five paired seeds say the return halves:
+
+| the same five paths hold | held out |
+|---:|---:|
+| 9 wordings | 39.2% |
+| 21 | 52.5% |
+| 33 | **58.4%** |
+
+**+5.9 ± 1.2 (t = 5.05)**, against +13.3 for the dozen before it. Still real,
+still significant, and half the size.
+
+| | all | three | paired diff | t |
+|---|---:|---:|---:|---:|
+| the five grown again | 52.5% | **58.4%** | +5.9 ± 1.2 | 5.05 |
+| second five | 59.3% | 61.5% | +2.2 ± 2.2 | 1.01 |
+| last ten | 78.8% | 78.7% | −0.1 ± 2.2 | −0.04 |
+| already at 21, plus `refuse` | 59.3% | 59.9% | +0.6 ± 1.6 | 0.35 |
+| **overall** | 65.3% | **66.9%** | +1.6 ± 0.8 | 2.05 |
+
+**And this time nobody paid for it.** Not one of the other three groups moved
+outside its own noise, where the first pilot took 3.2 points off twenty-one
+classes to give seventeen to five. That completes the picture the redistribution
+table was drawing: territory is taken when a class grows past its neighbours and
+not when it grows alongside them, and at twenty-one wordings apiece there is no
+past to grow into.
+
+So the arithmetic for the rest of it, which is 180 more sentences: 20 paths at
++5.9 each is +142 questions, about **+4.4 points**, landing the corpus near 70%.
+That is still the second-largest lever in this file and it is half of what the
+last one was worth. Whether it is worth an afternoon is a judgement rather than
+a measurement, and the measurement is now here to make it with.
+
+What remains unmeasured is the same caveat one dozen further out: three dozen
+wordings by one hand are more like each other than three dozen strangers'
+would be, and every number above is a lower bound on what a fourth would buy
+somebody who writes differently.
 
 ### Before writing more wordings, the encoder had 128 buckets
 
@@ -1453,20 +1639,20 @@ silo's 3,000 held-out questions:
 
 | | |
 |---|---:|
-| right at rank 1 | 55.6% |
-| right in the top 2 | **69.4%** |
-| right in the top 3 | 75.7% |
-| rank 2 holds the answer rank 1 missed | **31.2% of misses** |
+| right at rank 1 | 64.0% |
+| right in the top 2 | **77.7%** |
+| right in the top 3 | 84.0% |
+| rank 2 holds the answer rank 1 missed | **38.2% of misses** |
 
 **And the margin knows when it is wrong.** The gap between the top two logits
-has a median of 107 where the answer is right and 43 where it is not:
+has a median of 101 where the answer is right and 32 where it is not:
 
 | refuse below a margin of | refused | of those, wrong | accuracy of what is kept |
 |---:|---:|---:|---:|
-| — | 0.0% | — | 55.6% |
-| 11 | 10.2% | **68.7%** | 58.4% |
-| 37 | 30.6% | 65.0% | 64.7% |
-| 73 | 50.5% | 61.8% | 73.4% |
+| — | 0.0% | — | 64.0% |
+| 10 | 10.6% | **72.6%** | 68.3% |
+| 35 | 30.3% | 65.3% | 76.7% |
+| 67 | 50.1% | 58.1% | 86.1% |
 
 That is a confidence signal from a machine [documented as having
 none](#giving-it-back-as-a-class-rather-than-a-threshold), and on the eZ80 it
@@ -1479,9 +1665,9 @@ already visits every logit.
 edge **and** the top two were closer than `n`. Over 600 held-out questions on
 the real card:
 
-Of 600 held-out questions, 168 had a first path with no edge. **Four out of
-five of the answers the runner-up supplies are to a different question**: 111
-answered ungated, 24 of them by the path the question actually asked for. That
+Of 600 held-out questions, 160 had a first path with no edge. **Five out of six
+of the answers the runner-up supplies are to a different question**: 85
+answered ungated, 14 of them by the path the question actually asked for. That
 is not a bug in the backoff, it is what answering from the runner-up *means*,
 and it is the failure this file has argued against since its first paragraph —
 fluent, confident and wrong, with nothing on the screen to say so.
@@ -1492,17 +1678,17 @@ somebody still alive died — than a misroute:
 
 | gate | backed off | answered what was asked |
 |---|---:|---:|
-| never *(`backoff=0`)* | 0 of 168 | — |
-| `backoff=25` | 22 | **27.3%** |
-| `backoff=75` | 54 | 27.8% |
-| always | 111 | 21.6% |
+| never *(`backoff=0`)* | 0 of 160 | — |
+| `backoff=25` | 25 | **32.0%** |
+| `backoff=75` | 57 | 22.8% |
+| always | 85 | 16.5% |
 
-**The reasoning for the gate is better than the measurement of it.** On the
-card before this one it doubled the hit rate, 40.0% against 19.3%; on this one
-it adds about six points. Each is a single held-out split, so the difference
-between those two readings is not something to trust — what survives both is
-the direction and the shape of the trade, that gating answers fewer questions
-and is right about more of them, and not any particular size.
+**The reasoning for the gate is better than the measurement of it.** Three
+cards have been measured now and the tight gate is worth roughly double the
+loose one on two of them — 40.0% against 19.3%, and 32.0% against 16.5% — and
+six points on the third. Each is a single held-out split, so the size is not
+something to trust; what survives all three is the direction and the shape of
+the trade, that gating answers fewer questions and is right about more of them.
 
 A fact reached this way does not speak like one either — `liboracle.SECOND`
 renders it as *"Second Shift, if I have your meaning."* rather than *"Second
@@ -1540,13 +1726,13 @@ Over the same 600 held-out questions, by what the machine ended up saying:
 
 | | fact | partial | record | search |
 |---|---:|---:|---:|---:|
-| as it was | 68.0% | 4.0% | — | **28.0%** |
-| with records | 68.0% | 4.0% | 27.7% | **0.3%** |
-| records, `backoff=25` | 71.3% | 4.3% | 24.0% | 0.3% |
-| records, backoff always | **85.8%** | 4.7% | 9.2% | 0.3% |
+| as it was | 68.0% | 5.3% | — | **26.7%** |
+| with records | 68.0% | 5.3% | 25.8% | **0.8%** |
+| records, `backoff=25` | 72.2% | 5.3% | 21.7% | 0.8% |
+| records, backoff always | **81.7%** | 5.8% | 11.7% | 0.8% |
 
 **The paragraph-about-somebody-else outcome goes from a quarter of all
-questions to three in a thousand**, and unlike the backoff this trades nothing: a
+questions to eight in a thousand**, and unlike the backoff this trades nothing: a
 record invents no answer, every word of it is an edge, and it is about the
 person the question named. So it is on by default where `backoff` is off.
 
@@ -1619,6 +1805,17 @@ many children somebody has. The machine prints the tally and a full stop, and
 zero is one of the things it can print — that is an answer, not a failure to
 find one. A second count, how many people were born on somebody's level, is
 walkable and [deliberately not taught](#what-shipping-the-counts-cost).
+
+> That was true of the card and false of `oracle.py` for as long as counting
+> has shipped, and the reason is a suffix. `count_child_of` ends in `_of`, so
+> `liboracle._walk` took it for the inverse of `count_child`, found no such
+> relation and fell through to the article list — the eZ80 answering with a
+> number while the Python answered with a paragraph. Nothing caught it because
+> the card reads a step table where a count is its own *kind* rather than a
+> name with a suffix, so the two implementations disagreed in the one place
+> neither was checked against the other. Found by a new wording routing into
+> the class, fixed, and now asserted from both directions in
+> `tests/test_liboracle.py`.
 
 **About anything, from the text.** Any entry — generated or written — is found
 by the words in it. `data/silo/authored/` holds ten documents nobody generated,

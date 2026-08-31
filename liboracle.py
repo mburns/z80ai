@@ -226,24 +226,24 @@ class Oracle:
         #:
         #: It is a dial rather than a flag because what it trades is measured
         #: and the right setting depends on what the machine is for. Over 600
-        #: held-out silo questions, 168 had a first path with no edge:
+        #: held-out silo questions, 160 had a first path with no edge:
         #:
         #:     gate            backed off   answered what was asked
         #:     never (0)                0                         -
-        #:     margin < 25             22                     27.3%
-        #:     margin < 75             54                     27.8%
-        #:     always                 111                     21.6%
+        #:     margin < 25             25                     32.0%
+        #:     margin < 75             57                     22.8%
+        #:     always                  85                     16.5%
         #:
-        #: Ungated it turns 17.8 points of dead end into facts and **four out of
-        #: five of those facts answer a different question fluently**, which is
+        #: Ungated it turns 13.7 points of dead end into facts and **five out of
+        #: six of those facts answer a different question fluently**, which is
         #: the failure this repository has argued against from the start.
         #:
         #: The reasoning for the gate is that a confident first choice which
         #: finds nothing is more likely a real gap - asking when somebody still
-        #: alive died - than a misroute. The measurement is weaker than the
-        #: reasoning: on the previous card the gate doubled the hit rate, on
-        #: this one it adds about six points, and each is one held-out split.
-        #: What survives both is the direction and the shape of the trade -
+        #: alive died - than a misroute. Three cards have now been measured and
+        #: the tight gate is worth roughly double the loose one on two of them
+        #: and six points on the third, each a single held-out split. What
+        #: survives all three is the direction and the shape of the trade -
         #: gating answers fewer questions and is right about more of them - not
         #: any particular size.
         #:
@@ -333,8 +333,8 @@ class Oracle:
         """The paths the classifier considered, best first.
 
         `libinfer.rank` measures why this is worth having: over the silo's
-        held-out phrasings the top choice is right 55.6% of the time and the
-        top *two* contain the answer 69.4% of the time, so a first path with no
+        held-out phrasings the top choice is right 64.0% of the time and the
+        top *two* contain the answer 77.7% of the time, so a first path with no
         edge to walk has somewhere better to look than the search index.
         """
         if self.relations is None:
@@ -452,9 +452,24 @@ class Oracle:
 
     def _walk(self, subject: str, relations: list[str]) -> Response | None:
         """Follow the relations, forwards or backwards as each one asks."""
+        # A count is not an inverse hop, and `count_child_of` ends in `_of`.
+        #
+        # It read as one for as long as counting has shipped: the branch below
+        # took `count_child_of` for the inverse of `count_child`, found no such
+        # relation, and returned None - so every count question fell through to
+        # the article list. `libgraph.follow` handles the prefix perfectly well
+        # and was never reached.
+        #
+        # Nothing caught it because the *card* is right: `libgraphcard` reads
+        # the step table, where a count is its own kind rather than a name with
+        # a suffix. The eZ80 answered "how many children does X have" with a
+        # number while `oracle.py` answered it with a paragraph, and only one of
+        # those two is what `data/silo/README.md` describes.
+        counting = any(r.startswith(libgraph.COUNT) for r in relations)
+
         # An inverse relation is asked from the other end: "who was born in
         # Berlin" walks the object index rather than the subject one.
-        if len(relations) == 1 and relations[0].endswith("_of"):
+        if not counting and len(relations) == 1 and relations[0].endswith("_of"):
             forward = relations[0][:-3]
             found = libgraph.inverse(self.db, self.source, subject, forward,
                                      limit=3)
@@ -463,8 +478,12 @@ class Oracle:
                                 relations=relations, path=[subject])
             return None
 
-        walk = libgraph.follow(self.db, self.source, subject,
-                               [r for r in relations if not r.endswith("_of")])
+        # Same trap one line further on: the strip drops the trailing inverse
+        # of a path like `class_is class_is_of`, and would drop a count with it.
+        walk = libgraph.follow(
+            self.db, self.source, subject,
+            [r for r in relations
+             if r.startswith(libgraph.COUNT) or not r.endswith("_of")])
         if walk.complete:
             return Response(FACT, value=walk.value, subject=subject,
                             relations=relations, path=walk.path)

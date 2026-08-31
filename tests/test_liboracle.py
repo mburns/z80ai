@@ -110,6 +110,40 @@ def test_an_inverse_question_walks_backwards(db, monkeypatch):
     assert "Pride and Prejudice" in r.value
 
 
+def test_a_count_is_not_an_inverse_however_it_is_spelled(db, monkeypatch):
+    """`count_created_by_of` ends in `_of` and is not an inverse of anything.
+
+    It read as one for as long as counting had shipped: the inverse branch took
+    it for `count_created_by` read backwards, found no such relation, and
+    returned None - so every count question in `oracle.py` fell through to the
+    article list. `libgraph.follow` handles the prefix and was never reached.
+
+    Nothing caught it because the *card* is right. `libgraphcard` reads a step
+    table where a count is its own kind rather than a name with a suffix, so
+    the eZ80 answered with a number while `oracle.py` answered with a
+    paragraph, and only one of those is what `data/silo/README.md` describes.
+    """
+    db.executemany(
+        "INSERT INTO edge (source, subject, relation, object) "
+        "VALUES ('simplewiki', ?, 'spouse_of', 'Jane Austen')",
+        [("Steventon",), ("Hampshire",)])       # nonsense, and countable
+
+    o = oracle(db, "count_spouse_of", monkeypatch)
+    r = o.ask("how many people married jane austen")
+    assert r.kind == liboracle.FACT
+    assert r.value == "2"
+
+
+def test_a_count_of_nothing_is_an_answer_and_not_a_gap(db, monkeypatch):
+    """Zero is a thing the machine can say. It means the walk reached the
+    subject and found nothing pointing at it, which is not the same as not
+    having understood - and a fallback here would report the second."""
+    o = oracle(db, "count_spouse_of", monkeypatch)
+    r = o.ask("how many people married steventon")
+    assert r.kind == liboracle.FACT
+    assert r.value == "0"
+
+
 # --- the failures, which are the product --------------------------------------
 
 
