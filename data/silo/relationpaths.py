@@ -1017,6 +1017,224 @@ EXTRA_THIRD: dict[str, tuple[str, ...]] = {
         "{s} stands with which crew",
         "whose crew is {s} on",
     ),
+    # The other fifteen, written after the five above measured +5.9. These lean
+    # harder on one register - somebody at a terminal talking to a filing
+    # system - which is a deliberate change from the first two dozen and a
+    # risk worth naming: fifteen classes sharing a frame skeleton means the
+    # frame carries no class information at all, so the head noun has to do
+    # every bit of the work. That is either the right lesson to teach an
+    # encoder or a way to blur fifteen classes together, and the arm that
+    # includes them is what says which.
+    "works_in located_in": (
+        "pull up the level for {s}'s department",
+        "what's on file for where {s} works",
+        "check which floor {s}'s department sits on",
+        "against {s}'s department, what level",
+        "by the record, {s} works on which floor",
+        "I want the floor {s}'s department is on",
+        "{s}'s workplace is listed at what level",
+        "how is the level of {s}'s department written",
+        "which floor number belongs to {s}'s department",
+        "the register gives {s}'s department which level",
+        "{s} works how many floors down",
+        "tell me plainly which level {s}'s department is on",
+    ),
+    "count_child_of": (
+        "pull up the number of {s}'s children",
+        "what's on file for how many {s} had",
+        "check the tally of {s}'s children",
+        "against {s}, how many children",
+        "by the record, {s} had how many",
+        "I want a count of {s}'s children",
+        "{s} is listed with how many children",
+        "how is {s}'s child total written",
+        "what figure is against {s} for children",
+        "the register counts how many for {s}",
+        "{s} accounts for how many children",
+        "tell me plainly how many children {s} had",
+    ),
+    "founding_father": (
+        "pull up the founder for {s}",
+        "what's on file for {s}'s founding line",
+        "check which founder {s} runs back to",
+        "against {s}, which founder",
+        "by the record, {s} descends from whom",
+        "I want the founder at the head of {s}",
+        "{s} is listed under which founder",
+        "how is {s}'s founding name written",
+        "which first-generation name covers {s}",
+        "the register puts {s} under which founder",
+        "{s} answers to which founding name",
+        "tell me plainly which founder {s} comes from",
+    ),
+    "lives_at": (
+        "pull up {s}'s address",
+        "what's on file for where {s} lives",
+        "check {s}'s flat",
+        "against {s}, what address",
+        "by the record, {s} lives where",
+        "I want the door for {s}",
+        "{s} is listed at what address",
+        "how is {s}'s address written",
+        "which address number belongs to {s}",
+        "the register puts {s} at which flat",
+        "{s} is on the housing roll at what",
+        "tell me plainly where {s} lives",
+    ),
+    "spouse_of": (
+        "pull up {s}'s marriage",
+        "what's on file for who {s} married",
+        "check {s}'s spouse",
+        "against {s}, what married name",
+        "by the record, {s} married whom",
+        "I want the name {s} is wed to",
+        "{s} is listed as married to whom",
+        "how is {s}'s marriage written",
+        "which name is paired with {s}",
+        "the register marries {s} to whom",
+        "{s} appears beside which name",
+        "tell me plainly who {s} married",
+    ),
+    "born_on": (
+        "pull up {s}'s birth level",
+        "what's on file for the floor {s} was born on",
+        "check which level bore {s}",
+        "against {s}, what birth floor",
+        "by the record, {s} was born on which level",
+        "I want the floor of {s}'s birth",
+        "{s} is listed as born on what level",
+        "how is {s}'s birth floor written",
+        "which level number is against {s}'s birth",
+        "the register bears {s} on which floor",
+        "{s} entered the silo on which level",
+        "tell me plainly which level {s} was born on",
+    ),
+    "born_in_year": (
+        "pull up {s}'s birth year",
+        "what's on file for when {s} was born",
+        "check the year of {s}'s birth",
+        "against {s}, what birth year",
+        "by the record, {s} was born in which year",
+        "I want the year {s} was born",
+        "{s} is listed as born in what year",
+        "how is {s}'s birth year written",
+        "which year number is against {s}'s birth",
+        "the register dates {s} to which year",
+        "{s} entered the silo in which year",
+        "tell me plainly what year {s} was born",
+    ),
+    "died_in_year": (
+        "pull up {s}'s death year",
+        "what's on file for when {s} died",
+        "check the year {s} was lost",
+        "against {s}, what death year",
+        "by the record, {s} died in which year",
+        "I want the year {s} ended",
+        "{s} is listed as dying in what year",
+        "how is {s}'s death year written",
+        "which year number closes {s}",
+        "the register ends {s} in which year",
+        "{s} left the roll in which year",
+        "tell me plainly what year {s} died",
+    ),
+    "generation_is": (
+        "pull up {s}'s generation",
+        "what's on file for {s}'s generation number",
+        "check which generation {s} is",
+        "against {s}, what generation",
+        "by the record, {s} is of which generation",
+        "I want the generation number for {s}",
+        "{s} is listed in which generation",
+        "how is {s}'s generation written",
+        "which number covers {s}'s descent",
+        "the register places {s} in which generation",
+        "{s} counts as how many generations in",
+        "tell me plainly which generation {s} is",
+    ),
+    "moved_in_year": (
+        "pull up when {s} moved in",
+        "what's on file for {s}'s tenancy start",
+        "check the year {s} took that flat",
+        "against {s}, what move-in year",
+        "by the record, {s} moved in which year",
+        "I want the year {s} was housed",
+        "{s} is listed at that door since when",
+        "how is {s}'s move-in year written",
+        "which year opens {s}'s tenancy",
+        "the register houses {s} from which year",
+        "{s} has been there since which year",
+        "tell me plainly when {s} moved in",
+    ),
+    "fate_is": (
+        "pull up {s}'s fate",
+        "what's on file for how {s} went",
+        "check what became of {s}",
+        "against {s}, what fate",
+        "by the record, {s} ended how",
+        "I want the ending given for {s}",
+        "{s} is listed as what at the end",
+        "how is {s}'s fate written",
+        "which ending covers {s}",
+        "the register closes {s} how",
+        "{s} went out how",
+        "tell me plainly what happened to {s}",
+    ),
+    "father_is works_in": (
+        "pull up the department for {s}'s father",
+        "what's on file for where {s}'s father works",
+        "check {s}'s father's department",
+        "against {s}'s father, what department",
+        "by the record, {s}'s father works where",
+        "I want the posting of {s}'s father",
+        "{s}'s father is listed under what department",
+        "how is the department of {s}'s father written",
+        "which house employs the father of {s}",
+        "the register puts {s}'s father in which department",
+        "the man who fathered {s} is on whose books",
+        "tell me plainly where {s}'s father works",
+    ),
+    "spouse_of job_is": (
+        "pull up the trade of {s}'s spouse",
+        "what's on file for what {s}'s husband or wife does",
+        "check the occupation of whoever {s} married",
+        "against {s}'s spouse, what trade",
+        "by the record, {s}'s spouse works as what",
+        "I want the post of the one {s} wed",
+        "{s}'s spouse is listed as what",
+        "how is the trade of {s}'s spouse written",
+        "which calling belongs to {s}'s partner",
+        "the register gives {s}'s spouse which trade",
+        "the person {s} married is down as what",
+        "tell me plainly what {s}'s spouse does",
+    ),
+    "lives_at in_section": (
+        "pull up {s}'s section",
+        "what's on file for which part {s} lives in",
+        "check the section of {s}'s flat",
+        "against {s}, what section",
+        "by the record, {s} lives in which section",
+        "I want the section for {s}'s home",
+        "{s} is listed in which section",
+        "how is {s}'s section written",
+        "which third of the silo covers {s}",
+        "the register places {s}'s flat in which section",
+        "{s} is housed in which part of the silo",
+        "tell me plainly which section {s} lives in",
+    ),
+    "lives_at next_along lives_at_of": (
+        "pull up {s}'s neighbour",
+        "what's on file for who lives next to {s}",
+        "check who is next door to {s}",
+        "against {s}, which neighbour",
+        "by the record, who adjoins {s}",
+        "I want the name next to {s}",
+        "{s} is listed beside whom",
+        "how is {s}'s neighbour written",
+        "which name sits next to {s} on the ring",
+        "the register puts who beside {s}",
+        "{s} has whom for a neighbour",
+        "tell me plainly who lives next to {s}",
+    ),
 }
 
 #: The three groups `EXTRA` was written in, so the pilot can grow them one at a
@@ -1252,10 +1470,9 @@ def main() -> None:
     ap.add_argument("--no-extra", action="store_true",
                     help="Leave out EXTRA's twelve-per-path, which is what "
                          "every measurement before it was made against")
-    ap.add_argument("--third", action="store_true",
-                    help="Also use EXTRA_THIRD, which covers five paths of "
-                         "twenty and is a measurement rather than an asset: "
-                         "worth +5.9 to those five and +1.6 to the corpus")
+    ap.add_argument("--no-third", action="store_true",
+                    help="Leave out EXTRA_THIRD's third dozen per path, which "
+                         "is worth +3.3 held out on top of EXTRA's +9.8")
     args = ap.parse_args()
 
     if args.emit == "held-out" and not args.held_out_templates:
@@ -1277,14 +1494,14 @@ def main() -> None:
         for word in path.split():
             resolve(word, have)
 
-    # `extra` on by default, because it is what the card should carry: 55.4% to
-    # 65.3% held out, and every path on twenty-one wordings rather than six of
-    # them on twenty-one and twenty on nine. `--no-extra` reproduces every
-    # number in `data/silo/README.md` that predates it.
+    # Both on by default, because they are what the card should carry: 55.4% to
+    # 65.3% for the second dozen and 68.5% for the third, against every path
+    # holding nine. `--no-extra` and `--no-third` reproduce the numbers in
+    # `data/silo/README.md` that predate each of them.
     train, unseen = build(db, have, args.per_template, args.held_out_templates,
                           args.seed, masked=args.mask,
                           phrasings=args.phrasings, extra=not args.no_extra,
-                          third=args.third)
+                          third=not args.no_third)
     pairs = unseen if args.emit == "held-out" else train
     counts = Counter(path for _, path in pairs)
 

@@ -226,26 +226,26 @@ class Oracle:
         #:
         #: It is a dial rather than a flag because what it trades is measured
         #: and the right setting depends on what the machine is for. Over 600
-        #: held-out silo questions, 160 had a first path with no edge:
+        #: held-out silo questions, 127 had a first path with no edge:
         #:
         #:     gate            backed off   answered what was asked
         #:     never (0)                0                         -
-        #:     margin < 25             25                     32.0%
-        #:     margin < 75             57                     22.8%
-        #:     always                  85                     16.5%
+        #:     margin < 25             31                     48.4%
+        #:     margin < 75             56                     42.9%
+        #:     always                  88                     30.7%
         #:
-        #: Ungated it turns 13.7 points of dead end into facts and **five out of
-        #: six of those facts answer a different question fluently**, which is
+        #: Ungated it turns 13.9 points of dead end into facts and **two out of
+        #: three of those facts answer a different question fluently**, which is
         #: the failure this repository has argued against from the start.
         #:
         #: The reasoning for the gate is that a confident first choice which
         #: finds nothing is more likely a real gap - asking when somebody still
-        #: alive died - than a misroute. Three cards have now been measured and
-        #: the tight gate is worth roughly double the loose one on two of them
-        #: and six points on the third, each a single held-out split. What
-        #: survives all three is the direction and the shape of the trade -
-        #: gating answers fewer questions and is right about more of them - not
-        #: any particular size.
+        #: alive died - than a misroute. Four cards have now been measured and
+        #: the tight gate beats the loose one on all four, by between six points
+        #: and a factor of two, each a single held-out split. What survives all
+        #: four is the direction and the shape of the trade - gating answers
+        #: fewer questions and is right about more of them - not any particular
+        #: size.
         #:
         #: So a demo that wants an answer to everything sets it high, and a
         #: machine that would rather say what it does not know leaves it at 0.
@@ -333,8 +333,8 @@ class Oracle:
         """The paths the classifier considered, best first.
 
         `libinfer.rank` measures why this is worth having: over the silo's
-        held-out phrasings the top choice is right 64.0% of the time and the
-        top *two* contain the answer 77.7% of the time, so a first path with no
+        held-out phrasings the top choice is right 66.8% of the time and the
+        top *two* contain the answer 81.1% of the time, so a first path with no
         edge to walk has somewhere better to look than the search index.
         """
         if self.relations is None:
