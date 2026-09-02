@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Build an Agon .bin that probes `mos_load`, the one firmware call the SD path
-depends on.
+Build an Agon .bin that probes `mos_load`, the one firmware call the oracle's
+SD path depends on, and the handle calls a saved game makes.
 
 `tools/optest.py` establishes that libz80emu decodes the eZ80's instructions the
 way real silicon does. This establishes the other half: that `libhost.AgonHost`
@@ -17,9 +17,17 @@ It prints the status byte and the first sixteen bytes actually loaded. Both are
 checked against libhost below, so `--expect` and the hardware run can be
 compared line for line and the result recorded in tools/README.md.
 
-Shipped code calls `mos_load` and nothing else, deliberately: it is one call,
-it has no handle to leak, it exists in every MOS version, and it means this
-probe covers the whole unvalidated surface rather than a sample of it.
+The oracle calls `mos_load` and nothing else, deliberately: it is one call, it
+has no handle to leak, and it exists in every MOS version. A world binary
+(`buildif.py`) also saves, restores and appends to the archive's log, which is
+`mos_fopen` in three modes, `mos_fwrite`, `mos_fread` and `mos_fclose`. The
+`WRITTEN` probe makes exactly those calls - four bytes created, two appended -
+and then loads the file back, so the six calls are covered by one line of
+output, and a wrong mode byte or a handle protocol `libhost` has wrong shows
+up as the wrong bytes rather than as a save that silently did not happen.
+
+The first sixteen bytes at `DEST` are zeroed before every load, so what is
+printed after a failed or short load is zeros and not the previous probe.
 """
 
 from __future__ import annotations
@@ -33,12 +41,19 @@ from pathlib import Path
 # tools/optest.py had, which is why it uses this form.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from libagon import (
+    FA_CREATE_ALWAYS,
+    FA_OPEN_APPEND,
+    FA_WRITE,
+    MOS_API,
+    MOS_FCLOSE,
+    MOS_FOPEN,
+    MOS_FWRITE,
+    MOS_LOAD,
+    MOS_OUTCHAR,
+)
 from libez80 import AGON_LOAD_ADDR, EZ80Builder, agon_header
 from libhost import AgonHost
-
-MOS_OUTCHAR = 0x10
-MOS_API = 0x08
-MOS_LOAD = 0x01
 
 #: The companion file. Distinctive bytes, so a wrong answer looks wrong rather
 #: than plausibly zero - the same rule optest.py follows.
@@ -49,10 +64,38 @@ DATA = bytes([0xC0, 0xFF, 0xEE, 0x01, 0x02, 0x03, 0x04, 0x05,
 #: Where the file lands. Inside SRAM and clear of a 64KB image at 040000h.
 DEST = 0x060000
 
+#: What the write probe puts on the card: `WRITTEN` bytes created in one
+#: open, `APPENDED` bytes added in a second open with `FA_OPEN_APPEND`.
+WRITE_NAME = "MOSTEST.SAV"
+WRITTEN = DATA[:4]
+APPENDED = DATA[4:6]
+
 PROBES = [
     ("PRESENT", DATA_NAME, "a file that exists: expect status 00"),
     ("ABSENT", "NOSUCH.DAT", "a file that does not: expect a nonzero status"),
+    ("WRITTEN", WRITE_NAME, "a file this program wrote then appended to: "
+                            "expect 00 and C0FFEE010203 then zeros"),
 ]
+
+
+def _emit_write(b: EZ80Builder) -> None:
+    """Create `WRITE_NAME` with four bytes, then append two more."""
+    for mode, label, count in ((FA_WRITE | FA_CREATE_ALWAYS, "WDATA", len(WRITTEN)),
+                               (FA_WRITE | FA_OPEN_APPEND, "WDATA2", len(APPENDED))):
+        b.ld_hl_label("F_WRITTEN")
+        b.ld_c_n(mode)
+        b.ld_a_n(MOS_FOPEN)
+        b.rst(MOS_API)
+        b.ld_mem_label_a("HANDLE")
+        b.ld_c_a()
+        b.ld_hl_label(label)
+        b.ld_de_nn(count)
+        b.ld_a_n(MOS_FWRITE)
+        b.rst(MOS_API)
+        b.ld_a_mem_label("HANDLE")
+        b.ld_c_a()
+        b.ld_a_n(MOS_FCLOSE)
+        b.rst(MOS_API)
 
 
 def build(org: int = AGON_LOAD_ADDR) -> EZ80Builder:
@@ -60,9 +103,17 @@ def build(org: int = AGON_LOAD_ADDR) -> EZ80Builder:
     agon_header(b, "START")
 
     b.label("START")
+    _emit_write(b)
     for name, _filename, _note in [(n, f, d) for n, f, d in PROBES]:
         b.ld_hl_label(f"T_{name}")
         b.call("PRSTR")
+        b.ld_hl_nn(DEST)                 # zero what the load will overwrite
+        b.ld_b_n(16)
+        b.xor_a()
+        b.label(f"Z_{name}")
+        b.ld_hl_a()
+        b.inc_hl()
+        b.djnz(f"Z_{name}")
         b.ld_hl_label(f"F_{name}")
         b.ld_de_nn(DEST)
         b.ld_bc_nn(len(DATA))
@@ -145,6 +196,12 @@ def build(org: int = AGON_LOAD_ADDR) -> EZ80Builder:
 
     b.label("STATUS")
     b.db(0)
+    b.label("HANDLE")
+    b.db(0)
+    b.label("WDATA")
+    b.blob(WRITTEN)
+    b.label("WDATA2")
+    b.blob(APPENDED)
     return b
 
 

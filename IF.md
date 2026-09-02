@@ -136,9 +136,10 @@ the only thing it can do.
 | `FLAGS[]` | one bit a proposition — **in RAM** |
 | `ASKED[]` | what has been asked about — **1 byte a topic, in RAM** |
 | `HEAT` | how much attention that has cost — **1 byte, in RAM** |
+| `CLOCK` | how many turns have been taken — **1 byte, in RAM** |
 | `PWHERE[]` | where each person is now — **1 byte each, in RAM** |
 
-Only the bottom six change. The image is identical on every copy, so a saved
+Only the bottom seven change. The image is identical on every copy, so a saved
 game is the overlay and nothing else: **13 bytes** for the six-room world as it
 was, **85** for the mystery with its four people and five topics, one
 contiguous run so that writing it is a single `mos_fwrite` rather than three
@@ -156,8 +157,7 @@ of what the player has learned can be rewound is not a fair one. Monotone
 state is enforced by there being no instruction for the alternative rather
 than by nobody having written one.
 
-`mos_fwrite` itself is in `libhost` and tested; the eZ80 side of save and
-restore is the next item on #62 and is not here yet.
+`SAVE` and `RESTORE` move exactly that run, [below](#save-restore-and-the-one-file-that-outlives-a-game).
 
 ## The free-SRAM figure, re-measured
 
@@ -537,7 +537,7 @@ in the standalone one. Passed in rather than defined twice, because
 world with a terminal inside it. The world is 4,050 bytes and the oracle
 program is 38,912, so the terminal is not the small thing — the world is, and
 `buildwikibin.build(..., world=...)` is what carries it. A world costs the
-oracle binary under 5 KB.
+oracle binary about 5.5 KB, [re-measured below](#what-a-world-costs-the-oracle-binary-re-measured).
 
 ### What "the two input paths can coexist" turned out to mean
 
@@ -731,20 +731,126 @@ sentence and is impossible because `where[k]` is `CARRIED` *or* a room.
 | | bytes | |
 |---|---:|---:|
 | the search program, no world | 4,812 | |
-| carrying `worlds.silo()` | 9,246 | +4,434 |
-| carrying `worlds_mystery.mystery()` | 12,047 | +7,235 |
+| carrying `worlds.silo()` | 10,324 | +5,512 |
+| carrying `worlds_mystery.mystery()` | 12,967 | +8,155 |
 
-The first delta is the figure this file already claimed — a world costs the
-oracle binary under 5 KB — and it still holds. The second is what people,
+The first delta was 4,434 for as long as this file claimed a world costs the
+oracle binary under 5 KB. Save, restore and the archive's log took it to
+5,512 — a kilobyte, most of it the four routines that talk to the card and
+the buffer a save goes through — and the claim is now "about 5.5 KB", which
+is still the small half by a factor of seven. The second is what people,
 topics, dialogue and the attention counter add on top, and most of it is
 prose rather than code.
 
+## A clock, and a deadline the solver can be held to
+
+Attention moves only when the player asks. Everything above fires because of
+something the player did, and a mystery needs the other kind of pressure -
+the thing that happens because turns passed, whether or not anybody was
+there. The cleaning is at the end of the week. The suspect leaves on the
+next shift.
+
+`CLOCK` is one byte in the overlay and `C_TURN n` is one condition: the
+clock stands at `n` or above. It reads as **the number of commands already
+taken** - the opening pass sees zero, the pass after the third command sees
+three - and `RULES_RUN` ticks it after the pass, saturating at 255 for the
+reason `HEAT` saturates: a clock that rolled over would hand back every
+deadline that had passed.
+
+```
+> look
+> look
+> look
+There are boots on the stair.
+```
+
+That is `TURN 3`, on the third command and not the second, and
+`tests/test_clock.py` holds the device and `explore` to the same count.
+
+It is in the overlay rather than beside it for the reason `ASKED` is. A
+restore that reset the clock would give the player every deadline a second
+time, which is a worse bug than losing the save because it looks like the
+game being generous.
+
+**What it changes about fair play is the question.** `solve` used to ask
+whether the goal could be reached. With a rule that sets `LOST` on the
+deadline and a goal that needs `NFLAG LOST`, it asks whether the goal can be
+reached *in time*, and returns `None` when the clues do not fit inside the
+clock - which is the promise a Golden Age mystery makes and the one no author
+can check by reading their own source.
+
+The price is the state space. `explore` clamps the clock at the latest
+deadline any condition reads, exactly as it clamps attention, so a world with
+no deadline has a clock that never leaves zero and `worlds_mystery` is still
+30,688 states. A world with a deadline at turn N multiplies its space by about
+N. That is fine for six rooms and the reason [#108](../../issues/108) wants
+a different instrument for two hundred.
+
+Shifts, and where ten thousand people are at a given hour, are the next two
+steps of [#101](../../issues/101) and are not here. See [ROADMAP.md](ROADMAP.md).
+
+## Save, restore, and the one file that outlives a game
+
+```
+> save 2
+Saved.
+> restore 2
+Restored.
+The Mids Stair
+```
+
+A saved game is the overlay and a four-byte header, `SV` and a stamp, in one
+`mos_fwrite` to `SILO1.SAV` through `SILO9.SAV`. The stamp is the *shape* of
+the world hashed — rooms, things, flags, rules, topics, people — and not its
+prose, because editing a room description must not invalidate every saved
+game, while a save from a world with a different shape would load into this
+one without complaint and put the player somewhere that does not exist. A
+restore that finds any other header, or fewer bytes than the file should
+hold, says so and touches nothing.
+
+**Neither verb is a turn.** Both come back through `NOTURN`, which is also
+where an empty line goes now — the rules do not run and the clock does not
+tick — so a game saved and restored plays on *exactly* as one that was not.
+`tests/test_save.py` holds it to that by playing the same commands both ways
+and comparing the output from the restore onward, byte for byte. `FIRED` and
+`ASKED` coming back with the rest is what makes that true: a restore that
+forgot either would re-explain everything and send the deputy up the stair a
+second time, and it would look like the game working.
+
+### The archive's log
+
+The archive says it is logged. It is:
+
+| | |
+|---|---|
+| `SILO.LOG` | two bytes a question the card saw — the clock, and the topic, or `0xFF` for a record the world has no name for |
+| `LOGGED` | its length, read when a game starts and kept in step by every question |
+| `C_LOGGED n` | a condition: the log holds `n` questions or more, this game or before |
+
+A walk writes nothing and a question writes two bytes, appended with
+`FA_OPEN_APPEND` — the one FatFs mode `libhost` had to learn for this, and
+one `tools/mostest.py` now probes on hardware beside `mos_load`.
+
+**`LOGGED` is outside the overlay on purpose.** The file is the truth and the
+byte is its length, so a restore leaves it alone: the archive does not forget
+what it was asked because the player wound the clock back, and the rule that
+noticed the second question fires again after a restore to before it. That is
+the Voice's memory and it is the shape series memory wants — a game that
+opens on a card another game has already written to starts with `LOGGED` at
+that game's count, and a rule on `LOGGED 2` fires before the first prompt.
+The standalone world binary reads the same file, so what the oracle binary
+was asked is known to a world that has no terminal to ask.
+
+`explore` counts the log from zero, which is a fresh card, and clamps it at
+the largest count any condition reads. A rule keyed on it is therefore one
+the solver reaches by asking, and one the device may also fire on the opening
+pass — both are what the author meant.
+
 ## What it does not do yet
 
-No daemons, no containers, no ranking, and no save and restore on the device -
-`mos_fwrite` is in `libhost` and tested, and the eZ80 side is not written. No
-screen mode and no status line: `PRWRAP` decides where a line ends, and nothing
-here has ever told the terminal anything.
+No daemons, no containers, no ranking. No screen mode and no status line:
+`PRWRAP` decides where a line ends, and nothing here has ever told the
+terminal anything.
 
 People are still not `Thing`s and cannot be: `where[]` is a byte apiece, which
 would turn a 13-byte save into 10 KB. They stay on the card and are reached

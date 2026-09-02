@@ -672,7 +672,9 @@ def test_a_world_costs_the_oracle_what_it_says(merged):
     world.terminal = 3
     plain = len(buildwikibin.build(600).code)
     carried = len(buildwikibin.build(600, world=world).code)
-    assert carried - plain < 5_000           # the world is the small half
+    # 4,434 before save and restore and the log; 5,512 with them. Still the
+    # small half, by a factor of seven.
+    assert carried - plain < 6_000
 
 
 # --- the world, before anything is emitted ------------------------------------
@@ -808,8 +810,8 @@ def test_the_overlay_is_a_byte_apiece():
     world = World(rooms=[Room("A", "a")],
                   things=[Thing(f"t{i}", "x", 0) for i in range(10)],
                   flags=64)
-    #  HERE + where[10] + flags[64] + fired[] + asked[] + heat + pwhere[]
-    assert world.overlay_bytes == 1 + 10 + 64 + 1 + 1 + 1 + 1
+    #  HERE + where[10] + flags[64] + fired[] + asked[] + heat + clock + pwhere[]
+    assert world.overlay_bytes == 1 + 10 + 64 + 1 + 1 + 1 + 1 + 1
 
 
 def test_the_overlay_is_one_contiguous_run():

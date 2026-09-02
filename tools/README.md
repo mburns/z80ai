@@ -1,5 +1,33 @@
 # tools/
 
+## `wordings.py` — wordings from strangers
+
+```bash
+python tools/wordings.py --backend fake                    # offline, for the pipeline
+python tools/wordings.py --backend claude --paths father_is shift_is
+python tools/wordings.py --backend ollama --model gemma2:9b -n 4
+```
+
+The phrasing curve is still climbing at thirty-three wordings a path, and
+`data/silo/README.md` has said each time that the next dozen should not come
+from the hand that wrote the last three. This asks a model for wordings **in
+character** — a child, a Supply clerk, somebody angry, somebody terse — because
+a register is the thing one author cannot vary on purpose, and the third dozen
+turned out to be written in one.
+
+It writes a review file and nothing else. Each candidate carries the persona
+that produced it and its novelty against everything shipped, one minus the
+cosine to the nearest existing wording in the encoder's own buckets — the
+measure `phrasebook_diversity.py` uses. Most novel first, so the top of a
+block is what a stranger brought and the bottom is padding. A candidate
+without exactly one `{s}`, or that repeats a shipped wording, never reaches
+the file.
+
+Novelty flags repetition and does not predict yield — that was measured on
+the third dozen and it did not. Read the sentences. Then the measurement is
+`grammar_pilot.py`, five paired seeds, with the accepted dozen training-only
+the way `EXTRA` is.
+
 ## `grammar_pilot.py` — what another dozen wordings are worth
 
 ```bash
@@ -126,3 +154,21 @@ behaviour — `mos_getkey` returning what `libhost.AgonHost` assumes, for
 instance — nor about timing, interrupts or the VDP. A full `.bin` booting under
 MOS would cover those, but MOS did not boot in this emulator on this machine,
 which is why the probe bypasses it.
+
+## `mostest.py` — validate `libhost`'s MOS against the real one
+
+```bash
+python tools/mostest.py                     # what libhost says
+python tools/mostest.py -o MOSTEST.bin --data MOSTEST.DAT
+# copy both to a card, run MOSTEST from MOS, compare line for line
+```
+
+Three probes, one line each: `mos_load` of a file that exists, of one that
+does not, and — since save and restore — a file the probe itself creates
+with `mos_fopen`/`mos_fwrite`/`mos_fclose`, appends to with `FA_OPEN_APPEND`,
+and loads back. That last line is the whole surface a saved game and the
+archive's log depend on.
+
+**The `WRITTEN` line has not been run on hardware yet.** `libhost` says
+`00 C0FFEE010203` and zeros; the first Agon to run it should have its answer
+recorded here beside the `optest.py` table.
