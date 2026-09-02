@@ -1,5 +1,33 @@
 # tools/
 
+## `wordings.py` — wordings from strangers
+
+```bash
+python tools/wordings.py --backend fake                    # offline, for the pipeline
+python tools/wordings.py --backend claude --paths father_is shift_is
+python tools/wordings.py --backend ollama --model gemma2:9b -n 4
+```
+
+The phrasing curve is still climbing at thirty-three wordings a path, and
+`data/silo/README.md` has said each time that the next dozen should not come
+from the hand that wrote the last three. This asks a model for wordings **in
+character** — a child, a Supply clerk, somebody angry, somebody terse — because
+a register is the thing one author cannot vary on purpose, and the third dozen
+turned out to be written in one.
+
+It writes a review file and nothing else. Each candidate carries the persona
+that produced it and its novelty against everything shipped, one minus the
+cosine to the nearest existing wording in the encoder's own buckets — the
+measure `phrasebook_diversity.py` uses. Most novel first, so the top of a
+block is what a stranger brought and the bottom is padding. A candidate
+without exactly one `{s}`, or that repeats a shipped wording, never reaches
+the file.
+
+Novelty flags repetition and does not predict yield — that was measured on
+the third dozen and it did not. Read the sentences. Then the measurement is
+`grammar_pilot.py`, five paired seeds, with the accepted dozen training-only
+the way `EXTRA` is.
+
 ## `grammar_pilot.py` — what another dozen wordings are worth
 
 ```bash

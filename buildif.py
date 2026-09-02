@@ -1180,12 +1180,27 @@ def _emit_rules(b: EZ80Builder, world: World) -> None:
     A rule is length-prefixed so that skipping one is an addition rather than a
     walk over its parts, which is what the first version of this did and got
     wrong twice.
+
+    `RULES_RUN` is one pass and then a tick. The clock counts turns already
+    taken, so a rule on turn N reads N after the N-th command and the opening
+    pass reads zero - the order `World._settle` models, and the one thing the
+    two have to agree on for a deadline to mean the same thing on both. It
+    saturates at 255 rather than wrapping, for the reason `HEAT` does: a
+    clock that rolled over would hand back every deadline that had passed.
     """
     b.label("RULES_RUN")
+    if world.rules:
+        b.call("RULES_PASS")
+    b.ld_a_mem_label("CLOCK")
+    b.cp_n(255)
+    b.ret_z()
+    b.inc_a()
+    b.ld_mem_label_a("CLOCK")
+    b.ret()
     if not world.rules:
-        b.ret()
         return
 
+    b.label("RULES_PASS")
     b.ld_hl_label("RULETAB")
     b.ld_mem_label_hl("RULEPTR")
     b.ld_c_n(0)
@@ -1353,11 +1368,23 @@ def _emit_rule_test(b: EZ80Builder, world: World) -> None:
 
     b.label("RT_HEAT")
     b.cp_n(libworld.C_HEAT)
-    b.jr_nz("RT_WITH")
+    b.jr_nz("RT_TURN")
     b.ld_a_mem_label("HEAT")
     b.ld_hl_label("RU_ARG")
     b.cp_hl()
     b.jp_c("RT_NO")                  # quieter than the rule was watching for
+    b.jp("RT_YES")
+
+    # The clock, read the same way as attention: at or past the deadline.
+    # `CLOCK` holds the turns already taken, because `RULES_RUN` ticks it
+    # after the pass and not before - see `_emit_rules`.
+    b.label("RT_TURN")
+    b.cp_n(libworld.C_TURN)
+    b.jr_nz("RT_WITH")
+    b.ld_a_mem_label("CLOCK")
+    b.ld_hl_label("RU_ARG")
+    b.cp_hl()
+    b.jp_c("RT_NO")                  # not yet
     b.jp("RT_YES")
 
     b.label("RT_WITH")
@@ -1691,8 +1718,8 @@ def _emit_tables(b: EZ80Builder, world: World,
 def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> None:
     """The mutable half, and it is small.
 
-    `HERE`, `WHERE` and `FLAGS` are the saved game. Everything else here is
-    scratch the turn loop needs and nothing outlives a turn.
+    `HERE` through `PWHERE` is the saved game. Everything else here is scratch
+    the turn loop needs and nothing outlives a turn.
     """
     # The overlay first and contiguous, because it is the save file: where the
     # player is, where everything else is, and the flags. Putting the scratch
@@ -1714,6 +1741,10 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
     b.label("ASKED")
     b.ds(max(1, len(world.topics)))
     b.label("HEAT")
+    b.db(0)
+    # The clock is overlay for the same reason `ASKED` is: a restore that put
+    # it back to zero would give the player every deadline a second time.
+    b.label("CLOCK")
     b.db(0)
     b.label("PWHERE")
     b.ds(max(1, len(world.people)))

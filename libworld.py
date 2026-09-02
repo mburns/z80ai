@@ -188,6 +188,7 @@ C_CARRYING = 5  # the player is carrying at least `arg` things
 C_ASKED = 6     # topic `arg` has been asked about, of the archive or a person
 C_HEAT = 7      # attention stands at `arg` or above
 C_WITH = 8      # person `arg` is in the room the player is in
+C_TURN = 9      # the clock stands at `arg` or above: `arg` turns have been taken
 
 #: Action opcodes. `A_MOVE` and `A_SEND` take two bytes because each names
 #: something and a destination; everything else takes one.
@@ -202,7 +203,7 @@ A_SEND = 7      # move person `arg` to room `arg2`
 
 CONDITION_NAMES = {C_AT: "AT", C_HAVE: "HAVE", C_HERE: "HERE", C_FLAG: "FLAG",
                    C_NFLAG: "NFLAG", C_CARRYING: "CARRYING", C_ASKED: "ASKED",
-                   C_HEAT: "HEAT", C_WITH: "WITH"}
+                   C_HEAT: "HEAT", C_WITH: "WITH", C_TURN: "TURN"}
 ACTION_NAMES = {A_SET: "SET", A_CLEAR: "CLEAR", A_PRINT: "PRINT",
                 A_GOTO: "GOTO", A_MOVE: "MOVE", A_HEAT: "HEAT",
                 A_COOL: "COOL", A_SEND: "SEND"}
@@ -566,13 +567,21 @@ class World:
             # every turn - the same mistake as a rule with no conditions.
             raise ValueError(f"{where}: HEAT 0 always holds, so the rule "
                              f"fires before the player has done anything")
+        if name == "TURN" and not 1 <= arg <= 255:
+            # Zero for the same reason as HEAT 0, and 255 because the clock
+            # saturates there: a deadline the clock can never reach is a rule
+            # that can never fire, and `dead_rules` would not see it.
+            raise ValueError(f"{where}: TURN {arg}, and the clock counts "
+                             f"from 1 to 255")
 
     @property
     def overlay_bytes(self) -> int:
         """RAM the world needs to be *mutable*, which is the whole save file.
 
         One byte a thing for where it is, one a flag, one a one-shot rule that
-        has already fired, and one for the room the player is in.
+        has already fired, one for the room the player is in, and one for the
+        clock - which is in the overlay because a restore that reset it would
+        hand the player every deadline back.
 
         A byte a flag rather than a bit. Bits would be eight times smaller and
         need a shift and a mask at four call sites; a world binary has half a
@@ -584,6 +593,7 @@ class World:
                 + max(1, len(self.rules))
                 + max(1, len(self.topics))     # ASKED, one byte a topic
                 + 1                            # HEAT
+                + 1                            # CLOCK
                 + max(1, len(self.people)))    # PWHERE
 
     @property
@@ -693,12 +703,13 @@ class World:
             return arg in flags
         if op == C_CARRYING:
             return len(held) >= arg
-        # `C_NFLAG`, and `C_ASKED`, `C_HEAT` and `C_WITH` with it. The
-        # fall-through is not laziness about the three new ones: this analysis
-        # is a ceiling and every one of them is something a player can bring
-        # about by typing - any topic can be raised, attention only climbs
-        # when it is, and a person stands in a room. Answering `True` keeps
-        # the error pointing upward, which is the property `reach` rests on.
+        # `C_NFLAG`, and `C_ASKED`, `C_HEAT`, `C_WITH` and `C_TURN` with it.
+        # The fall-through is not laziness about the four new ones: this
+        # analysis is a ceiling and every one of them is something a player
+        # can bring about by typing - any topic can be raised, attention only
+        # climbs when it is, a person stands in a room, and the clock reaches
+        # any deadline given enough `LOOK`s. Answering `True` keeps the error
+        # pointing upward, which is the property `reach` rests on.
         #
         # `explore` is where these are decided exactly, at the cost of an
         # actual state search. The two are not rivals: this one is total and
@@ -783,8 +794,14 @@ class World:
         Attention is clamped at the largest threshold any condition tests,
         which is exact rather than approximate - nothing in the world can tell
         one value above that from another - and is what keeps the space finite.
+        The clock is clamped the same way and for the same reason, so a world
+        with no deadline in it has a clock that never leaves zero and a state
+        count that does not move. A world with a deadline at turn N multiplies
+        its space by about N, which is the price of asking whether the goal
+        can be reached *in time* rather than at all.
         """
         cap = self._heat_cap()
+        clock_cap = self._clock_cap()
         start = _State(
             here=self.start, at_terminal=False,
             where=tuple(t.at for t in self.things),
@@ -792,13 +809,16 @@ class World:
             fired=(0,) * len(self.rules),
             asked=(0,) * len(self.topics),
             heat=0,
-            pwhere=tuple(p.at for p in self.people))
+            pwhere=tuple(p.at for p in self.people),
+            # -1 so that the opening pass reads zero, since `_settle` ticks
+            # before it reads. No state the search keeps ever holds it.
+            turn=-1)
 
         # The start is a turn: the program describes the room and then runs
         # the rules before it reads the first line.
         seen_msgs: set[int] = set()
         spoken: set[int] = set()
-        start = self._settle(start, cap, seen_msgs)
+        start = self._settle(start, cap, seen_msgs, clock_cap)
 
         parents: dict[_State, tuple[_State, str] | None] = {start: None}
         order: list[_State] = [start]
@@ -806,7 +826,7 @@ class World:
         while queue:
             state = queue.pop(0)
             for command, successor in self._moves(state, cap, seen_msgs,
-                                                  spoken):
+                                                  spoken, clock_cap):
                 if successor in parents:
                     continue
                 if len(parents) >= max_states:
@@ -859,13 +879,27 @@ class World:
         thresholds += [arg for op, arg in self.goal if op == C_HEAT]
         return max(thresholds, default=0)
 
+    def _clock_cap(self) -> int:
+        """The latest turn any condition asks about; the clock stops there.
+
+        Exact for the same reason `_heat_cap` is: no condition can tell turn
+        N+1 from turn N once every deadline has passed. Zero when nothing
+        reads the clock, which is what keeps every existing world's state
+        space the size it was.
+        """
+        deadlines = [arg for rule in self.rules for op, arg in rule.when
+                     if op == C_TURN]
+        deadlines += [arg for op, arg in self.goal if op == C_TURN]
+        return max(deadlines, default=0)
+
     def _moves(self, state: _State, cap: int, printed: set[int],
-               spoken: set[int]) -> list[tuple[str, _State]]:
+               spoken: set[int], clock_cap: int = 0
+               ) -> list[tuple[str, _State]]:
         """Every command that is legal here, and where it leads."""
         out: list[tuple[str, _State]] = []
 
         def turn(name: str, changed: _State) -> None:
-            out.append((name, self._settle(changed, cap, printed)))
+            out.append((name, self._settle(changed, cap, printed, clock_cap)))
 
         if state.at_terminal:
             # The classifier is listening, so the word table is not. This is
@@ -925,8 +959,18 @@ class World:
         return None
 
     def _settle(self, state: _State, cap: int,
-                printed: set[int]) -> _State:
-        """One pass of the rule table, which is what a turn actually costs."""
+                printed: set[int], clock_cap: int = 0) -> _State:
+        """One pass of the rule table, which is what a turn actually costs.
+
+        The clock reads as the number of commands already taken: the opening
+        pass sees zero and the pass after the N-th command sees N. The device
+        ticks `CLOCK` after its pass; this ticks at the top of the next one,
+        which is the same reading at every point a rule or the goal looks -
+        and it is the goal that decides it, because `solve` reads the state
+        this returns, and a tick after the pass would have the goal seeing
+        one turn more than the rules did. `test_clock.py` holds the two to it.
+        """
+        state = state._replace(turn=min(clock_cap, state.turn + 1))
         for number, rule in enumerate(self.rules):
             if rule.once and state.fired[number]:
                 continue
@@ -956,6 +1000,8 @@ class World:
             return state.heat >= arg
         if op == C_WITH:
             return state.pwhere[arg] == state.here
+        if op == C_TURN:
+            return state.turn >= arg
         raise ValueError(f"no condition {op}")
 
     def _apply(self, state: _State, op: int, arg: int, arg2: int, cap: int,
@@ -996,6 +1042,8 @@ class _State(NamedTuple):
     asked: tuple[int, ...]
     heat: int
     pwhere: tuple[int, ...]
+    #: Turns taken, clamped at the latest deadline any condition reads.
+    turn: int = 0
 
 
 def _set(values: tuple[int, ...], index: int, value: int) -> tuple[int, ...]:
