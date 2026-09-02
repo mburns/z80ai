@@ -1002,9 +1002,11 @@ def _emit_score_term(b: EZ80Builder, acc_base: int) -> None:
     b.jp("STS_BLOCK")
 
 
-#: Watch row: article id, the topic it is about, what asking costs, and the
-#: text to print instead of the record. Eight bytes, in the image.
-WATCH_STRIDE = 3 + 1 + 1 + 3
+#: Watch row: article id, the topic it is about, what asking costs, the text
+#: to print while the topic is sealed, and the text to print while it is
+#: altered. Eleven bytes, in the image; which text, if either, is two bytes
+#: of overlay the rules move.
+WATCH_STRIDE = 3 + 1 + 1 + 3 + 3
 #: Ends the watch table. No article can have this id - a 24-bit count of
 #: articles would have exhausted SRAM a hundred times over first.
 WATCH_END = 0xFFFFFF
@@ -1042,14 +1044,14 @@ def _emit_notice(b: EZ80Builder, world: libworld.World) -> None:
     in a fixed, discoverable way is interesting, and one that is unreliable at
     random is noise. A seal is that, made visible.
     """
-    rows = [(doc, index, entry.heat, entry.censor)
+    rows = [(doc, index, entry.heat)
             for index, entry in enumerate(world.topics)
             for doc in entry.docs]
 
     b.label("NOTICE")
     b.ld_a_mem_label("BESTSC")
     b.or_a()
-    b.jr_z("NT_QUIET")               # nothing matched: not about anything
+    b.jp_z("NT_QUIET")               # nothing matched: not about anything
     # Anything that matched is logged, whether or not the world watches it.
     # `LOGTOP` is the topic for the log, and 0xFF is a question about
     # something the world has no name for - which the archive still saw.
@@ -1082,17 +1084,35 @@ def _emit_notice(b: EZ80Builder, world: libworld.World) -> None:
         b.call("MARK_ASKED")
         b.ld_a_ixd(4)
         b.or_a()
-        b.jr_z("NT_SEAL")
+        b.jr_z("NT_STATE")
         b.call("ADDHEAT")
 
-        b.label("NT_SEAL")
-        b.ld_hl_ixd(5)
-        b.ld_de_nn(0)
+        # What the archive does with the record is state, not a table: the
+        # row carries both texts and the two overlay bytes say which, if
+        # either, is printed instead of the article. A seal wins over an
+        # alteration, because a record that is closed cannot also be read
+        # wrong.
+        b.label("NT_STATE")
+        b.ld_a_ixd(3)
+        b.call("SEALEDPTR")
+        b.ld_a_hl()
         b.or_a()
-        b.sbc_hl_de()
+        b.jr_z("NT_ALT")
+        b.ld_hl_ixd(5)               # the seal text
+        b.jr("NT_SAY")
+
+        b.label("NT_ALT")
+        b.ld_a_ixd(3)
+        b.call("ALTEREDPTR")
+        b.ld_a_hl()
+        b.or_a()
         b.jr_z("NT_NONE")
+        b.ld_hl_ixd(8)               # the record as the Voice has it read
+
+        b.label("NT_SAY")
+        b.push_hl()
         b.call("PRNL")
-        b.ld_hl_ixd(5)
+        b.pop_hl()
         b.call("PRWRAP")
         b.call("PRNL")
         b.call("LOGAPPEND")          # a sealed question is still a question
@@ -1108,20 +1128,29 @@ def _emit_notice(b: EZ80Builder, world: libworld.World) -> None:
     if not rows:
         return
     b.label("WATCH")
-    for doc, index, heat, censor in rows:
+    for doc, index, heat in rows:
         b.d24(doc)
         b.db(index)
         b.db(heat)
-        if censor is None:
-            b.d24(0)
+        entry = world.topics[index]
+        b.fixup_word(f"SEAL{index}" if entry.censor is not None else "SEALDEF")
+        if entry.alter is None:
+            b.d24(0)                 # never followed: `check` refuses ALTER
         else:
-            b.fixup_word(f"SEAL{index}")
+            b.fixup_word(f"ALT{index}")
     b.d24(WATCH_END)
 
+    b.label("SEALDEF")
+    b.ascii(world.seal)
+    b.db(0)
     for index, entry in enumerate(world.topics):
         if entry.censor is not None:
             b.label(f"SEAL{index}")
             b.ascii(entry.censor)
+            b.db(0)
+        if entry.alter is not None:
+            b.label(f"ALT{index}")
+            b.ascii(entry.alter)
             b.db(0)
 
 

@@ -406,6 +406,26 @@ def _emit_reset_things(b: EZ80Builder, world: World) -> None:
         b.inc_de()
         b.djnz("RESETP_LP")
 
+    if world.topics:
+        # Which records start sealed is authored; which are altered is not,
+        # so the first is copied from a table and the second is cleared.
+        b.ld_hl_label("INITSEALED")
+        b.ld_de_label("SEALED")
+        b.ld_b_n(len(world.topics))
+        b.label("RESETS_LP")
+        b.ld_a_hl()
+        b.ld_de_a()
+        b.inc_hl()
+        b.inc_de()
+        b.djnz("RESETS_LP")
+        b.ld_hl_label("ALTERED")
+        b.ld_b_n(len(world.topics))
+        b.xor_a()
+        b.label("RESETA_LP")
+        b.ld_hl_a()
+        b.inc_hl()
+        b.djnz("RESETA_LP")
+
 
 def _emit_room_row(b: EZ80Builder) -> None:
     """HL = the row for the room in A."""
@@ -1163,6 +1183,22 @@ def _emit_attention(b: EZ80Builder, world: World) -> None:
     b.add_hl_de()
     b.ret()
 
+    # The Voice's two arrays, a byte a topic like `ASKED` and read the same
+    # way: `SEALED` says the archive declines, `ALTERED` says it lies.
+    b.label("SEALEDPTR")
+    b.ld_hl_label("SEALED")
+    b.ld_de_nn(0)
+    b.ld_e_a()
+    b.add_hl_de()
+    b.ret()
+
+    b.label("ALTEREDPTR")
+    b.ld_hl_label("ALTERED")
+    b.ld_de_nn(0)
+    b.ld_e_a()
+    b.add_hl_de()
+    b.ret()
+
     b.label("PWHEREPTR")
     b.ld_hl_label("PWHERE")
     b.ld_de_nn(0)
@@ -1426,12 +1462,34 @@ def _emit_rule_test(b: EZ80Builder, world: World) -> None:
     # and `LOGAPPEND` keeps it in step from then on.
     b.label("RT_LOGGED")
     b.cp_n(libworld.C_LOGGED)
-    b.jr_nz("RT_WITH")
+    b.jr_nz("RT_SEALED")
     b.ld_a_mem_label("LOGGED")
     b.ld_hl_label("RU_ARG")
     b.cp_hl()
     b.jp_c("RT_NO")
     b.jp("RT_YES")
+
+    # What the archive is doing to a record, which a rule may read back so
+    # that a person can react to a seal the player has not yet run into.
+    b.label("RT_SEALED")
+    b.cp_n(libworld.C_SEALED)
+    b.jr_nz("RT_ALTERED")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("SEALEDPTR")
+    b.ld_a_hl()
+    b.or_a()
+    b.jp_nz("RT_YES")
+    b.jp("RT_NO")
+
+    b.label("RT_ALTERED")
+    b.cp_n(libworld.C_ALTERED)
+    b.jr_nz("RT_WITH")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("ALTEREDPTR")
+    b.ld_a_hl()
+    b.or_a()
+    b.jp_nz("RT_YES")
+    b.jp("RT_NO")
 
     b.label("RT_WITH")
     b.cp_n(libworld.C_WITH)
@@ -1525,10 +1583,48 @@ def _emit_rule_do(b: EZ80Builder, world: World) -> None:
 
     b.label("RD_SEND")
     b.cp_n(libworld.A_SEND)
-    b.ret_nz()
+    b.jr_nz("RD_SEAL")
     b.ld_a_mem_label("RU_ARG")
     b.call("PWHEREPTR")
     b.ld_a_mem_label("RU_ARG2")
+    b.ld_hl_a()
+    b.ret()
+
+    # The Voice acting on the record. Four opcodes and two arrays: a byte
+    # goes to 1 or 0, and the archive reads it the next time it is asked.
+    b.label("RD_SEAL")
+    b.cp_n(libworld.A_SEAL)
+    b.jr_nz("RD_UNSEAL")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("SEALEDPTR")
+    b.ld_a_n(1)
+    b.ld_hl_a()
+    b.ret()
+
+    b.label("RD_UNSEAL")
+    b.cp_n(libworld.A_UNSEAL)
+    b.jr_nz("RD_ALTER")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("SEALEDPTR")
+    b.xor_a()
+    b.ld_hl_a()
+    b.ret()
+
+    b.label("RD_ALTER")
+    b.cp_n(libworld.A_ALTER)
+    b.jr_nz("RD_TRUTH")
+    b.ld_a_mem_label("RU_ARG")
+    b.call("ALTEREDPTR")
+    b.ld_a_n(1)
+    b.ld_hl_a()
+    b.ret()
+
+    b.label("RD_TRUTH")
+    b.cp_n(libworld.A_TRUTH)
+    b.ret_nz()
+    b.ld_a_mem_label("RU_ARG")
+    b.call("ALTEREDPTR")
+    b.xor_a()
     b.ld_hl_a()
     b.ret()
 
@@ -1900,6 +1996,11 @@ def _emit_tables(b: EZ80Builder, world: World,
         for person in world.people:
             b.db(person.at)
 
+    if world.topics:
+        b.label("INITSEALED")
+        for topic in world.topics:
+            b.db(int(topic.starts_sealed))
+
     if world.people and world.topics:
         # The dialogue, in the order the author wrote it. The scan is linear
         # and first-match-wins, which is what makes ordering the whole of the
@@ -2022,6 +2123,13 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
     # it back to zero would give the player every deadline a second time.
     b.label("CLOCK")
     b.db(0)
+    # What the archive is doing to each record. Overlay, because a restore
+    # that unsealed everything the Voice had closed would be the Voice
+    # forgetting it had been threatened.
+    b.label("SEALED")
+    b.ds(max(1, len(world.topics)))
+    b.label("ALTERED")
+    b.ds(max(1, len(world.topics)))
     b.label("PWHERE")
     b.ds(max(1, len(world.people)))
 

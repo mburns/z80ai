@@ -22,8 +22,12 @@ generator is last because it is what the rest is for.
 - [x] **A clock the world can read** - `C_TURN`, one overlay byte, a deadline
       the solver can be held to. Step one of [#101](../../issues/101) is in
       this tree; shifts and presence by schedule are steps two and three.
-- [ ] **The Voice** - runtime seals, altered records, and the margin hedge as
-      its tell. [#102](../../issues/102)
+- [x] **The Voice acts** - `A_SEAL`, `A_UNSEAL`, `A_ALTER`, `A_TRUTH`, and
+      rules that read what it has done; the mystery seals a record and
+      rewrites another. [#102](../../issues/102)
+- [ ] **The Voice hedges** - the margin between the classifier's top two,
+      surfaced on the device as its tell. The rest of #102; wants the
+      classifier in the binary.
 - [ ] **The whole silo on one byte** - collapse a ring to one room with 72
       doors, then page the stair if a world needs more. [#103](../../issues/103)
 - [x] **Save, restore, and a card the world writes to** - `SAVE n` and

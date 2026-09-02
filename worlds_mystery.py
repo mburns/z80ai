@@ -44,6 +44,17 @@ That counter is the reason the oracle is an antagonist rather than a hint
 button. A question is slow - ~370,000 instructions against a move's ~3,400 -
 and it is *noticed*, so the wall clock and the fiction agree about what it
 costs to want to know something.
+
+## And it acts
+
+Two of the rules move the archive rather than the world. At five on the
+counter the deputy comes up the stair and the pump report - which was never
+about Allison - is sealed, because the Voice reacts to the asking and not
+the subject. With both clues in hand the standing order is rewritten to
+say one person may fit a screen, which the player can catch: the order on
+Walk's wall still says two. `data/silo/plant.py` set the rule for the
+corpus and it holds at the terminal - a record that is wrong in a fixed,
+discoverable way is a clue, and one that is unreliable at random is noise.
 """
 
 from __future__ import annotations
@@ -163,8 +174,14 @@ def mystery() -> World:
                      "BEEN LOGGED."),
         Topic("pump", ["PUMP", "CISTERN"],
               titles=["Incident Report 214-11: Cistern Pump Failure"]),
+        # The record the Voice rewrites once the player has put the two
+        # clues together. The order on Walk's wall still says two; the
+        # archive now says otherwise, and the player has read both.
         Topic("screenfit", ["FITTING", "ORDER"],
-              titles=["Standing Order 11: Screen Fitting"]),
+              titles=["Standing Order 11: Screen Fitting"],
+              alter="Standing Order 11: Screen Fitting (as amended, year "
+                    "218). A screen may be fitted by one person where a "
+                    "second is not available. Judicial."),
         Topic("badgetopic", ["DEPUTY", "BADGE"]),
         Topic("hatch", ["HATCH", "OUTSIDE"], heat=1),
     ]
@@ -238,17 +255,23 @@ def mystery() -> World:
 
         # What attention buys, once. The deputy leaves the cafeteria and comes
         # to the landing, which is `A_SEND` - a person moving is not a thing
-        # moving and does not go through `WHERE`.
+        # moving and does not go through `WHERE`. And the archive closes a
+        # record that was open: the pump report was never about Allison, and
+        # sealing it is the Voice reacting to the *asking*, not the subject.
         Rule(when=[(libworld.C_HEAT, 5)],
              then=[(libworld.A_PRINT, 3, 0), (libworld.A_SEND, MARNES, LANDING),
-                   (libworld.A_SET, F_DEPUTY_CAME, 0)]),
+                   (libworld.A_SET, F_DEPUTY_CAME, 0),
+                   (libworld.A_SEAL, T_PUMP, 0)]),
 
         # Both clues in hand. The machine prints the reading; the player did
         # the deduction, which is the division of labour the hardware forces
-        # and the genre happens to want.
+        # and the genre happens to want. And the archive quietly rewrites
+        # the standing order, which is the Voice doing the one thing a
+        # reliable narrator cannot: the player has read the order on the
+        # wall, so the amendment is a lie they can catch.
         Rule(when=[(libworld.C_FLAG, F_ALLISON_WAS_IT),
                    (libworld.C_FLAG, F_SCREEN_ALONE)],
-             then=[(libworld.A_PRINT, 4, 0)]),
+             then=[(libworld.A_PRINT, 4, 0), (libworld.A_ALTER, T_SCREEN, 0)]),
 
         Rule(when=[(libworld.C_AT, GENERATOR)],
              then=[(libworld.A_SET, F_BEEN_DEEP, 0)]),
