@@ -1173,6 +1173,25 @@ older figures describe the previous build; this is a bigger Wikidata two years
 on, and the numbers elsewhere in this file are left as they were rather than
 quietly rewritten to match a graph they were not measured against.
 
+### The graph database turned out to be unnecessary
+
+`--export` used `ladybug` for exactly one thing: dumping every edge straight
+back out to parquet, unfiltered, so the corpus membership test could run over
+it in numpy. `stage` already wrote that parquet on the way in. The pipeline was
+parquet → 22GB graph → parquet, and the graph in the middle answered no
+question that the file on either side of it did not.
+
+That was found after four failed loads, every one of them in service of
+producing a file that was already on disk. `--export` now takes either: a
+`.parquet` source is read where it lies, and the `.lbdb` path is kept for a
+graph somebody already has. The containment split that the graph load spent
+those four attempts trying to reach takes **17 seconds** this way, and the
+whole export runs in about three minutes with no buffer pool involved at all.
+
+The load code below is kept because it works and because a queryable graph is
+worth having for questions this file does not ask. It is no longer on the path
+to a card.
+
 ### The load is where it broke, and why it is now a separate half
 
 The first run parsed for 2.9 hours and then died on the last statement:
@@ -1217,6 +1236,44 @@ where the hours go, and that is unchanged.
 first, which is the same question `ingest.py --stats` answers for infobox
 fields it does not understand. It reads only the export, so it works on a
 machine that has the file and not the 500MB corpus.
+
+### The survey proposes, and a person still decides
+
+Seventeen properties are mapped and 1,074 are not, and mapping each by hand is
+a poor way to spend the next year. Wikidata states its own hierarchy — P1647,
+`subproperty of` — so a property nobody has mapped can be *proposed* for the
+relation its ancestor already has:
+
+```
+    proposed    statements  because Wikidata calls it a kind of
+        P344             3  P170 -> created_by
+         P58             2  P170 -> created_by
+```
+
+Those statements are ones `triple` throws away and should: their subject is a
+property rather than an item, so they are not edges and not facts about any
+article. `stage` collects them on the way past, because that pass over the dump
+is the only one that will ever see them, and they travel *inside* the export so
+that `--survey` keeps working on a machine that has one file and nothing else.
+
+**It proposes and does not decide, and that is the point.** `country` on a
+place is where it is and on a *language* is where it is spoken — that took a
+hand-written type test, and no hierarchy states it. A derived mapping sweeps in
+properties needing guards nobody has written, and on a card a wrong answer is
+worse than a missing one. So the map stays a table somebody wrote, and this
+turns "which of 1,074" from a question about intuition into one the data
+answers with a reason attached.
+
+The alternative generalisation — matching a property's English label against
+the infobox field names in `libgraph.CANONICAL` — is the same string-matching
+that gets a Q-id right 43.5% of the time and wrong 2.3% of the time with
+nothing about the wrong ones looking wrong. A stated hierarchy is a table; a
+label is a coincidence.
+
+**Nothing is proposed from the current export**, which was cut before any of
+this existed. `--survey` says so rather than printing an empty list, because an
+absence of proposals and an absence of a hierarchy look identical otherwise.
+The next `--build` collects it.
 
 An older format 1 export still imports. It was cut against a fixed list of
 nine, so `--score` says which newly mapped properties are absent from the
@@ -1312,8 +1369,48 @@ added P170 and P50 and reached 13,406, so the eight that land there now are
 being asked to move the number that has moved least. `language_is` is 9,909 and
 had no Wikidata source at all until P364 and P37.
 
-**The numbers in the tables above were measured against the nine**; re-running
-`--export` is what says what the seventeen are worth.
+### What the seventeen were worth, run
+
+Against the 2026-08-28 truthy dump and the 2026-08-01 corpus. The graph goes
+from **168,306 edges to 288,859** — 143,725 rows planned, 120,553 of them where
+the corpus had nothing:
+
+| relation | before | after | |
+|---|---:|---:|---:|
+| `located_in` | 49,784 | 86,543 | +73.8% |
+| `born_in` | 42,288 | 67,731 | +60.2% |
+| `died_in` | 17,277 | 33,897 | +96.2% |
+| `genre_is` | 11,429 | 24,420 | +113.7% |
+| `language_is` | 9,909 | 20,494 | +106.8% |
+| `created_by` | 11,107 | 20,061 | +80.6% |
+| `capital_is` | 848 | 7,347 | **+766.4%** |
+| `spouse_of` | 1,836 | 4,538 | +147.2% |
+| `member_of` | 10,507 | 10,507 | — |
+| `preceded_by` | 6,783 | 6,783 | — |
+| `followed_by` | 6,538 | 6,538 | — |
+| **total** | **168,306** | **288,859** | **+71.6%** |
+
+Wikidata also names **207 countries** against the corpus's 143: 92 it did not
+know, and 28 the corpus has that Wikidata does not.
+
+**`created_by` +80.6% is the one this was for.** It was the relation that had
+moved least under the nine-property import, and **the precedence rule fired
+7,101 times** getting it there — 7,101 films where a director outranked a
+producer or a composer. Unioned, most of those would have joined the 1,433
+already declining as values that do not nest, and the film would have gained
+nothing.
+
+**The three flat rows are the result, not a fault.** `member_of`,
+`preceded_by` and `followed_by` are exactly the relations with no Wikidata
+property mapped, so they moved by zero. `member_of` alone has ~93k statements
+waiting in P54 (49,506), P463 (16,850), P102 (13,829) and P108 (13,139) — and
+that now costs a `PROPERTY` edit and a re-read rather than another dump pass.
+
+Two figures read as confirmation rather than news: `genre_is` declined 10,153,
+matching the "about ten thousand of them genres" this file already recorded;
+and `located_in` refused 36,842 as untyped, which is the P17 guard declining
+`country` for subjects with no `P131` — the rule that stops `English language`
+collecting ninety of them.
 
 ### What a country is, asked rather than voted on
 

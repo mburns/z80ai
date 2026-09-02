@@ -283,6 +283,32 @@ def test_a_label_is_not_an_edge(wikidata):
     ) is None
 
 
+def test_a_subproperty_statement_is_read_as_hierarchy(wikidata):
+    """`triple` throws these away and should: the subject is a property, so it
+    is not an edge and not a fact about any article. It is how Wikidata says a
+    cinematographer is a kind of creator, and this is the only pass over the
+    dump that will ever see it."""
+    line = (b'<http://www.wikidata.org/entity/P344> '
+            b'<http://www.wikidata.org/prop/direct/P1647> '
+            b'<http://www.wikidata.org/entity/P170> .\n')
+    assert wikidata.triple(line) is None
+    assert wikidata.subproperty(line) == (344, 170)
+
+
+def test_a_property_statement_that_is_not_the_hierarchy_is_skipped(wikidata):
+    """P1629 is `subject item of this property`, which relates a property to an
+    item and says nothing about what is a kind of what."""
+    assert wikidata.subproperty(
+        b'<http://www.wikidata.org/entity/P344> '
+        b'<http://www.wikidata.org/prop/direct/P1629> '
+        b'<http://www.wikidata.org/entity/P170> .\n') is None
+
+
+def test_an_item_statement_is_not_hierarchy(wikidata):
+    """The two parsers partition the dump between them and must not overlap."""
+    assert wikidata.subproperty(nt("Q42", "P19", "Q350")) is None
+
+
 def test_a_non_entity_subject_is_skipped(wikidata):
     """A property can be the subject of a truthy statement - `P31 P31 Q...` -
     and it is not a node in this graph."""
@@ -490,7 +516,7 @@ def test_the_survey_counts_what_the_import_reads_past(wikidata, tmp_path):
                         f"{EVEREST}\t{UNMAPPED}\t{CHINA}\n"
                         f"{CARROLL_COUNTY}\t131\t{MISSISSIPPI}\tchain\n",
                         version=2)
-    counts, header = wikidata.survey(path)
+    counts, header, _hierarchy = wikidata.survey(path)
     assert counts == {19: 1, UNMAPPED: 2}
     assert header["format"] == "2"
 
@@ -500,8 +526,64 @@ def test_a_mapped_property_is_not_reported_as_unmapped(wikidata, tmp_path):
     `PROPERTY` rather than a list of its own."""
     path = write_export(tmp_path / "e.tsv.gz",
                         f"{CARROLLTON}\t37\t{USA}\n", version=2)
-    counts, _ = wikidata.survey(path)
+    counts, _header, _hierarchy = wikidata.survey(path)
     assert set(counts) <= set(wikidata.PROPERTY)
+
+
+# --- proposing a relation for a property nobody mapped ------------------------
+
+# P344 is `director of photography`, which Wikidata calls a subproperty of
+# P170 `creator`. P2650 is `interested in`, which is a kind of nothing here.
+CINEMATOGRAPHER, INTERESTED_IN = 344, 2650
+
+
+def test_a_subproperty_of_a_mapped_property_is_proposed(wikidata):
+    """The whole point: Wikidata states that a cinematographer is a kind of
+    creator, so it can be *proposed* for `created_by` without anyone guessing
+    from the property's name."""
+    assert wikidata.proposal(CINEMATOGRAPHER, {CINEMATOGRAPHER: 170}) == (
+        170, "created_by")
+
+
+def test_a_property_under_nothing_mapped_is_not_proposed(wikidata):
+    assert wikidata.proposal(INTERESTED_IN, {INTERESTED_IN: 921}) is None
+
+
+def test_the_walk_reaches_a_mapped_ancestor_through_an_unmapped_one(wikidata):
+    """Hierarchies are several deep and the middle of one need not be mapped."""
+    assert wikidata.proposal(999, {999: 998, 998: 57}) == (57, "created_by")
+
+
+def test_a_cycle_in_the_hierarchy_terminates(wikidata):
+    """Wikidata has cycles in every hierarchy it has, and a survey is not the
+    place to find that out by running out of stack."""
+    assert wikidata.proposal(1, {1: 2, 2: 3, 3: 1}) is None
+
+
+def test_the_walk_is_bounded(wikidata):
+    """Past a few hops "a kind of" has stopped meaning anything a walk uses."""
+    deep = {i: i + 1 for i in range(20)}
+    deep[20] = 19  # P19 is mapped, but far too far up to mean anything.
+    assert wikidata.proposal(0, deep) is None
+
+
+def test_a_hierarchy_survives_the_export_header(wikidata, tmp_path):
+    """`--survey` runs on a machine that has the export and nothing else, so
+    the links have to travel inside it rather than beside it."""
+    path = write_export(tmp_path / "e.tsv.gz",
+                        f"{CARROLLTON}\t{CINEMATOGRAPHER}\t{MISSISSIPPI}\n",
+                        version=2)
+    with gzip.open(path, "rt") as fh:
+        body = fh.read()
+    with gzip.open(path, "wt") as fh:
+        fh.write(body.replace("# dump\twikidata.lbdb\n",
+                              "# dump\twikidata.lbdb\n"
+                              f"# subproperty\t{CINEMATOGRAPHER}\t170\n"))
+
+    counts, _header, hierarchy = wikidata.survey(path)
+    assert counts == {CINEMATOGRAPHER: 1}
+    assert hierarchy == {CINEMATOGRAPHER: 170}
+    assert wikidata.proposal(CINEMATOGRAPHER, hierarchy) == (170, "created_by")
 
 
 # --- writing ------------------------------------------------------------------

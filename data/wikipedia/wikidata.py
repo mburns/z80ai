@@ -210,6 +210,21 @@ TRUTHY = "latest-truthy.nt.bz2"
 NT_ENTITY = b"<http://www.wikidata.org/entity/Q"
 NT_DIRECT = b"<http://www.wikidata.org/prop/direct/P"
 
+#: A property rather than an item. Wikidata states its own hierarchy in
+#: statements shaped this way, and they are the only ones here whose subject is
+#: not a Q-id.
+NT_PROPERTY = b"<http://www.wikidata.org/entity/P"
+
+#: `subproperty of`: a cinematographer is a kind of creator. Collected so that
+#: `--survey` can *propose* a relation for a property nobody has mapped, rather
+#: than only counting it. Bytes, because that is what the parser compares.
+SUBPROPERTY_OF = b"1647"
+
+#: How far up the hierarchy to look for a mapped ancestor. Wikidata has cycles
+#: in every hierarchy it has - `inside` is bounded for the same reason - and
+#: past a few hops "a kind of" has stopped meaning anything a walk could use.
+HIERARCHY_DEPTH = 4
+
 #: Cut before Python sees a line at all. Labels, descriptions, aliases and
 #: sitelinks are the bulk of the dump and none of them carry this, so a C loop
 #: discards most of the file before the interpreter is involved.
@@ -265,6 +280,21 @@ COPY_BATCH = 5_000_000
 #: cannot be given at the *end* of a three-hour build rather than the start.
 BUFFER_POOL = 8 * 1024 * 1024 * 1024
 
+#: Statements between checkpoints, which is a compromise between two failures
+#: seen from the ends of the range. Checkpointing after every commit - the
+#: default - costs what the whole table holds rather than what the statement
+#: added, and the 37th of those exhausted the pool. Never checkpointing means
+#: nothing flushes and the dirty pages simply accumulate until the process is
+#: killed, which is what happened next and left no traceback at all.
+#:
+#: Every 20 statements is a checkpoint per 100M edges: nine over this graph.
+CHECKPOINT_EVERY = 20
+
+#: What ladybug leaves beside a database, and what has to be removed with it.
+#: A write-ahead log that outlives its database is not ignored on the next
+#: open - it is a hard refusal to start.
+LADYBUG_SIDECARS = (".wal", ".shadow", ".tmp")
+
 
 def triple(line: bytes) -> tuple[int, int, int] | None:
     """(subject, object, property) for an entity-to-entity truthy statement.
@@ -290,6 +320,36 @@ def triple(line: bytes) -> tuple[int, int, int] | None:
                 int(prop[len(NT_DIRECT):-1]))
     except ValueError:
         # `Q1234-deadbeef` and friends: a statement id rather than an entity.
+        return None
+
+
+def subproperty(line: bytes) -> tuple[int, int] | None:
+    """(child, parent) for a `subproperty of` statement about a property.
+
+    These are statements `triple` throws away, and correctly: their subject is
+    a *property* rather than an item, so they are not edges in the graph and
+    not facts about any article. They are how Wikidata states its own
+    hierarchy - that a cinematographer is a kind of creator - which is the only
+    non-guessing way to propose that a property nobody has mapped belongs to a
+    relation somebody already did.
+
+    The alternative, matching a property's English label against the infobox
+    field names in `libgraph.CANONICAL`, is the same string-matching that gets
+    a Q-id right 43.5% of the time and wrong 2.3% of the time with nothing
+    about the wrong ones looking wrong. A stated hierarchy is a table.
+    """
+    parts = line.split(b" ", 3)
+    if len(parts) < 4:
+        return None
+    subj, prop, obj = parts[0], parts[1], parts[2]
+    if not (subj.startswith(NT_PROPERTY) and prop.startswith(NT_DIRECT)
+            and obj.startswith(NT_PROPERTY)):
+        return None
+    if prop[len(NT_DIRECT):-1] != SUBPROPERTY_OF:
+        return None
+    try:
+        return (int(subj[len(NT_PROPERTY):-1]), int(obj[len(NT_PROPERTY):-1]))
+    except ValueError:
         return None
 
 
@@ -352,6 +412,18 @@ def staged_paths(out: Path) -> tuple[Path, Path, Path]:
             out.with_suffix(".staged"))
 
 
+def hierarchy_path(out: Path) -> Path:
+    """Where the property hierarchy lands, beside whatever it was staged for.
+
+    Every suffix is stripped rather than one, so the graph, the staged parquet
+    and the export all name the same file: `wikidata.lbdb`,
+    `wikidata.edges.parquet` and `wikidata.tsv.gz` all point at
+    `wikidata.subproperties.tsv`.
+    """
+    return Path(str(out).removesuffix("".join(out.suffixes))
+                + ".subproperties.tsv")
+
+
 def stage(dump: Path, out: Path) -> tuple[int, int]:
     """Parse the dump into parquet, and write a receipt when it is all there.
 
@@ -372,6 +444,7 @@ def stage(dump: Path, out: Path) -> tuple[int, int]:
     subj: list[int] = []
     obj: list[int] = []
     prop: list[int] = []
+    hierarchy: dict[int, int] = {}
     kept = high = 0
     started = time.time()
 
@@ -388,6 +461,11 @@ def stage(dump: Path, out: Path) -> tuple[int, int]:
 
         for line in candidates(dump):
             if (got := triple(line)) is None:
+                # Nearly all of these are literal-valued statements, but the
+                # handful whose subject is a property are the hierarchy, and
+                # this is the only pass over the dump that will ever see them.
+                if (pair := subproperty(line)) is not None:
+                    hierarchy[pair[0]] = pair[1]
                 continue
             subj.append(got[0])
             obj.append(got[1])
@@ -407,6 +485,11 @@ def stage(dump: Path, out: Path) -> tuple[int, int]:
     qids = np.flatnonzero(seen)
     pq.write_table(pa.table({"qid": qids}), nodes_path)
     print(f"  {len(qids):,} nodes", flush=True)
+
+    hierarchy_path(out).write_text(
+        "".join(f"{child}\t{parent}\n"
+                for child, parent in sorted(hierarchy.items())))
+    print(f"  {len(hierarchy):,} subproperty links", flush=True)
 
     receipt.write_text(f"{dump.name}\t{len(qids)}\t{kept}\n")
     return len(qids), kept
@@ -430,11 +513,24 @@ def populate(out: Path) -> None:
     import pyarrow.parquet as pq
 
     edges_path, nodes_path, _ = staged_paths(out)
-    # A partly-loaded graph from a previous attempt is not a starting point.
+    # A partly-loaded graph from a previous attempt is not a starting point -
+    # and the sidecars have to go with it. A `.wal` outliving the database it
+    # belonged to is not ignored on the next open: ladybug refuses to start,
+    # saying the file was left behind by a previous database of the same name,
+    # which is exactly what a killed load leaves and precisely the state a
+    # retry begins in.
     shutil.rmtree(out, ignore_errors=True)
-    Path(str(out)).unlink(missing_ok=True)
+    for leftover in (out, *(Path(f"{out}{s}") for s in LADYBUG_SIDECARS)):
+        Path(str(leftover)).unlink(missing_ok=True)
 
-    con = lb.Connection(lb.Database(str(out), buffer_pool_size=BUFFER_POOL))
+    # `auto_checkpoint=False` because the default checkpoints after every
+    # commit, and a checkpoint costs what the table holds rather than what the
+    # statement added: 176 of them over a graph growing to 876.7M edges, each
+    # dearer than the last. The 37th is where it ran out - and it reported the
+    # commit as durable and the *checkpoint* as failed, which is a much better
+    # error than the one before it and says exactly this.
+    con = lb.Connection(lb.Database(str(out), buffer_pool_size=BUFFER_POOL,
+                                    auto_checkpoint=False))
     con.execute(NODE_TABLE)
     con.execute(REL_TABLE)
     con.execute(f"COPY wikidata_node FROM '{nodes_path}'")
@@ -446,8 +542,17 @@ def populate(out: Path) -> None:
         pq.write_table(pa.Table.from_batches([batch]), slice_path)
         con.execute(f"COPY wikidata_rel FROM '{slice_path}'")
         done += batch.num_rows
+        if n % CHECKPOINT_EVERY == 0:
+            con.execute("CHECKPOINT")
         print(f"  copied {done:,} edges ({n} statements)", flush=True)
     slice_path.unlink(missing_ok=True)
+
+    # The last checkpoint, now that there is nothing left to add to it. Without
+    # one the graph is durable but unread: everything since the previous one
+    # lives in the WAL and is replayed on open, which for 876.7M edges is a
+    # cost paid by every later `--export` rather than once here.
+    print("  checkpointing", flush=True)
+    con.execute("CHECKPOINT")
 
     # Only once every COPY is in: a failure above should leave the hours of
     # parsing on disk rather than make them be done again.
@@ -481,6 +586,89 @@ def build(dump: Path, out: Path) -> tuple[int, int]:
     return nodes, edges
 
 
+def chain_schema() -> pa.Schema:
+    """The containment file's layout. A function because pyarrow is imported
+    where it is used rather than at the top - CI has neither it nor ladybug."""
+    import pyarrow as pa
+    return pa.schema([("subj", pa.int64()), ("prop", pa.int64()),
+                      ("obj", pa.int64())])
+
+
+def columns(batch: pa.RecordBatch) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(subject, property, object), whichever of the two layouts this batch has.
+
+    `stage` writes (subj, obj, property) because a rel COPY reads the endpoints
+    first and the properties after them; the graph query returns (subj, prop,
+    obj). The same three columns either way, and the reader should not care
+    which of the two it was handed.
+    """
+    prop = "prop" if "prop" in batch.schema.names else "property"
+    return (batch.column("subj").to_numpy(), batch.column(prop).to_numpy(),
+            batch.column("obj").to_numpy())
+
+
+def edge_tables(source: Path, out: Path) -> tuple[Path, Path, list[Path]]:
+    """(every edge, containment edges, what to delete afterwards) as parquet.
+
+    **The graph database is optional, and on any machine that cannot hold it,
+    unwanted.** `export` uses `ladybug` for exactly one thing: to dump every
+    edge straight back out to parquet, unfiltered, so that the corpus
+    membership test can run over it in numpy. `stage` already wrote that
+    parquet on its way in. Going parquet -> graph -> parquet costs hours and a
+    22GB database to arrive at a file that was already on disk.
+
+    So a `.parquet` source is read where it lies. The `.lbdb` path is kept for
+    a graph somebody already has, and is the same query it always was.
+
+    This was found the hard way. Loading 876.7M edges into `ladybug` failed
+    four times on a 17GB machine - the buffer pool, then the checkpoint, then
+    the killer, then the buffer pool again - and every one of those failures
+    was in service of producing a file that `stage` had already produced.
+    """
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    chain_scratch = out.with_suffix(".chain.parquet")
+
+    if source.suffix == ".parquet":
+        # `stage` names its columns (subj, obj, property) because a rel COPY
+        # reads the endpoints first. Rename rather than rewrite 4.8GB.
+        started = time.time()
+        with pq.ParquetWriter(chain_scratch, chain_schema()) as writer:
+            for batch in pq.ParquetFile(source).iter_batches(
+                    batch_size=4_000_000):
+                p = batch.column("property").to_numpy()
+                keep = np.isin(p, CONTAINMENT)
+                if keep.any():
+                    writer.write_table(pa.table(
+                        [batch.column("subj").to_numpy()[keep],
+                         p[keep],
+                         batch.column("obj").to_numpy()[keep]],
+                        schema=chain_schema()))
+        print(f"  containment split out in {time.time() - started:.0f}s",
+              flush=True)
+        return source, chain_scratch, [chain_scratch]
+
+    import ladybug as lb
+
+    scratch = out.with_suffix(".raw.parquet")
+    con = lb.Connection(lb.Database(str(source), read_only=True))
+    started = time.time()
+    con.execute(
+        "COPY (MATCH (a:wikidata_node)-[r:wikidata_rel]->(b:wikidata_node) "
+        "RETURN a.qid AS subj, r.property AS prop, b.qid AS obj) "
+        f"TO '{scratch}'")
+    contain = ",".join(str(p) for p in CONTAINMENT)
+    con.execute(
+        "COPY (MATCH (a:wikidata_node)-[r:wikidata_rel]->(b:wikidata_node) "
+        f"WHERE r.property IN [{contain}] "
+        "RETURN a.qid AS subj, r.property AS prop, b.qid AS obj) "
+        f"TO '{chain_scratch}'")
+    print(f"  scanned in {time.time() - started:.0f}s", flush=True)
+    return scratch, chain_scratch, [scratch, chain_scratch]
+
+
 def export(dump: Path, out: Path, qids: set[int]) -> tuple[int, int, int]:
     """Write every usable statement about ``qids`` to a gzipped TSV.
 
@@ -494,36 +682,11 @@ def export(dump: Path, out: Path, qids: set[int]) -> tuple[int, int, int]:
     engine writes the same rows to a file in twenty seconds, and the filtering
     is a vectorised membership test after that.
     """
-    import ladybug as lb
     import numpy as np
     import pyarrow.parquet as pq
 
-    con = lb.Connection(lb.Database(str(dump), read_only=True))
-    scratch = out.with_suffix(".raw.parquet")
-    chain_scratch = out.with_suffix(".chain.parquet")
+    scratch, chain_scratch, mine_to_delete = edge_tables(dump, out)
 
-    # Unfiltered on purpose. The filter that used to live here - `r.property IN
-    # [nine numbers]` - is what made adding a relation cost another pass over
-    # 22GB, and the pass is not where the money goes: building the database is.
-    # It writes every edge to the scratch file instead, and the membership test
-    # below throws away the ones with no article at either end, which is most.
-    #
-    # Containment gets its own file, filtered, because the ancestry walk below
-    # reads its input CHAIN_DEPTH times. Six passes over every edge in Wikidata
-    # to find the two properties that mean "inside" is the one place where
-    # dropping the filter would have cost real time rather than disk.
-    started = time.time()
-    con.execute(
-        "COPY (MATCH (a:wikidata_node)-[r:wikidata_rel]->(b:wikidata_node) "
-        "RETURN a.qid AS subj, r.property AS prop, b.qid AS obj) "
-        f"TO '{scratch}'")
-    contain = ",".join(str(p) for p in CONTAINMENT)
-    con.execute(
-        "COPY (MATCH (a:wikidata_node)-[r:wikidata_rel]->(b:wikidata_node) "
-        f"WHERE r.property IN [{contain}] "
-        "RETURN a.qid AS subj, r.property AS prop, b.qid AS obj) "
-        f"TO '{chain_scratch}'")
-    print(f"  scanned in {time.time() - started:.0f}s", flush=True)
 
     corpus = np.sort(np.fromiter(qids, dtype=np.int64))
 
@@ -548,9 +711,7 @@ def export(dump: Path, out: Path, qids: set[int]) -> tuple[int, int, int]:
     for _ in range(CHAIN_DEPTH):
         found: list[np.ndarray] = []
         for batch in batches(chain_scratch):
-            s = batch.column("subj").to_numpy()
-            p = batch.column("prop").to_numpy()
-            o = batch.column("obj").to_numpy()
+            s, p, o = columns(batch)
             keep = among(s, frontier)
             if keep.any():
                 chain.extend(zip(s[keep].tolist(), p[keep].tolist(),
@@ -571,10 +732,14 @@ def export(dump: Path, out: Path, qids: set[int]) -> tuple[int, int, int]:
     statements = classed = 0
     with gzip.open(out, "wt", encoding="utf-8") as fh:
         fh.write(f"# format\t{FORMAT}\n# dump\t{dump.name}\n")
+        # Carried into the export rather than left beside it, because `--survey`
+        # is the thing that reads a hierarchy and its whole point is running on
+        # a machine that has this file and nothing else.
+        if (links := hierarchy_path(dump)).exists():
+            for line in links.read_text().splitlines():
+                fh.write(f"# subproperty\t{line}\n")
         for batch in batches():
-            s = batch.column("subj").to_numpy()
-            p = batch.column("prop").to_numpy()
-            o = batch.column("obj").to_numpy()
+            s, p, o = columns(batch)
             mine = among(s, corpus)
             usable = mine & (among(o, corpus) | (p == P_INSTANCE_OF))
             for subj, prop, obj in zip(s[usable].tolist(), p[usable].tolist(),
@@ -590,8 +755,11 @@ def export(dump: Path, out: Path, qids: set[int]) -> tuple[int, int, int]:
         for subj, prop, obj in sorted(set(chain)):
             fh.write(f"{subj}\t{prop}\t{obj}\tchain\n")
 
-    scratch.unlink()
-    chain_scratch.unlink()
+    # Only what this made. A staged edge file was here before the export and
+    # is the expensive thing on this disk; deleting it would mean parsing the
+    # dump again to change one line of `PROPERTY`.
+    for leftover in mine_to_delete:
+        leftover.unlink(missing_ok=True)
     return statements, classed, len(set(chain))
 
 
@@ -630,7 +798,7 @@ def read_export(path: Path) -> tuple[list[tuple[int, int, int]],
     return rows, parents, header
 
 
-def survey(path: Path) -> tuple[dict[int, int], dict[str, str]]:
+def survey(path: Path) -> tuple[dict[int, int], dict[str, str], dict[int, int]]:
     """How many statements the export holds per property, and its header.
 
     Streamed rather than collected: the file this reads is the one that holds
@@ -639,22 +807,53 @@ def survey(path: Path) -> tuple[dict[int, int], dict[str, str]]:
     """
     counts: dict[int, int] = defaultdict(int)
     header: dict[str, str] = {}
+    hierarchy: dict[int, int] = {}
     with gzip.open(path, "rt", encoding="utf-8") as fh:
         for line in fh:
             if line.startswith("#"):
                 parts = line[1:].split("\t")
-                if len(parts) >= 2:
+                if parts[0].strip() == "subproperty" and len(parts) >= 3:
+                    hierarchy[int(parts[1])] = int(parts[2])
+                elif len(parts) >= 2:
                     header[parts[0].strip()] = parts[1].strip()
                 continue
             fields = line.rstrip("\n").split("\t")
             if len(fields) > 3 and fields[3] == "chain":
                 continue
             counts[int(fields[1])] += 1
-    return dict(counts), header
+    return dict(counts), header, hierarchy
+
+
+def proposal(prop: int, hierarchy: dict[int, int]) -> tuple[int, str] | None:
+    """(ancestor, relation) if an unmapped property descends from a mapped one.
+
+    Walks `subproperty of` upwards. Bounded, because Wikidata contains cycles
+    in every hierarchy it has - `inside` is bounded for the same reason - and
+    because past a few hops "a kind of" has stopped meaning anything a walk
+    could use.
+
+    This proposes and does not decide. The map stays a table somebody wrote,
+    for the reason `build_plan` has three hand-written rules in it: `country`
+    on a place is where it is and on a *language* is where it is spoken, and no
+    hierarchy says so. A derived mapping would sweep in properties that need a
+    guard nobody has written yet, and a wrong answer on a card is worse than a
+    missing one.
+    """
+    seen = {prop}
+    at = prop
+    for _ in range(HIERARCHY_DEPTH):
+        parent = hierarchy.get(at)
+        if parent is None or parent in seen:
+            return None
+        if parent in PROPERTY:
+            return parent, PROPERTY[parent]
+        seen.add(parent)
+        at = parent
+    return None
 
 
 def report_survey(counts: dict[int, int], header: dict[str, str],
-                  limit: int = 40) -> None:
+                  hierarchy: dict[int, int], limit: int = 40) -> None:
     """Print the export's properties, unmapped first and biggest first.
 
     The unmapped list is the same thing `ingest.py --stats` prints for infobox
@@ -672,12 +871,34 @@ def report_survey(counts: dict[int, int], header: dict[str, str],
     print(f"{'mapped':>12s}  {'statements':>12s}  relation")
     for prop, n in sorted(mapped.items(), key=lambda kv: -kv[1]):
         print(f"{'P' + str(prop):>12s}  {n:>12,}  {PROPERTY[prop]}")
+    # Proposals first, because they are the ones with an answer attached.
+    # Wikidata says these are kinds of something already mapped, so the
+    # question they raise is "should this relation take them" rather than
+    # "what is P344". Neither is answered here: adding one is still an edit to
+    # `PROPERTY` that somebody makes on purpose.
+    proposals = [(p, n, *found) for p, n in unmapped.items()
+                 if (found := proposal(p, hierarchy)) is not None]
+    if proposals:
+        print(f"\n{'proposed':>12s}  {'statements':>12s}  because Wikidata "
+              f"calls it a kind of")
+        for prop, n, ancestor, relation in sorted(proposals,
+                                                  key=lambda r: -r[1])[:limit]:
+            print(f"{'P' + str(prop):>12s}  {n:>12,}  "
+                  f"P{ancestor} -> {relation}")
+    elif hierarchy:
+        print("\nno unmapped property descends from a mapped one")
+    else:
+        print("\nno property hierarchy in this export - it was cut before "
+              "`--build` collected one, so nothing can be proposed")
+
     print(f"\n{'unmapped':>12s}  {'statements':>12s}  "
           f"https://www.wikidata.org/wiki/Property:Pn")
-    for prop, n in sorted(unmapped.items(), key=lambda kv: -kv[1])[:limit]:
+    proposed_ids = {p for p, _n, _a, _r in proposals}
+    rest = {p: n for p, n in unmapped.items() if p not in proposed_ids}
+    for prop, n in sorted(rest.items(), key=lambda kv: -kv[1])[:limit]:
         print(f"{'P' + str(prop):>12s}  {n:>12,}")
-    if len(unmapped) > limit:
-        print(f"{'':>12s}  and {len(unmapped) - limit:,} more")
+    if len(rest) > limit:
+        print(f"{'':>12s}  and {len(rest) - limit:,} more")
 
 
 def inside(child: int, ancestor: int, parents: dict[int, set[int]]) -> bool:
@@ -1122,8 +1343,8 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.survey:
-        counts, header = survey(args.survey)
-        report_survey(counts, header)
+        counts, header, hierarchy = survey(args.survey)
+        report_survey(counts, header, hierarchy)
         return
 
     writing = bool(args.write)
