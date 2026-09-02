@@ -189,6 +189,7 @@ C_ASKED = 6     # topic `arg` has been asked about, of the archive or a person
 C_HEAT = 7      # attention stands at `arg` or above
 C_WITH = 8      # person `arg` is in the room the player is in
 C_TURN = 9      # the clock stands at `arg` or above: `arg` turns have been taken
+C_LOGGED = 10   # the archive's log holds `arg` questions or more, this game or before
 
 #: Action opcodes. `A_MOVE` and `A_SEND` take two bytes because each names
 #: something and a destination; everything else takes one.
@@ -203,7 +204,8 @@ A_SEND = 7      # move person `arg` to room `arg2`
 
 CONDITION_NAMES = {C_AT: "AT", C_HAVE: "HAVE", C_HERE: "HERE", C_FLAG: "FLAG",
                    C_NFLAG: "NFLAG", C_CARRYING: "CARRYING", C_ASKED: "ASKED",
-                   C_HEAT: "HEAT", C_WITH: "WITH", C_TURN: "TURN"}
+                   C_HEAT: "HEAT", C_WITH: "WITH", C_TURN: "TURN",
+                   C_LOGGED: "LOGGED"}
 ACTION_NAMES = {A_SET: "SET", A_CLEAR: "CLEAR", A_PRINT: "PRINT",
                 A_GOTO: "GOTO", A_MOVE: "MOVE", A_HEAT: "HEAT",
                 A_COOL: "COOL", A_SEND: "SEND"}
@@ -280,6 +282,29 @@ class World:
     #: no reachable state satisfies is a game that cannot be finished, and
     #: that is a build-time question rather than a playtesting one.
     goal: list[tuple[int, int]] = field(default_factory=list)
+    #: What the card files are called: `SILO1.SAV` to `SILO9.SAV` for the
+    #: slots and `SILO.LOG` for the archive's log. Four characters at most so
+    #: that a slot digit and an extension still make an 8.3 name.
+    save_name: str = "SILO"
+
+    @property
+    def stamp(self) -> int:
+        """Two bytes that say which world a save file belongs to.
+
+        The overlay is a run of bytes with no names in it, so a save from a
+        world with the same number of things and flags loads into another
+        without complaint and puts the player somewhere that does not exist.
+        This is the shape of the overlay and of the tables the rules index,
+        hashed - deliberately *not* the prose, because editing a room
+        description must not invalidate every saved game.
+        """
+        shape = (len(self.rooms), len(self.things), self.flags, len(self.rules),
+                 len(self.topics), len(self.people), len(self.messages),
+                 len(self.lines))
+        stamp = 0
+        for value in shape:
+            stamp = (stamp * 31 + value) & 0xFFFF
+        return stamp
 
     def check(self) -> None:
         """Refuse a world that cannot be walked, before anything is emitted.
@@ -303,6 +328,11 @@ class World:
         if not 0 <= self.start < len(self.rooms):
             raise ValueError(f"the game starts in room {self.start}, which "
                              f"is not one of {len(self.rooms)}")
+        if not (1 <= len(self.save_name) <= 4 and self.save_name.isalnum()
+                and self.save_name.isascii() and self.save_name.isupper()):
+            raise ValueError(f"save_name {self.save_name!r} is not one to four "
+                             f"upper-case letters or digits, so a slot digit "
+                             f"and .SAV would not make an 8.3 filename")
 
         for index, room in enumerate(self.rooms):
             for direction, target in room.exits.items():
@@ -573,6 +603,9 @@ class World:
             # that can never fire, and `dead_rules` would not see it.
             raise ValueError(f"{where}: TURN {arg}, and the clock counts "
                              f"from 1 to 255")
+        if name == "LOGGED" and not 1 <= arg <= 255:
+            raise ValueError(f"{where}: LOGGED {arg}, and the log is counted "
+                             f"from 1 to 255")
 
     @property
     def overlay_bytes(self) -> int:
@@ -703,12 +736,13 @@ class World:
             return arg in flags
         if op == C_CARRYING:
             return len(held) >= arg
-        # `C_NFLAG`, and `C_ASKED`, `C_HEAT`, `C_WITH` and `C_TURN` with it.
-        # The fall-through is not laziness about the four new ones: this
-        # analysis is a ceiling and every one of them is something a player
-        # can bring about by typing - any topic can be raised, attention only
-        # climbs when it is, a person stands in a room, and the clock reaches
-        # any deadline given enough `LOOK`s. Answering `True` keeps the error
+        # `C_NFLAG`, and `C_ASKED`, `C_HEAT`, `C_WITH`, `C_TURN` and
+        # `C_LOGGED` with it. The fall-through is not laziness about the five
+        # new ones: this analysis is a ceiling and every one of them is
+        # something a player can bring about by typing - any topic can be
+        # raised, attention only climbs when it is, a person stands in a room,
+        # the clock reaches any deadline given enough `LOOK`s, and the log
+        # grows with every question. Answering `True` keeps the error
         # pointing upward, which is the property `reach` rests on.
         #
         # `explore` is where these are decided exactly, at the cost of an
@@ -802,6 +836,7 @@ class World:
         """
         cap = self._heat_cap()
         clock_cap = self._clock_cap()
+        log_cap = self._logged_cap()
         start = _State(
             here=self.start, at_terminal=False,
             where=tuple(t.at for t in self.things),
@@ -826,7 +861,7 @@ class World:
         while queue:
             state = queue.pop(0)
             for command, successor in self._moves(state, cap, seen_msgs,
-                                                  spoken, clock_cap):
+                                                  spoken, clock_cap, log_cap):
                 if successor in parents:
                     continue
                 if len(parents) >= max_states:
@@ -892,8 +927,22 @@ class World:
         deadlines += [arg for op, arg in self.goal if op == C_TURN]
         return max(deadlines, default=0)
 
+    def _logged_cap(self) -> int:
+        """The most questions any condition counts; the log stops there.
+
+        The search starts the log at zero, which is a fresh card. A card that
+        already holds a log from an earlier game starts higher, and what that
+        opens is exactly what `C_LOGGED` is for - so a rule keyed on it is
+        one `explore` reaches by asking, and one the device may also fire on
+        the opening pass. Both are what the author meant.
+        """
+        counts = [arg for rule in self.rules for op, arg in rule.when
+                  if op == C_LOGGED]
+        counts += [arg for op, arg in self.goal if op == C_LOGGED]
+        return max(counts, default=0)
+
     def _moves(self, state: _State, cap: int, printed: set[int],
-               spoken: set[int], clock_cap: int = 0
+               spoken: set[int], clock_cap: int = 0, log_cap: int = 0
                ) -> list[tuple[str, _State]]:
         """Every command that is legal here, and where it leads."""
         out: list[tuple[str, _State]] = []
@@ -909,7 +958,8 @@ class World:
                 asked = _set(state.asked, index, 1)
                 turn(f"archive {topic.words[0].lower()}",
                      state._replace(asked=asked,
-                                    heat=min(cap, state.heat + topic.heat)))
+                                    heat=min(cap, state.heat + topic.heat),
+                                    logged=min(log_cap, state.logged + 1)))
             return out
 
         # A turn that does nothing but let the rules run. Not padding: rules
@@ -1002,6 +1052,8 @@ class World:
             return state.pwhere[arg] == state.here
         if op == C_TURN:
             return state.turn >= arg
+        if op == C_LOGGED:
+            return state.logged >= arg
         raise ValueError(f"no condition {op}")
 
     def _apply(self, state: _State, op: int, arg: int, arg2: int, cap: int,
@@ -1044,6 +1096,9 @@ class _State(NamedTuple):
     pwhere: tuple[int, ...]
     #: Turns taken, clamped at the latest deadline any condition reads.
     turn: int = 0
+    #: Questions the archive has logged, clamped the same way. Not overlay:
+    #: the device re-counts it from the file, which is the truth.
+    logged: int = 0
 
 
 def _set(values: tuple[int, ...], index: int, value: int) -> tuple[int, ...]:

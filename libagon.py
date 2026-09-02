@@ -35,6 +35,23 @@ MOS_GETKEY = 0x00
 # makes: one call, no handle to leak, and it exists in every MOS version, which
 # matters because MOS itself cannot be exercised in CI. See tools/mostest.py.
 MOS_LOAD = 0x01
+# The handle-based half, which a saved game needs because `mos_load` cannot
+# say how many bytes it read and `mos_save` does not exist in every MOS.
+MOS_FOPEN = 0x0A        # HL=filename, C=mode -> A=handle (0 = failed)
+MOS_FCLOSE = 0x0B       # C=handle
+MOS_FREAD = 0x1A        # C=handle, HL=buffer, DE=count -> DE=bytes read
+MOS_FWRITE = 0x1B       # C=handle, HL=buffer, DE=count -> DE=bytes written
+MOS_FLSEEK = 0x1C       # C=handle, HL=offset (low 24 bits), E=high byte
+
+# FatFs open modes, which MOS passes straight through to `f_open`.
+FA_READ = 0x01
+FA_WRITE = 0x02
+FA_CREATE_NEW = 0x04
+FA_CREATE_ALWAYS = 0x08
+FA_OPEN_ALWAYS = 0x10
+# Open or create, and start at the end. This is the archive's log: two bytes
+# a question, and nothing ever reads the length back to seek to it.
+FA_OPEN_APPEND = 0x30
 
 # Character codes.
 AGON_CR = 13

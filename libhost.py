@@ -22,7 +22,18 @@ from typing import Any, ClassVar
 # restated: the emulator's idea of where BDOS sits and the code generator's have
 # to agree, and the surest way to guarantee that is to have only one of them.
 from libagon import AGON_CR
+from libagon import FA_CREATE_ALWAYS as AGON_FA_CREATE_ALWAYS
+from libagon import FA_CREATE_NEW as AGON_FA_CREATE_NEW
+from libagon import FA_OPEN_ALWAYS as AGON_FA_OPEN_ALWAYS
+from libagon import FA_OPEN_APPEND as AGON_FA_OPEN_APPEND
+from libagon import FA_READ as AGON_FA_READ
+from libagon import FA_WRITE as AGON_FA_WRITE
 from libagon import MOS_API as AGON_MOS_API
+from libagon import MOS_FCLOSE as AGON_MOS_FCLOSE
+from libagon import MOS_FLSEEK as AGON_MOS_FLSEEK
+from libagon import MOS_FOPEN as AGON_MOS_FOPEN
+from libagon import MOS_FREAD as AGON_MOS_FREAD
+from libagon import MOS_FWRITE as AGON_MOS_FWRITE
 from libagon import MOS_GETKEY as AGON_MOS_GETKEY
 from libagon import MOS_LOAD as AGON_MOS_LOAD
 from libagon import MOS_OUTCHAR as AGON_MOS_OUTCHAR
@@ -419,23 +430,26 @@ MOS_RST_API = AGON_MOS_API
 MOS_GETKEY = AGON_MOS_GETKEY
 MOS_LOAD = AGON_MOS_LOAD
 
-MOS_FOPEN = 0x0A        # HL=filename, C=mode -> A=handle (0 = failed)
-MOS_FCLOSE = 0x0B       # C=handle
-MOS_FREAD = 0x1A        # C=handle, HL=buffer, DE=count -> DE=bytes read
-MOS_FWRITE = 0x1B       # C=handle, HL=buffer, DE=count -> DE=bytes written
-MOS_FLSEEK = 0x1C       # C=handle, HL=offset (low 24 bits), E=high byte
-
-#: FatFs open modes, which is what MOS passes straight through.
+#: The function numbers and FatFs modes live in `libagon` with the rest of the
+#: target's constants, so the program that calls them and the host that
+#: answers them read one definition. Re-exported here because every test of
+#: the file API imports them from the host.
 #:
 #: Saving needs two of these and not one: `mos_fwrite` is the call issue #62
 #: named, but a handle opened `FA_READ` cannot take it, so `mos_fopen` has to
-#: learn a mode it has never been given. Everything on the card until now has
+#: learn a mode it had never been given. Everything on the card until #75 had
 #: been read-only by construction.
-FA_READ = 0x01
-FA_WRITE = 0x02
-FA_CREATE_NEW = 0x04
-FA_CREATE_ALWAYS = 0x08
-FA_OPEN_ALWAYS = 0x10
+MOS_FOPEN = AGON_MOS_FOPEN
+MOS_FCLOSE = AGON_MOS_FCLOSE
+MOS_FREAD = AGON_MOS_FREAD
+MOS_FWRITE = AGON_MOS_FWRITE
+MOS_FLSEEK = AGON_MOS_FLSEEK
+FA_READ = AGON_FA_READ
+FA_WRITE = AGON_FA_WRITE
+FA_CREATE_NEW = AGON_FA_CREATE_NEW
+FA_CREATE_ALWAYS = AGON_FA_CREATE_ALWAYS
+FA_OPEN_ALWAYS = AGON_FA_OPEN_ALWAYS
+FA_OPEN_APPEND = AGON_FA_OPEN_APPEND
 
 #: Agon SRAM. A load outside this window would be discarded by the hardware or
 #: land in flash; the emulator's memory is a plain bytearray that would happily
@@ -545,7 +559,7 @@ class AgonHost(_StdinKeys):
         name = self.read_cstring(cpu.hl).upper()
         mode = cpu.c
         if mode & ~(FA_READ | FA_WRITE | FA_CREATE_NEW | FA_CREATE_ALWAYS
-                    | FA_OPEN_ALWAYS):
+                    | FA_OPEN_ALWAYS | FA_OPEN_APPEND):
             raise Z80Error(f"mos_fopen mode {mode:02X} is not emulated")
 
         writing = bool(mode & FA_WRITE)
@@ -560,8 +574,13 @@ class AgonHost(_StdinKeys):
             cpu.a = 0
             return True
 
+        # `FA_OPEN_APPEND` is `FA_OPEN_ALWAYS` plus a bit that means start at
+        # the end, which is what FatFs does with it and the whole of what the
+        # archive's log needs.
+        appending = (mode & FA_OPEN_APPEND) == FA_OPEN_APPEND
+        position = len(self.files[name]) if appending else 0
         handle = next(i for i in range(1, 256) if i not in self.handles)
-        self.handles[handle] = [name, 0, writing]
+        self.handles[handle] = [name, position, writing]
         cpu.a = handle
         return True
 

@@ -36,6 +36,17 @@ from pathlib import Path
 
 import libagonio
 import libworld
+from libagon import (
+    FA_CREATE_ALWAYS,
+    FA_OPEN_APPEND,
+    FA_READ,
+    FA_WRITE,
+    MOS_API,
+    MOS_FCLOSE,
+    MOS_FOPEN,
+    MOS_FREAD,
+    MOS_FWRITE,
+)
 from libagonio import MOS_OUTCHAR
 from libez80 import AGON_LOAD_ADDR, AGON_SRAM_TOP, EZ80Builder, agon_header
 from libworld import CARRIED, DIRECTIONS, NOWHERE, World
@@ -100,6 +111,11 @@ V_EXAMINE = V_USE + 1
 #: same words and answer out of different tables, and one verb would have had
 #: to guess which was meant.
 V_ASK = V_EXAMINE + 1
+#: The overlay to a slot on the card, and back. Neither is a turn: the rules
+#: do not run and the clock does not tick, so a game saved and restored plays
+#: on exactly as one that was not - which `tests/test_save.py` holds it to.
+V_SAVE = V_ASK + 1
+V_RESTORE = V_SAVE + 1
 
 #: Stack margin below the top of SRAM, matching every other Agon build here.
 STACK_MARGIN = 0x1000
@@ -125,7 +141,8 @@ def _words(world: World) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
               ("USE", V_USE), ("CONSULT", V_USE),
               ("EXAMINE", V_EXAMINE), ("X", V_EXAMINE),
               ("READ", V_EXAMINE),
-              ("ASK", V_ASK), ("TALK", V_ASK)]
+              ("ASK", V_ASK), ("TALK", V_ASK),
+              ("SAVE", V_SAVE), ("RESTORE", V_RESTORE), ("LOAD", V_RESTORE)]
 
     nouns = [(thing.name.upper(), index)
              for index, thing in enumerate(world.things)]
@@ -182,7 +199,7 @@ def build(world: World, org: int = AGON_LOAD_ADDR) -> EZ80Builder:
     b.label("START")
     b.ld_a_n(world.start)
     b.ld_mem_label_a("HERE")
-    _emit_reset_things(b, world)
+    emit_reset(b, world)
     b.ld_hl_label("WBANNER")
     b.call("PRWRAP")
     b.call("PRNL")
@@ -191,6 +208,10 @@ def build(world: World, org: int = AGON_LOAD_ADDR) -> EZ80Builder:
     # --- the turn loop --------------------------------------------------------
     b.label("TURN")
     b.call("RULES_RUN")              # the world reacts before it asks again
+    # Where a command that is not a turn comes back to: an empty line, a
+    # save, a restore. Nothing the world can notice happened, so the rules do
+    # not run and the clock does not tick.
+    b.label("NOTURN")
     b.call("PRNL")
     b.ld_hl_label("WPROMPT")
     b.call("PRSTR")
@@ -231,7 +252,7 @@ def emit_dispatch(b: EZ80Builder, quit_label: str) -> None:
     b.call("SPLIT")                  # INPBUF -> W1LEN/W1, W2LEN/W2
     b.ld_a_mem_label("W1LEN")
     b.or_a()
-    b.jp_z("TURN")                   # an empty line is not a turn
+    b.jp_z("NOTURN")                 # an empty line is not a turn
 
     b.ld_hl_label("VERBS")
     b.ld_de_label("W1")
@@ -256,6 +277,10 @@ def emit_dispatch(b: EZ80Builder, quit_label: str) -> None:
     b.jp_z("DO_EXAM")
     b.cp_n(V_ASK)
     b.jp_z("DO_ASK")
+    b.cp_n(V_SAVE)
+    b.jp_z("DO_SAVE")
+    b.cp_n(V_RESTORE)
+    b.jp_z("DO_RESTORE")
     b.jp("DO_GO")                    # below LOOK: the id is a direction
 
     b.label("DO_LOOK")
@@ -274,8 +299,16 @@ def emit_dispatch(b: EZ80Builder, quit_label: str) -> None:
 
 
 def emit_reset(b: EZ80Builder, world: World) -> None:
-    """Put every thing back where it starts. Exposed for the merged build."""
+    """Put every thing back where it starts, and read what the card remembers.
+
+    Exposed for the merged build. `LOGCOUNT` is here rather than in `START`
+    because both programs start a game the same way, and the archive's log
+    is the one thing on the card that outlives one: a fresh game on a card
+    that already holds a log starts with `LOGGED` at its length, which is
+    how the Voice knows it has met this player before.
+    """
     _emit_reset_things(b, world)
+    b.call("LOGCOUNT")
 
 
 def emit_world_routines(b: EZ80Builder, world: World,
@@ -309,6 +342,7 @@ def emit_world_routines(b: EZ80Builder, world: World,
     _emit_ask(b, world)
     _emit_attention(b, world)
     _emit_rules(b, world)
+    _emit_save_restore(b, world)
 
 
 def emit_world_tables(b: EZ80Builder, world: World) -> None:
@@ -1380,11 +1414,23 @@ def _emit_rule_test(b: EZ80Builder, world: World) -> None:
     # after the pass and not before - see `_emit_rules`.
     b.label("RT_TURN")
     b.cp_n(libworld.C_TURN)
-    b.jr_nz("RT_WITH")
+    b.jr_nz("RT_LOGGED")
     b.ld_a_mem_label("CLOCK")
     b.ld_hl_label("RU_ARG")
     b.cp_hl()
     b.jp_c("RT_NO")                  # not yet
+    b.jp("RT_YES")
+
+    # The archive's log, which is the one counter here that a previous game
+    # can have left behind. `LOGGED` is read off the card when a game starts
+    # and `LOGAPPEND` keeps it in step from then on.
+    b.label("RT_LOGGED")
+    b.cp_n(libworld.C_LOGGED)
+    b.jr_nz("RT_WITH")
+    b.ld_a_mem_label("LOGGED")
+    b.ld_hl_label("RU_ARG")
+    b.cp_hl()
+    b.jp_c("RT_NO")
     b.jp("RT_YES")
 
     b.label("RT_WITH")
@@ -1580,7 +1626,237 @@ MESSAGES: dict[str, str] = {
     "MSGASKWHO": "Who do you want to ask?",
     "MSGASKWHAT": "What do you want to ask about?",
     "MSGASKGONE": "They are not here.",
+    "MSGSAVED": "Saved.",
+    "MSGRESTORED": "Restored.",
+    "MSGSLOT": "Which slot? 1 to 9.",
+    "MSGNOSAVE": "There is no saved game in that slot.",
+    "MSGBADSAVE": "That is not a saved game for this silo.",
+    "MSGNOWRITE": "The card would not take it.",
 }
+
+
+def _emit_save_restore(b: EZ80Builder, world: World) -> None:
+    """`SAVE [n]`, `RESTORE [n]`, and the archive's log.
+
+    A saved game is a four-byte header and the overlay, copied into `SAVEBUF`
+    so that it goes to the card in one `mos_fwrite` and comes back in one
+    `mos_fread`. The header is `SV` and `World.stamp`, and a restore that
+    finds any other header - or fewer bytes than the file should hold -
+    touches nothing, because the overlay is a run of bytes with no names in
+    it and a save from another world would load without complaint.
+
+    Neither verb is a turn. Both come back through `NOTURN`, so the rules do
+    not run and the clock does not tick, and a game saved and restored plays
+    on as one that was not. `ATTERM` is cleared on a restore because standing
+    up is what a restore does.
+
+    The log is different: `LOGAPPEND` puts `(CLOCK, topic)` on the end of
+    `SILO.LOG` for every question the archive sees, `LOGCOUNT` reads the
+    length back when a game starts, and `C_LOGGED` lets a rule read it.
+    `LOGGED` is outside the overlay on purpose - the file is the truth and
+    the byte is its length - so a restore leaves it alone: the archive does
+    not forget what it was asked because the player wound the clock back.
+    """
+    size = 4 + world.overlay_bytes
+    prefix = len(world.save_name)
+
+    b.label("DO_SAVE")
+    b.call("SLOT")
+    b.jp_c("NOTURN")
+    b.ld_hl_label("SAVEHDR")
+    b.ld_de_label("SAVEBUF")
+    b.ld_bc_nn(4)
+    b.ldir()
+    b.ld_hl_label("HERE")
+    b.ld_de_label("SAVEOVL")
+    b.ld_bc_nn(world.overlay_bytes)
+    b.ldir()
+    b.ld_hl_label("SAVNAME")
+    b.ld_c_n(FA_WRITE | FA_CREATE_ALWAYS)
+    b.ld_a_n(MOS_FOPEN)
+    b.rst(MOS_API)
+    b.or_a()
+    b.jr_z("SV_FAIL")
+    b.ld_mem_label_a("SAVEH")
+    b.ld_c_a()
+    b.ld_hl_label("SAVEBUF")
+    b.ld_de_nn(size)
+    b.ld_a_n(MOS_FWRITE)
+    b.rst(MOS_API)
+    b.push_de()                      # DE = bytes written
+    b.call("SAVECLOSE")
+    b.pop_de()
+    b.ld_hl_nn(size)
+    b.or_a()
+    b.sbc_hl_de()
+    b.jr_nz("SV_FAIL")               # a short write is a failed save
+    b.ld_hl_label("MSGSAVED")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("NOTURN")
+
+    b.label("SV_FAIL")
+    b.ld_hl_label("MSGNOWRITE")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("NOTURN")
+
+    b.label("SAVECLOSE")
+    b.ld_a_mem_label("SAVEH")
+    b.ld_c_a()
+    b.ld_a_n(MOS_FCLOSE)
+    b.rst(MOS_API)
+    b.ret()
+
+    b.label("DO_RESTORE")
+    b.call("SLOT")
+    b.jp_c("NOTURN")
+    b.ld_hl_label("SAVNAME")
+    b.ld_c_n(FA_READ)
+    b.ld_a_n(MOS_FOPEN)
+    b.rst(MOS_API)
+    b.or_a()
+    b.jr_z("RS_NONE")
+    b.ld_mem_label_a("SAVEH")
+    b.ld_c_a()
+    b.ld_hl_label("SAVEBUF")
+    b.ld_de_nn(size)
+    b.ld_a_n(MOS_FREAD)
+    b.rst(MOS_API)
+    b.push_de()                      # DE = bytes read
+    b.call("SAVECLOSE")
+    b.pop_de()
+    b.ld_hl_nn(size)
+    b.or_a()
+    b.sbc_hl_de()
+    b.jr_nz("RS_BAD")                # short, so not one of ours
+    b.ld_hl_label("SAVEHDR")
+    b.ld_de_label("SAVEBUF")
+    b.ld_b_n(4)
+    b.label("RS_CMP")
+    b.ld_a_de()
+    b.cp_hl()
+    b.jr_nz("RS_BAD")                # another world's, or not a save at all
+    b.inc_hl()
+    b.inc_de()
+    b.djnz("RS_CMP")
+    b.ld_hl_label("SAVEOVL")
+    b.ld_de_label("HERE")
+    b.ld_bc_nn(world.overlay_bytes)
+    b.ldir()
+    b.xor_a()
+    b.ld_mem_label_a("ATTERM")       # standing up is what a restore does
+    b.ld_hl_label("MSGRESTORED")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.call("DESCRIBE")
+    b.jp("NOTURN")
+
+    b.label("RS_NONE")
+    b.ld_hl_label("MSGNOSAVE")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("NOTURN")
+
+    b.label("RS_BAD")
+    b.ld_hl_label("MSGBADSAVE")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("NOTURN")
+
+    # SLOT: W2 -> the digit in SAVNAME. No word means slot 1. Carry set,
+    # and the complaint already printed, for anything that is not 1 to 9.
+    b.label("SLOT")
+    b.ld_a_mem_label("W2LEN")
+    b.or_a()
+    b.jr_z("SL_ONE")
+    b.cp_n(1)
+    b.jr_nz("SL_BAD")
+    b.ld_a_mem_label("W2")
+    b.cp_n(ord("1"))
+    b.jr_c("SL_BAD")
+    b.cp_n(ord("9") + 1)
+    b.jr_nc("SL_BAD")
+    b.jr("SL_SET")
+    b.label("SL_ONE")
+    b.ld_a_n(ord("1"))
+    b.label("SL_SET")
+    b.ld_mem_label_a("SAVNAME", prefix)
+    b.or_a()
+    b.ret()
+    b.label("SL_BAD")
+    b.ld_hl_label("MSGSLOT")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.scf()
+    b.ret()
+
+    # LOGCOUNT: LOGGED = min(255, records in the log), or 0 with no log. Two
+    # bytes a read rather than the file into a buffer, because the count is
+    # all that is wanted and nothing here has to know how long a log can get.
+    b.label("LOGCOUNT")
+    b.xor_a()
+    b.ld_mem_label_a("LOGGED")
+    b.ld_hl_label("LOGNAME")
+    b.ld_c_n(FA_READ)
+    b.ld_a_n(MOS_FOPEN)
+    b.rst(MOS_API)
+    b.or_a()
+    b.ret_z()
+    b.ld_mem_label_a("SAVEH")
+    b.label("LC_LP")
+    b.ld_a_mem_label("SAVEH")
+    b.ld_c_a()
+    b.ld_hl_label("LOGREC")
+    b.ld_de_nn(2)
+    b.ld_a_n(MOS_FREAD)
+    b.rst(MOS_API)
+    b.ld_a_e()
+    b.cp_n(2)
+    b.jr_nz("LC_END")                # short read: the end of the log
+    b.ld_a_mem_label("LOGGED")
+    b.cp_n(255)
+    b.jr_z("LC_LP")
+    b.inc_a()
+    b.ld_mem_label_a("LOGGED")
+    b.jr("LC_LP")
+    b.label("LC_END")
+    b.jp("SAVECLOSE")
+
+    # LOGAPPEND: (CLOCK, LOGTOP) onto the end of the log. Only the merged
+    # build calls it - the standalone world has no archive to be asked - but
+    # it is emitted with the rest so the two programs read one definition.
+    b.label("LOGAPPEND")
+    b.ld_a_mem_label("CLOCK")
+    b.ld_mem_label_a("LOGREC")
+    b.ld_a_mem_label("LOGTOP")
+    b.ld_mem_label_a("LOGREC", 1)
+    b.ld_hl_label("LOGNAME")
+    b.ld_c_n(FA_WRITE | FA_OPEN_APPEND)
+    b.ld_a_n(MOS_FOPEN)
+    b.rst(MOS_API)
+    b.or_a()
+    b.ret_z()                        # a card that will not take it: unlogged
+    b.ld_mem_label_a("SAVEH")
+    b.ld_c_a()
+    b.ld_hl_label("LOGREC")
+    b.ld_de_nn(2)
+    b.ld_a_n(MOS_FWRITE)
+    b.rst(MOS_API)
+    b.call("SAVECLOSE")
+    b.ld_a_mem_label("LOGGED")
+    b.cp_n(255)
+    b.ret_z()
+    b.inc_a()
+    b.ld_mem_label_a("LOGGED")
+    b.ret()
+
+    # The header a save file starts with. `SV`, then the world's stamp.
+    b.label("SAVEHDR")
+    b.db(ord("S"))
+    b.db(ord("V"))
+    b.db(world.stamp & 0xFF)
+    b.db(world.stamp >> 8)
 
 
 def _emit_tables(b: EZ80Builder, world: World,
@@ -1749,10 +2025,16 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
     b.label("PWHERE")
     b.ds(max(1, len(world.people)))
 
+    # After the overlay and not in it: the length of the archive's log, which
+    # the card holds. Saving it would let a restore forget questions the
+    # archive has on record.
+    b.label("LOGGED")
+    b.db(0)
+
     # Everything below is scratch that does not outlive a turn.
     scratch = ["VERB", "W1LEN", "W2LEN", "W3LEN", "LKLEN", "NCARRIED",
                "RU_ONCE", "RU_NC", "RU_NA", "RU_OP", "RU_ARG", "RU_ARG2",
-               "RU_CNT", "ATTERM", "ASKWHO", "ASKTOP"]
+               "RU_CNT", "ATTERM", "ASKWHO", "ASKTOP", "LOGTOP", "SAVEH"]
     if not shared_console:
         scratch += ["WRAPCOL", "INPLEN"]
     for name in scratch:
@@ -1771,6 +2053,22 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
     if not shared_console:
         b.label("INPBUF")
         b.ds(MAX_INPUT_LEN + 1)
+
+    # The card's side of a saved game. `SAVNAME` carries its slot digit at
+    # `len(save_name)`, which `SLOT` overwrites; the buffers are what one
+    # `mos_fwrite` or `mos_fread` moves in a piece.
+    b.label("SAVNAME")
+    b.ascii(f"{world.save_name}1.SAV")
+    b.db(0)
+    b.label("LOGNAME")
+    b.ascii(f"{world.save_name}.LOG")
+    b.db(0)
+    b.label("SAVEBUF")
+    b.ds(4)
+    b.label("SAVEOVL")
+    b.ds(world.overlay_bytes)
+    b.label("LOGREC")
+    b.ds(2)
 
 
 def overlay_at(builder: EZ80Builder, world: World) -> tuple[int, int]:

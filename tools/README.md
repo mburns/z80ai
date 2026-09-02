@@ -154,3 +154,21 @@ behaviour — `mos_getkey` returning what `libhost.AgonHost` assumes, for
 instance — nor about timing, interrupts or the VDP. A full `.bin` booting under
 MOS would cover those, but MOS did not boot in this emulator on this machine,
 which is why the probe bypasses it.
+
+## `mostest.py` — validate `libhost`'s MOS against the real one
+
+```bash
+python tools/mostest.py                     # what libhost says
+python tools/mostest.py -o MOSTEST.bin --data MOSTEST.DAT
+# copy both to a card, run MOSTEST from MOS, compare line for line
+```
+
+Three probes, one line each: `mos_load` of a file that exists, of one that
+does not, and — since save and restore — a file the probe itself creates
+with `mos_fopen`/`mos_fwrite`/`mos_fclose`, appends to with `FA_OPEN_APPEND`,
+and loads back. That last line is the whole surface a saved game and the
+archive's log depend on.
+
+**The `WRITTEN` line has not been run on hardware yet.** `libhost` says
+`00 C0FFEE010203` and zeros; the first Agon to run it should have its answer
+recorded here beside the `optest.py` table.

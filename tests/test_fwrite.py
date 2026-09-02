@@ -151,10 +151,27 @@ def test_writing_to_a_read_handle_is_refused():
 
 
 def test_a_mode_the_host_does_not_emulate_raises():
+    """0x40 is no FatFs mode at all. (0x30, `FA_OPEN_APPEND`, used to be the
+    example here, until the archive's log needed it.)"""
     host = AgonHost(stdin=[], files={})
     with pytest.raises(Z80Error, match="not emulated"):
-        host.run(program(saver("S.BIN", b"x", mode=0x30)),
+        host.run(program(saver("S.BIN", b"x", mode=0x40)),
                  max_cycles=1_000_000)
+
+
+def test_appending_starts_at_the_end():
+    """`FA_OPEN_APPEND` is what the archive's log is written with: open or
+    create, and every write lands after what is there."""
+    from libhost import FA_OPEN_APPEND
+
+    host = AgonHost(stdin=[], files={"S.BIN": b"abc"})
+    host.run(program(saver("S.BIN", b"de", mode=FA_WRITE | FA_OPEN_APPEND)),
+             max_cycles=1_000_000)
+    assert host.files["S.BIN"] == b"abcde"
+    fresh = AgonHost(stdin=[], files={})
+    fresh.run(program(saver("S.BIN", b"de", mode=FA_WRITE | FA_OPEN_APPEND)),
+              max_cycles=1_000_000)
+    assert fresh.files["S.BIN"] == b"de"
 
 
 def test_a_write_from_outside_sram_is_refused():

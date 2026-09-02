@@ -266,6 +266,9 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     b.label("MAINLOOP")
     if world is not None:
         b.call("RULES_RUN")
+        # An empty line, a save or a restore comes back here: no rule pass,
+        # no tick. The same label `buildif.build` defines, for the same jumps.
+        b.label("NOTURN")
     b.call("PRNL")
     b.ld_hl_label("TERMPROMPT" if world is not None else "PROMPT")
     if world is not None:
@@ -279,7 +282,7 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
 
     b.ld_a_mem_label("INPLEN")
     b.or_a()
-    b.jr_z("MAINLOOP")
+    b.jr_z("NOTURN" if world is not None else "MAINLOOP")
     b.ld_a_mem_label("INPBUF")
     b.cp_n(ord("!"))
     b.jp_z("QUIT")
@@ -1046,7 +1049,12 @@ def _emit_notice(b: EZ80Builder, world: libworld.World) -> None:
     b.label("NOTICE")
     b.ld_a_mem_label("BESTSC")
     b.or_a()
-    b.jr_z("NT_NONE")                # nothing matched: not about anything
+    b.jr_z("NT_QUIET")               # nothing matched: not about anything
+    # Anything that matched is logged, whether or not the world watches it.
+    # `LOGTOP` is the topic for the log, and 0xFF is a question about
+    # something the world has no name for - which the archive still saw.
+    b.ld_a_n(0xFF)
+    b.ld_mem_label_a("LOGTOP")
     if not rows:
         b.jr("NT_NONE")
     else:
@@ -1070,6 +1078,7 @@ def _emit_notice(b: EZ80Builder, world: libworld.World) -> None:
         b.label("NT_HIT")
         b.ld_a_ixd(3)
         b.ld_mem_label_a("ASKTOP")
+        b.ld_mem_label_a("LOGTOP")
         b.call("MARK_ASKED")
         b.ld_a_ixd(4)
         b.or_a()
@@ -1086,10 +1095,13 @@ def _emit_notice(b: EZ80Builder, world: libworld.World) -> None:
         b.ld_hl_ixd(5)
         b.call("PRWRAP")
         b.call("PRNL")
+        b.call("LOGAPPEND")          # a sealed question is still a question
         b.ld_a_n(1)
         b.ret()
 
     b.label("NT_NONE")
+    b.call("LOGAPPEND")
+    b.label("NT_QUIET")
     b.xor_a()
     b.ret()
 

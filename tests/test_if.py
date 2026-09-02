@@ -672,7 +672,9 @@ def test_a_world_costs_the_oracle_what_it_says(merged):
     world.terminal = 3
     plain = len(buildwikibin.build(600).code)
     carried = len(buildwikibin.build(600, world=world).code)
-    assert carried - plain < 5_000           # the world is the small half
+    # 4,434 before save and restore and the log; 5,512 with them. Still the
+    # small half, by a factor of seven.
+    assert carried - plain < 6_000
 
 
 # --- the world, before anything is emitted ------------------------------------

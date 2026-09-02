@@ -26,8 +26,10 @@ generator is last because it is what the rest is for.
       its tell. [#102](../../issues/102)
 - [ ] **The whole silo on one byte** - collapse a ring to one room with 72
       doors, then page the stair if a world needs more. [#103](../../issues/103)
-- [ ] **Save, restore, and a card the world writes to** - the overlay to a
-      slot file, the access log, series memory. [#104](../../issues/104)
+- [x] **Save, restore, and a card the world writes to** - `SAVE n` and
+      `RESTORE n` move the overlay in one write, neither is a turn, and the
+      archive's log is the series memory: a game opens knowing what the card
+      was asked before. [#104](../../issues/104)
 - [ ] **The archive as records** - `LOOKUP` on the card, and a name index that
       does not cost a byte per article. [#105](../../issues/105)
 - [ ] **Two subjects on the eZ80** - the second search, a `SHARED` step, a walk

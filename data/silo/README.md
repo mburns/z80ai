@@ -1982,8 +1982,9 @@ notice names who was sent out, the key names their flat, the photograph in that
 flat names who they married. Nothing about the objects is derived — the corpus
 has none — but everything they say is.
 
-What is still absent is save and restore on the device, and anything on the
-card that a turn writes.
+Save and restore are on the device now, and a question is the one thing a
+turn writes to the card: two bytes on the end of the archive's log, which the
+next game reads before its first prompt. [`IF.md`](../../IF.md) has both.
 ## Counting was not an aggregate after all
 
 "How many children does X have" was listed here as a question no path could
