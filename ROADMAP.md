@@ -28,8 +28,10 @@ generator is last because it is what the rest is for.
 - [ ] **The Voice hedges** - the margin between the classifier's top two,
       surfaced on the device as its tell. The rest of #102; wants the
       classifier in the binary.
-- [ ] **The whole silo on one byte** - collapse a ring to one room with 72
-      doors, then page the stair if a world needs more. [#103](../../issues/103)
+- [x] **The whole silo on one byte** - a dwelling is a door on its floor's
+      ring, knocked on by its number and never entered; 187 rooms and 2,088
+      doors, no overlay. Paging the stair turned out not to be needed.
+      [#103](../../issues/103)
 - [x] **Save, restore, and a card the world writes to** - `SAVE n` and
       `RESTORE n` move the overlay in one write, neither is a turn, and the
       archive's log is the series memory: a game opens knowing what the card

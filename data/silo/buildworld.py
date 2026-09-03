@@ -2,8 +2,9 @@
 """
 The silo you can walk, compiled out of the silo you can ask about.
 
-    python data/silo/buildworld.py                       # what fits, and why not more
+    python data/silo/buildworld.py                       # the stair and the departments
     python data/silo/buildworld.py --floors 2 -o SILO.bin
+    python data/silo/buildworld.py --floors all -o SILO.bin   # the whole silo
 
 `worlds.py` hand-authors six rooms, and says so: it exists because `buildif`
 needs a world to emit, not because six rooms is an Interactive Fiction. This
@@ -16,47 +17,48 @@ is already in there and has been since the schema was written:
     located_in                          a dwelling's level, a department's level
 
 `data/silo/schema.py` stores those two adjacencies as **edges rather than
-arithmetic**, for a reason that turns out to be the same reason this file is
-short: the machine that has to walk them has no modulo. A card walks them to
-answer "who lives next door". A world walks them to go east.
+arithmetic**, because the machine that has to walk them has no modulo. The
+card walks them to answer "who lives next door". The world used to walk
+them too - every dwelling was a room, `next_along` was `EAST` - and that is
+the design this file replaced, for a reason that was never the geometry.
 
-So nothing here invents geography, and nothing here invents prose either -
-every description is the `article` lead the corpus already carries. The
-compiler's whole job is to decide which entities become rooms and which edge
-becomes which direction.
+## A dwelling is a door, not a room
 
-## Which edge becomes which direction
+`libworld.NOWHERE` is `0xFF` and a room id is one byte, so 255 is the
+ceiling. 144 landings and 14 departments are 158 rooms, one residential
+floor of 72 dwellings is 72 more, and **one floor fit and two did not**. The
+silo has twenty-nine opened floors and 2,088 dwellings.
 
-`libworld.DIRECTIONS` is six because a silo needs six: four around and two
-along the stair. A floor is a circle around a stairwell, so:
+What a player wants from a dwelling is the name beside the door, and a
+one-sentence room they cannot enter is not a room. So an opened floor is
+*one* room - the corridor round the stair - and its 72 dwellings are 72
+doors on it, knocked on by their number:
 
-    EAST / WEST     next_along and its inverse - around the ring
-    NORTH / SOUTH   next_out and its inverse - outward and inward
-    UP / DOWN       the stair, which is the level number
+    > west
+    Level 42, the ring
+    > knock 600A
+    Apartment 42 600 A is a dwelling. The name beside the door is
+    Alexander E. Wong.
 
-with ring A's inward side opening onto the landing, because the stair is what
-the innermost ring is inside of. That is the only exit here the database does
-not contain: `next_out` stops at ring A rather than pointing at the stairwell,
-so the stairwell has to be joined on.
+A door is image and nothing else - `libworld.Door` has no overlay byte,
+because nothing about a door ever changes - and `KNOCK` scans only the
+doors of the room the player is in, which is why `600A` on every floor is
+the design rather than a collision. That is:
 
-## The wall is the room id, not the memory
+    144 landings + 14 departments + 29 rings    187 rooms, of 255
+    2,088 doors                                 no overlay at all
 
-`IF.md` measured 505 KB of SRAM free in a world binary and observed that at 12
-bytes a room that is more rooms than anybody will write. It is - and it is not
-what stops you, because `libworld.NOWHERE` is `0xFF` and a room id is one byte:
+The whole silo fits, with room ids to spare for whatever an author adds.
 
-    144 landings + 14 departments        158 rooms
-    one residential floor                 72 rooms
-                                         ---
-                                         230 rooms, and 255 is the ceiling
+What it gives up is walking the ring. `next_along` and `next_out` are still
+the card's business - "who lives next door" is a question - but a world no
+longer turns them into `EAST` and `NORTH`, and the stair is the only thing a
+floor has a direction to. The doors still come out of the `apartment` table
+in bearing order and the names beside them out of `residence`, so nothing
+here invents geography, and nothing here invents prose beyond the one
+sentence that says what a corridor is.
 
-**One floor fits and two do not**, and no amount of SRAM changes that. The
-silo has twenty-nine opened floors, so a world that wants all of them wants a
-two-byte room id - which costs every exit a byte in the image and buys 65,535
-rooms - or a world that streams floors off the card, which costs a turn the one
-thing `IF.md` says a turn must never cost.
-
-`build` refuses rather than truncating, and names the number.
+`build` still refuses rather than truncating past 255, and names the number.
 """
 
 from __future__ import annotations
@@ -74,22 +76,18 @@ import items
 import schema
 
 import buildif
-from libworld import NOWHERE, Room, Thing, World
+from libworld import NOWHERE, Door, Room, Thing, World
 
 #: The database the rest of `data/silo/` defaults to.
 DB_PATH = Path(__file__).resolve().parent.parent / "silo.db"
 
-#: `next_along` is thirty minutes clockwise, and clockwise on a floor plan is
-#: east. Its inverse is the way back.
-ALONG, AGAINST = "EAST", "WEST"
+#: Every floor that has dwellings, for `build(db, ALL)`.
+ALL = "all"
 
-#: `next_out` is one ring outward, away from the stair at the centre.
-OUT, IN = "NORTH", "SOUTH"
-
-#: Which ring the stairwell opens onto. `next_out` stops at ring A rather than
-#: pointing inward at the stair, so this is the one join the database does not
-#: carry.
-INNERMOST = schema.RINGS[0]
+#: The ring is off the landing to the west; the stair is east of the ring.
+#: The one exit here the database does not contain, because `next_out` stops
+#: at ring A rather than pointing inward at the stair.
+ONTO, OFF = "WEST", "EAST"
 
 
 class TooManyRooms(ValueError):
@@ -126,49 +124,59 @@ def _dwellings(db: sqlite3.Connection, floor: int) -> list[str]:
     return [address for (address,) in rows]
 
 
-def _rings(db: sqlite3.Connection, floor: int) -> dict[str, tuple[str, str]]:
-    """address -> (what is clockwise of it, what is outward of it).
-
-    Read rather than computed. The bearings are right there in the table and
-    `(bearing + 30) % 720` is two lines, which is exactly the temptation the
-    schema's docstring warns about: the corpus and the world would then have
-    two implementations of one circle, and they would agree until one of them
-    was edited.
-    """
-    along: dict[str, str] = {}
-    out: dict[str, str] = {}
+def _opened(db: sqlite3.Connection) -> tuple[int, ...]:
+    """Every floor with a dwelling on it, which is what `ALL` means."""
     rows = db.execute(
-        "SELECT e.subject, e.relation, e.object FROM edge e "
-        "JOIN apartment a ON a.source = e.source AND a.address = e.subject "
-        "WHERE e.source = ? AND a.floor = ? "
-        "  AND e.relation IN ('next_along', 'next_out')",
-        (schema.SOURCE, floor))
-    for subject, relation, obj in rows:
-        (along if relation == "next_along" else out)[subject] = obj
-    return {address: (along.get(address, ""), out.get(address, ""))
-            for address in set(along) | set(out)}
+        "SELECT DISTINCT floor FROM apartment WHERE source = ? ORDER BY floor",
+        (schema.SOURCE,))
+    return tuple(floor for (floor,) in rows)
 
 
-def _occupants(db: sqlite3.Connection, floor: int) -> dict[str, str]:
-    """address -> who lives there now, for the name on the door.
+def door_word(address: str) -> str:
+    """`42 600 A` -> `600A`: the bearing and ring, which is what is painted
+    on the door. The floor is the room the door is on."""
+    _floor, bearing, ring = address.split()
+    return f"{bearing}{ring}"
+
+
+def _occupants(db: sqlite3.Connection, floor: int) -> dict[str, list[str]]:
+    """address -> who lives there now, for the names on the door.
 
     `until IS NULL` is the living tenancy. Everybody else who ever had the
     flat is still in `residence`, and is the card's business rather than the
     world's - which is the division this whole pair of programs is about.
+
+    A list, because a flat is a household: the shipped corpus puts three
+    Butlers behind `2 600 A`, and a door that named one of them would be
+    quietly wrong about the other two.
     """
     rows = db.execute(
         "SELECT a.address, r.person FROM residence r "
         "JOIN apartment a ON a.source = r.source AND a.floor = r.floor "
         "  AND a.bearing = r.bearing AND a.ring = r.ring "
-        "WHERE r.source = ? AND r.floor = ? AND r.until IS NULL",
-        (schema.SOURCE, floor))
-    return dict(rows)
+        "WHERE r.source = ? AND r.floor = ? AND r.until IS NULL "
+        "ORDER BY r.person", (schema.SOURCE, floor))
+    household: dict[str, list[str]] = {}
+    for address, person in rows:
+        household.setdefault(address, []).append(person)
+    return household
 
 
-def build(db: sqlite3.Connection, floors: tuple[int, ...] = (),
+def beside_the_door(names: list[str]) -> str:
+    """The sentence a door says about who lives there."""
+    if not names:
+        return "Nobody has the key to this one."
+    if len(names) == 1:
+        return f"The name beside the door is {names[0]}."
+    return (f"The names beside the door are {', '.join(names[:-1])} and "
+            f"{names[-1]}.")
+
+
+def build(db: sqlite3.Connection, floors: tuple[int, ...] | str = (),
           seeded: bool = True, notes: list[str] | None = None) -> World:
-    """The stair, the departments off it, and the rings on `floors`.
+    """The stair, the departments off it, and a ring of doors on `floors`.
 
+    `floors` is a tuple of levels, or `ALL` for every level with dwellings.
     Raises `TooManyRooms` rather than dropping the tail, because a world that
     is quietly missing its bottom forty levels walks perfectly well.
 
@@ -205,6 +213,10 @@ def build(db: sqlite3.Connection, floors: tuple[int, ...] = (),
         if level in walkable:
             room(dept, dept, leads.get(dept, f"{dept} of the silo."))
 
+    if floors == ALL:
+        floors = _opened(db)
+    assert not isinstance(floors, str)
+    doors: list[Door] = []
     for floor in floors:
         if floor not in walkable:
             raise ValueError(f"floor {floor} is not a level of this silo")
@@ -212,29 +224,32 @@ def build(db: sqlite3.Connection, floors: tuple[int, ...] = (),
         if not addresses:
             raise ValueError(f"level {floor} has no dwellings; it was never "
                              f"opened. `--floors` wants one that was.")
+        ring = room(f"Ring {floor}", f"Level {floor}, the ring",
+                    f"The corridor runs all the way round the stair: "
+                    f"{len(addresses)} doors on {len(schema.RINGS)} rings, "
+                    f"a number painted on every one. The stair is east.")
         occupied = _occupants(db, floor)
-        for address in addresses:
-            door = occupied.get(address)
-            room(address, f"Apartment {address}",
+        doors.extend(
+            Door(ring, door_word(address),
                  leads.get(address, f"Apartment {address}.") + " "
-                 + (f"The name beside the door is {door}."
-                    if door else "Nobody has the key to this one."))
+                 + beside_the_door(occupied.get(address, [])))
+            for address in addresses)
 
     if len(rooms) >= NOWHERE:
         raise TooManyRooms(
             f"{len(rooms)} rooms - {len(levels)} landings, "
             f"{len(departments)} departments and "
-            f"{len(rooms) - len(levels) - len(departments)} dwellings - and a "
+            f"{len(rooms) - len(levels) - len(departments)} rings - and a "
             f"room id is one byte with {NOWHERE:#x} reserved for 'no exit'. "
             f"Ask for fewer floors.")
 
     _stair(rooms, index, levels, departments)
     for floor in floors:
-        _ring(db, rooms, index, floor)
+        _corridor(rooms, index, floor, len(_dwellings(db, floor)))
 
     things = _place(db, index, notes if notes is not None else []) \
         if seeded else []
-    return World(rooms=rooms, things=things,
+    return World(rooms=rooms, things=things, doors=doors,
                  start=index[f"Level {levels[0]}"],
                  terminal=index.get("IT"))
 
@@ -256,9 +271,11 @@ def _place(db: sqlite3.Connection, index: dict[str, int],
         where = item.where
         if where == items.FLAT:
             found = items.case(db)
-            # A dwelling's room key is its bare address; `build` registers it
-            # that way and prints it as "Apartment 107 800 A".
-            where = "" if found is None else found.flat
+            # A dwelling is a door on its floor's ring, so a thing that
+            # belongs in the flat lies in the corridor outside it. The
+            # description still names the flat, and the door still names
+            # who had it.
+            where = "" if found is None else f"Ring {found.flat.split()[0]}"
         if where not in index:
             notes.append(f"{item.name}: nowhere to put it - "
                          f"{where or 'the flat'} is not a room in this world")
@@ -294,37 +311,23 @@ def _stair(rooms: list[Room], index: dict[str, int], levels: list[int],
         rooms[index[dept]].exits["WEST"] = index[f"Level {level}"]
 
 
-def _ring(db: sqlite3.Connection, rooms: list[Room], index: dict[str, int],
-          floor: int) -> None:
-    """The two stored adjacencies, and the one join that is not stored."""
-    landing = index[f"Level {floor}"]
-    for address, (along, out) in _rings(db, floor).items():
-        room = rooms[index[address]]
-        if along in index:
-            room.exits[ALONG] = index[along]
-            rooms[index[along]].exits[AGAINST] = index[address]
-        if out in index:
-            room.exits[OUT] = index[out]
-            rooms[index[out]].exits[IN] = index[address]
-
-    inner = [a for a in _dwellings(db, floor) if a.endswith(f" {INNERMOST}")]
-    for address in inner:
-        rooms[index[address]].exits[IN] = landing
-        rooms[index[address]].description += (
-            " The stair is one door in from here.")
-    if inner:
-        rooms[landing].exits["WEST"] = index[inner[0]]
-        rooms[landing].description += (
-            f" West of the stair the corridor runs all the way round: "
-            f"{len(_dwellings(db, floor))} dwellings on "
-            f"{len(schema.RINGS)} rings.")
+def _corridor(rooms: list[Room], index: dict[str, int], floor: int,
+              dwellings: int) -> None:
+    """The one join the database does not carry: the ring off the landing."""
+    landing, ring = index[f"Level {floor}"], index[f"Ring {floor}"]
+    rooms[landing].exits[ONTO] = ring
+    rooms[ring].exits[OFF] = landing
+    rooms[landing].description += (
+        f" West of the stair the corridor runs all the way round: "
+        f"{dwellings} dwellings on {len(schema.RINGS)} rings.")
 
 
 def report(world: World, image: bytes, notes: list[str]) -> str:
     stranded = len(world.rooms) - len(world.reachable())
     named = sum(1 for t in world.things if t.subject is not None)
     lines = [
-        f"{len(world.rooms)} rooms, {len(world.things)} things "
+        f"{len(world.rooms)} rooms, {len(world.doors)} doors, "
+        f"{len(world.things)} things "
         f"({named} of them name something on the card)",
         f"  {len(image):,} bytes of image, {world.overlay_bytes} of overlay",
         f"  {stranded} rooms nothing leads to",
@@ -337,8 +340,9 @@ def report(world: World, image: bytes, notes: list[str]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("--db", type=Path, default=DB_PATH)
-    parser.add_argument("--floors", type=int, nargs="*", default=[],
-                        help="residential levels to open up, ring by ring")
+    parser.add_argument("--floors", nargs="*", default=[],
+                        help="residential levels to open up as rings of "
+                             "doors, or 'all' for every one")
     parser.add_argument("--bare", action="store_true",
                         help="geography only: place none of data/silo/items.py")
     parser.add_argument("-o", "--out", type=Path,
@@ -346,10 +350,11 @@ def main() -> int:
     args = parser.parse_args()
 
     notes: list[str] = []
+    floors: tuple[int, ...] | str = (
+        ALL if args.floors == [ALL] else tuple(int(f) for f in args.floors))
     db = sqlite3.connect(args.db)
     try:
-        world = build(db, tuple(args.floors), seeded=not args.bare,
-                      notes=notes)
+        world = build(db, floors, seeded=not args.bare, notes=notes)
     except ValueError as refused:      # TooManyRooms is one of these
         print(refused, file=sys.stderr)
         return 1

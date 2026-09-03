@@ -189,6 +189,28 @@ class Line:
     sets: int = NONE
 
 
+@dataclass
+class Door:
+    """A dwelling's door on a corridor room: knocked on, never gone through.
+
+    The silo has 2,088 opened dwellings and a room id is one byte, so a
+    dwelling cannot be a room. It does not need to be. What a player wants
+    from a flat is the name beside the door, and a door is that name and a
+    sentence, in the image, with no overlay at all - nothing about a door
+    ever changes, which is why it is not a `Thing`.
+
+    `name` is what the player types, one word of at most `MAX_WORD_LEN`,
+    unique within its room and not beyond: every floor has a `600A`, and
+    `KNOCK` looks only at the doors of the room the player is standing in.
+    """
+
+    room: int
+    name: str
+    #: What knocking says. The whole sentence: the compiler writes it from
+    #: the corpus, and the engine prints it.
+    text: str
+
+
 #: Condition opcodes. Every condition in a rule must hold, which is the point:
 #: `data/silo/README.md` sets out that a graph path composes and then stops at
 #: conjunction, and a list of conditions ANDed together is the smallest thing
@@ -302,6 +324,8 @@ class World:
     people: list[Person] = field(default_factory=list)
     #: What they say, most specific first.
     lines: list[Line] = field(default_factory=list)
+    #: Doors on corridor rooms, which are knocked on rather than entered.
+    doors: list[Door] = field(default_factory=list)
     #: What the world is won by: a condition list in the same shape as
     #: `Rule.when`. `solve` is what makes it more than documentation - a goal
     #: no reachable state satisfies is a game that cannot be finished, and
@@ -436,6 +460,7 @@ class World:
         self._check_people(set(names))
         self._check_topics()
         self._check_lines()
+        self._check_doors(set(names) | {p.name.upper() for p in self.people})
         self._check_rules()
 
         for op, arg in self.goal:
@@ -537,6 +562,42 @@ class World:
                     f"line {number} is gated behind flag {line.gate} but an "
                     f"ungated line for person {line.person} on topic "
                     f"{line.topic} comes first and always wins")
+
+    def _check_doors(self, taken: set[str]) -> None:
+        """A room that exists, a word the parser can hold, one door a word.
+
+        Unique within a room and not across the world, on purpose: the word
+        table `KNOCK` scans is the room's own, so `600A` on every floor is
+        the design rather than a collision. A door word that is also a thing
+        or a person is refused, because `EXAMINE` tries the nouns first and
+        the door would be unreachable by the verb that should reach it.
+        """
+        per_room: dict[int, set[str]] = {}
+        for door in self.doors:
+            if not 0 <= door.room < len(self.rooms):
+                raise ValueError(f"door {door.name!r} is on room {door.room}, "
+                                 f"which does not exist")
+            word = door.name.upper()
+            if len(door.name.split()) != 1 or len(door.name) > MAX_WORD_LEN:
+                raise ValueError(
+                    f"door {door.name!r} is not one word of at most "
+                    f"{MAX_WORD_LEN} characters, so nobody can knock on it")
+            if word in taken:
+                raise ValueError(f"door {door.name!r} is also a thing or a "
+                                 f"person, and EXAMINE would find that first")
+            here = per_room.setdefault(door.room, set())
+            if word in here:
+                raise ValueError(f"two doors on {self.rooms[door.room].name!r} "
+                                 f"are marked {door.name!r}")
+            here.add(word)
+            if not door.text.strip():
+                raise ValueError(f"door {door.name!r} says nothing when "
+                                 f"knocked on")
+        for room, words in per_room.items():
+            if len(words) > 255:
+                raise ValueError(f"{len(words)} doors on "
+                                 f"{self.rooms[room].name!r}, and a door's id "
+                                 f"within its room is one byte")
 
     def _check_rules(self) -> None:
         """Every argument, against what it indexes.
