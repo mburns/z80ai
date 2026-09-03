@@ -126,10 +126,24 @@ class Topic:
     docs: list[int] = field(default_factory=list)
     #: What asking costs in attention. Most topics cost nothing.
     heat: int = 0
-    #: What the archive says instead of the article, for a record that has
-    #: been sealed. `None` prints the article. A censored topic still marks
-    #: itself asked and still costs its heat: the sealing is what was learned.
+    #: What the archive says instead of the article while the topic is
+    #: sealed. `None` uses `World.seal`. A sealed topic still marks itself
+    #: asked and still costs its heat: the sealing is what was learned.
     censor: str | None = None
+    #: Whether the topic starts sealed. `None` means "if it has censor text",
+    #: which is what every world written before `A_SEAL` existed meant.
+    sealed: bool | None = None
+    #: What the archive says instead of the article while the topic is
+    #: *altered* - the record as the Voice would have it read. In the image
+    #: rather than on the card, for the same reason a seal is: a false record
+    #: that could be found by searching for it would not be a false record.
+    #: `A_ALTER` turns it on and `A_TRUTH` turns it off; a topic without one
+    #: cannot be altered, and `check` says so.
+    alter: str | None = None
+
+    @property
+    def starts_sealed(self) -> bool:
+        return self.censor is not None if self.sealed is None else self.sealed
 
 
 @dataclass
@@ -190,6 +204,8 @@ C_HEAT = 7      # attention stands at `arg` or above
 C_WITH = 8      # person `arg` is in the room the player is in
 C_TURN = 9      # the clock stands at `arg` or above: `arg` turns have been taken
 C_LOGGED = 10   # the archive's log holds `arg` questions or more, this game or before
+C_SEALED = 11   # topic `arg` is sealed at the archive
+C_ALTERED = 12  # topic `arg` is served altered at the archive
 
 #: Action opcodes. `A_MOVE` and `A_SEND` take two bytes because each names
 #: something and a destination; everything else takes one.
@@ -201,14 +217,23 @@ A_MOVE = 4      # move thing `arg` to `arg2`
 A_HEAT = 5      # add `arg` to attention, saturating at 255
 A_COOL = 6      # take `arg` off attention, floored at 0
 A_SEND = 7      # move person `arg` to room `arg2`
+#: The Voice's four. A seal and an alteration are both things the archive
+#: does *to the record* rather than to the world, and both have an undo,
+#: because a world where the archive can only close is one the player can
+#: only lose - the same reason `A_COOL` exists beside `A_HEAT`.
+A_SEAL = 8      # seal topic `arg`
+A_UNSEAL = 9    # unseal topic `arg`
+A_ALTER = 10    # serve topic `arg` altered
+A_TRUTH = 11    # serve topic `arg` as written
 
 CONDITION_NAMES = {C_AT: "AT", C_HAVE: "HAVE", C_HERE: "HERE", C_FLAG: "FLAG",
                    C_NFLAG: "NFLAG", C_CARRYING: "CARRYING", C_ASKED: "ASKED",
                    C_HEAT: "HEAT", C_WITH: "WITH", C_TURN: "TURN",
-                   C_LOGGED: "LOGGED"}
+                   C_LOGGED: "LOGGED", C_SEALED: "SEALED", C_ALTERED: "ALTERED"}
 ACTION_NAMES = {A_SET: "SET", A_CLEAR: "CLEAR", A_PRINT: "PRINT",
                 A_GOTO: "GOTO", A_MOVE: "MOVE", A_HEAT: "HEAT",
-                A_COOL: "COOL", A_SEND: "SEND"}
+                A_COOL: "COOL", A_SEND: "SEND", A_SEAL: "SEAL",
+                A_UNSEAL: "UNSEAL", A_ALTER: "ALTER", A_TRUTH: "TRUTH"}
 
 
 @dataclass
@@ -286,6 +311,10 @@ class World:
     #: slots and `SILO.LOG` for the archive's log. Four characters at most so
     #: that a slot digit and an extension still make an 8.3 name.
     save_name: str = "SILO"
+    #: What the archive prints for a sealed topic that carries no `censor`
+    #: text of its own. One sentence for the whole world, because a seal is
+    #: the archive being *consistent* about what it will not say.
+    seal: str = "RECORD SEALED. THIS ACCESS HAS BEEN LOGGED."
 
     @property
     def stamp(self) -> int:
@@ -300,7 +329,7 @@ class World:
         """
         shape = (len(self.rooms), len(self.things), self.flags, len(self.rules),
                  len(self.topics), len(self.people), len(self.messages),
-                 len(self.lines))
+                 len(self.lines), self.overlay_bytes)
         stamp = 0
         for value in shape:
             stamp = (stamp * 31 + value) & 0xFFFF
@@ -457,6 +486,13 @@ class World:
             if not 0 <= topic.heat <= 255:
                 raise ValueError(f"topic {topic.name!r} costs {topic.heat} "
                                  f"attention, and that is one byte")
+            for what, text in (("censor", topic.censor), ("alter", topic.alter)):
+                if text is not None and not text.strip():
+                    raise ValueError(f"topic {topic.name!r} has an empty "
+                                     f"{what} text, which the archive would "
+                                     f"print as a blank line - leave it None")
+            if not self.seal.strip():
+                raise ValueError("the world's seal text is empty")
             for word in topic.words:
                 upper = word.upper()
                 if len(word.split()) != 1 or len(word) > MAX_WORD_LEN:
@@ -580,9 +616,14 @@ class World:
         if name == "CARRYING" and not 0 <= arg <= things:
             raise ValueError(f"{where}: CARRYING {arg}, and there are "
                              f"only {things} things to carry")
-        if name == "ASKED" and not 0 <= arg < len(self.topics):
-            raise ValueError(f"{where}: ASKED {arg}, and there are "
+        if (name in ("ASKED", "SEALED", "ALTERED", "SEAL", "UNSEAL", "ALTER",
+                     "TRUTH") and not 0 <= arg < len(self.topics)):
+            raise ValueError(f"{where}: {name} {arg}, and there are "
                              f"{len(self.topics)} topics")
+        if name == "ALTER" and self.topics[arg].alter is None:
+            raise ValueError(f"{where}: ALTER {arg}, and topic "
+                             f"{self.topics[arg].name!r} has no altered "
+                             f"text to serve")
         if name in ("WITH", "SEND") and not 0 <= arg < len(self.people):
             raise ValueError(f"{where}: {name} {arg}, and there are "
                              f"{len(self.people)} people")
@@ -627,6 +668,7 @@ class World:
                 + max(1, len(self.topics))     # ASKED, one byte a topic
                 + 1                            # HEAT
                 + 1                            # CLOCK
+                + 2 * max(1, len(self.topics))  # SEALED, ALTERED
                 + max(1, len(self.people)))    # PWHERE
 
     @property
@@ -847,7 +889,9 @@ class World:
             pwhere=tuple(p.at for p in self.people),
             # -1 so that the opening pass reads zero, since `_settle` ticks
             # before it reads. No state the search keeps ever holds it.
-            turn=-1)
+            turn=-1,
+            sealed=tuple(int(t.starts_sealed) for t in self.topics),
+            altered=(0,) * len(self.topics))
 
         # The start is a turn: the program describes the room and then runs
         # the rules before it reads the first line.
@@ -1054,6 +1098,10 @@ class World:
             return state.turn >= arg
         if op == C_LOGGED:
             return state.logged >= arg
+        if op == C_SEALED:
+            return bool(state.sealed[arg])
+        if op == C_ALTERED:
+            return bool(state.altered[arg])
         raise ValueError(f"no condition {op}")
 
     def _apply(self, state: _State, op: int, arg: int, arg2: int, cap: int,
@@ -1075,6 +1123,14 @@ class World:
             return state._replace(heat=max(0, state.heat - arg))
         if op == A_SEND:
             return state._replace(pwhere=_set(state.pwhere, arg, arg2))
+        if op == A_SEAL:
+            return state._replace(sealed=_set(state.sealed, arg, 1))
+        if op == A_UNSEAL:
+            return state._replace(sealed=_set(state.sealed, arg, 0))
+        if op == A_ALTER:
+            return state._replace(altered=_set(state.altered, arg, 1))
+        if op == A_TRUTH:
+            return state._replace(altered=_set(state.altered, arg, 0))
         raise ValueError(f"no action {op}")
 
 
@@ -1099,6 +1155,9 @@ class _State(NamedTuple):
     #: Questions the archive has logged, clamped the same way. Not overlay:
     #: the device re-counts it from the file, which is the truth.
     logged: int = 0
+    #: Which topics the archive is sealing, and which it is serving altered.
+    sealed: tuple[int, ...] = ()
+    altered: tuple[int, ...] = ()
 
 
 def _set(values: tuple[int, ...], index: int, value: int) -> tuple[int, ...]:

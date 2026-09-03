@@ -137,9 +137,11 @@ the only thing it can do.
 | `ASKED[]` | what has been asked about — **1 byte a topic, in RAM** |
 | `HEAT` | how much attention that has cost — **1 byte, in RAM** |
 | `CLOCK` | how many turns have been taken — **1 byte, in RAM** |
+| `SEALED[]` | which records the archive is declining — **1 byte a topic, in RAM** |
+| `ALTERED[]` | which records it is serving rewritten — **1 byte a topic, in RAM** |
 | `PWHERE[]` | where each person is now — **1 byte each, in RAM** |
 
-Only the bottom seven change. The image is identical on every copy, so a saved
+Only the bottom nine change. The image is identical on every copy, so a saved
 game is the overlay and nothing else: **13 bytes** for the six-room world as it
 was, **85** for the mystery with its four people and five topics, one
 contiguous run so that writing it is a single `mos_fwrite` rather than three
@@ -731,14 +733,15 @@ sentence and is impossible because `where[k]` is `CARRIED` *or* a room.
 | | bytes | |
 |---|---:|---:|
 | the search program, no world | 4,812 | |
-| carrying `worlds.silo()` | 10,324 | +5,512 |
-| carrying `worlds_mystery.mystery()` | 12,967 | +8,155 |
+| carrying `worlds.silo()` | 10,458 | +5,646 |
+| carrying `worlds_mystery.mystery()` | 13,155 | +8,343 |
 
 The first delta was 4,434 for as long as this file claimed a world costs the
 oracle binary under 5 KB. Save, restore and the archive's log took it to
 5,512 — a kilobyte, most of it the four routines that talk to the card and
-the buffer a save goes through — and the claim is now "about 5.5 KB", which
-is still the small half by a factor of seven. The second is what people,
+the buffer a save goes through — and the Voice's four actions and two
+conditions another 134. The claim is now "about 5.5 KB", which is still the
+small half by a factor of seven. The second is what people,
 topics, dialogue and the attention counter add on top, and most of it is
 prose rather than code.
 
@@ -788,6 +791,65 @@ a different instrument for two hundred.
 
 Shifts, and where ten thousand people are at a given hour, are the next two
 steps of [#101](../../issues/101) and are not here. See [ROADMAP.md](ROADMAP.md).
+
+## The Voice, which does things to the record
+
+```
+archive> order
+Standing Order 11: Screen Fitting (as amended, year 218). A screen may be
+fitted by one person where a second is not available. Judicial.
+```
+
+That is not the standing order. The one on Walk's wall says two, the player
+has read it, and the archive started saying otherwise on the turn the two
+clues met. Until now a seal was authored — `Topic.censor` was a fact about
+the topic, fixed for the whole game — and the archive's unreliability was
+something that had happened before the player arrived. This is the other
+kind: the Voice reacting to what the player did.
+
+| | |
+|---|---|
+| `A_SEAL n` / `A_UNSEAL n` | the archive declines topic `n`, or stops declining it |
+| `A_ALTER n` / `A_TRUTH n` | the archive serves topic `n` rewritten, or as written |
+| `C_SEALED n` / `C_ALTERED n` | a rule can read either, so a person can react to a seal the player has not yet run into |
+| `Topic.alter` | what the archive prints while the topic is altered |
+| `Topic.sealed` | whether it starts sealed; `None` means "if it has censor text", which is what every earlier world meant |
+| `World.seal` | what a sealed topic prints when it has no censor text of its own |
+
+Two bytes a topic in the overlay, because a restore that unsealed everything
+the Voice had closed would be the Voice forgetting it had been threatened. A
+seal wins over an alteration: a record that is closed cannot also be read
+wrong. And both have an undo, for the reason `A_COOL` sits beside `A_HEAT` —
+a world where the archive can only close is one the player can only lose.
+
+**The altered text is in the image, not on the card.** The obvious design
+was a second article and a swapped id, and it is wrong: a false record that
+can be found by searching for it is not a false record, it is a second
+record. Like a seal, an alteration is prose the archive prints *instead*,
+and nothing the search does can reach it.
+
+**And it is still fair.** `plant.py` set the rule for the corpus — a record
+that is wrong in a fixed, discoverable way is a clue, and one that is
+unreliable at random is noise — and the mystery keeps it: the amendment
+fires on a rule the player caused, it contradicts a sentence they have
+already read in a room description, and it is the same amendment every
+time. The archive may decline, and when it states a fact that fact holds,
+*except where a rule has changed it and the world says so somewhere*.
+
+The mystery uses both. At five on the attention counter the deputy comes up
+the stair and the pump report is sealed — a record that was never about
+Allison, because the Voice reacts to the *asking*. With both clues in hand
+the standing order is rewritten. Neither costs the search a state: both
+ride on rules that already fired in states the search already told apart,
+so `worlds_mystery` is still 30,688 states, and `tests/test_voice.py` pins
+that beside a world of its own where the clock drives all four actions in
+a fixed order.
+
+What is not here is the hedge — the margin between the classifier's top two
+logits, surfaced on the device as *"if I have your meaning"*, which
+`liboracle` already renders on the host. That wants the classifier in the
+binary, which is the silo card and not this fixture, and it is the rest of
+[#102](../../issues/102).
 
 ## Save, restore, and the one file that outlives a game
 

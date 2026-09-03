@@ -810,8 +810,9 @@ def test_the_overlay_is_a_byte_apiece():
     world = World(rooms=[Room("A", "a")],
                   things=[Thing(f"t{i}", "x", 0) for i in range(10)],
                   flags=64)
-    #  HERE + where[10] + flags[64] + fired[] + asked[] + heat + clock + pwhere[]
-    assert world.overlay_bytes == 1 + 10 + 64 + 1 + 1 + 1 + 1 + 1
+    #  HERE + where[10] + flags[64] + fired[] + asked[] + heat + clock
+    #  + sealed[] + altered[] + pwhere[]
+    assert world.overlay_bytes == 1 + 10 + 64 + 1 + 1 + 1 + 1 + 1 + 1 + 1
 
 
 def test_the_overlay_is_one_contiguous_run():
