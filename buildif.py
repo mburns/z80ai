@@ -116,6 +116,10 @@ V_ASK = V_EXAMINE + 1
 #: on exactly as one that was not - which `tests/test_save.py` holds it to.
 V_SAVE = V_ASK + 1
 V_RESTORE = V_SAVE + 1
+#: Knock on a door in this room. A door is not a thing - it has no `WHERE`
+#: and nothing about it changes - so it has its own table and its own verb,
+#: and `EXAMINE` reaches it too once the nouns have been tried.
+V_KNOCK = V_RESTORE + 1
 
 #: Stack margin below the top of SRAM, matching every other Agon build here.
 STACK_MARGIN = 0x1000
@@ -142,7 +146,8 @@ def _words(world: World) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
               ("EXAMINE", V_EXAMINE), ("X", V_EXAMINE),
               ("READ", V_EXAMINE),
               ("ASK", V_ASK), ("TALK", V_ASK),
-              ("SAVE", V_SAVE), ("RESTORE", V_RESTORE), ("LOAD", V_RESTORE)]
+              ("SAVE", V_SAVE), ("RESTORE", V_RESTORE), ("LOAD", V_RESTORE),
+              ("KNOCK", V_KNOCK)]
 
     nouns = [(thing.name.upper(), index)
              for index, thing in enumerate(world.things)]
@@ -281,6 +286,8 @@ def emit_dispatch(b: EZ80Builder, quit_label: str) -> None:
     b.jp_z("DO_SAVE")
     b.cp_n(V_RESTORE)
     b.jp_z("DO_RESTORE")
+    b.cp_n(V_KNOCK)
+    b.jp_z("DO_KNOCK")
     b.jp("DO_GO")                    # below LOOK: the id is a direction
 
     b.label("DO_LOOK")
@@ -343,6 +350,7 @@ def emit_world_routines(b: EZ80Builder, world: World,
     _emit_attention(b, world)
     _emit_rules(b, world)
     _emit_save_restore(b, world)
+    _emit_doors(b, world)
 
 
 def emit_world_tables(b: EZ80Builder, world: World) -> None:
@@ -840,7 +848,7 @@ def _emit_take_drop(b: EZ80Builder, world: World,
     # distinction the game made and nothing else did.
     b.label("DO_EXAM")
     b.call("NOUNID")
-    b.jp_c("BADNOUN")
+    b.jp_c("EX_DOOR")                # not a thing: a door, before giving up
     b.ld_c_a()
     b.call("WHEREPTR")
     b.ld_a_hl()
@@ -859,6 +867,11 @@ def _emit_take_drop(b: EZ80Builder, world: World,
     b.call("PRWRAP")
     b.call("PRNL")
     b.jp("TURN")
+
+    b.label("EX_DOOR")
+    b.call("DOORID")
+    b.jp_c("BADNOUN")
+    b.jp("DOORSAY")
 
     b.label("BADNOUN")
     b.ld_a_mem_label("W2LEN")
@@ -1728,7 +1741,130 @@ MESSAGES: dict[str, str] = {
     "MSGNOSAVE": "There is no saved game in that slot.",
     "MSGBADSAVE": "That is not a saved game for this silo.",
     "MSGNOWRITE": "The card would not take it.",
+    "MSGKNOCKWHAT": "Knock on which door?",
+    "MSGNODOOR": "There is no door marked '",
+    "MSGHERE": "' here.\r\n",
 }
+
+
+def _emit_doors(b: EZ80Builder, world: World) -> None:
+    """`KNOCK <door>`, and the lookup `EXAMINE` falls through to.
+
+    A door table is per room. `DOORTAB` has a row a room - the room's word
+    table and its text table, or zeros - so `KNOCK 600A` scans the doors of
+    the room the player is in and no others: the same word on every floor
+    is the design, and a global table could not resolve it. Local ids are a
+    byte, which `World.check` holds a room to.
+
+    Nothing here touches the overlay. A door is the one thing in a world
+    that is entirely image, and 2,088 of them cost a save file nothing.
+    """
+    b.label("DO_KNOCK")
+    b.ld_a_mem_label("W2LEN")
+    b.or_a()
+    b.jr_z("KN_WHAT")
+    b.call("DOORID")
+    b.jr_c("KN_NONE")
+    b.jp("DOORSAY")
+
+    b.label("KN_WHAT")
+    b.ld_hl_label("MSGKNOCKWHAT")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("TURN")
+
+    b.label("KN_NONE")
+    b.ld_hl_label("MSGNODOOR")
+    b.call("PRSTR")
+    b.ld_hl_label("W2")
+    b.ld_a_mem_label("W2LEN")
+    b.call("PRWORD")
+    b.ld_hl_label("MSGHERE")
+    b.call("PRSTR")
+    b.jp("TURN")
+
+    # DOORID: W2 -> A, the door's id within this room; carry when there is
+    # no such door here, or no doors here at all.
+    b.label("DOORID")
+    if world.doors:
+        b.ld_a_mem_label("W2LEN")
+        b.or_a()
+        b.jr_z("DI_FAIL")
+        b.ld_a_mem_label("HERE")
+        b.ld_hl_nn(0)
+        b.ld_l_a()
+        b.add_hl_hl()
+        b.add_hl_hl()
+        b.add_hl_hl()                # x8, the DOORTAB stride
+        b.ld_de_label("DOORTAB")
+        b.add_hl_de()
+        b.ld_mem_label_hl("DOORROW")
+        b.call("LDPTR")              # the room's word table, or 0
+        b.ld_de_nn(0)
+        b.or_a()
+        b.sbc_hl_de()
+        b.jr_z("DI_FAIL")
+        b.ld_de_label("W2")
+        b.ld_a_mem_label("W2LEN")
+        b.jp("LOOKUP")               # carry and A come straight back
+    b.label("DI_FAIL")               # no such door here, or no doors at all
+    b.scf()
+    b.ret()
+
+    # DOORSAY: A, a door id within this room -> its text printed, and the
+    # turn ended.
+    b.label("DOORSAY")
+    b.ld_hl_nn(0)
+    b.ld_l_a()
+    b.push_hl()
+    b.pop_de()
+    b.add_hl_hl()
+    b.add_hl_de()                    # x3, a pointer a door
+    b.push_hl()
+    b.ld_hl_mem_label("DOORROW")
+    b.inc_hl()
+    b.inc_hl()
+    b.inc_hl()
+    b.call("LDPTR")                  # the room's text table
+    b.pop_de()
+    b.add_hl_de()
+    b.call("LDPTR")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("TURN")
+
+
+def _emit_door_tables(b: EZ80Builder, world: World) -> None:
+    """A row a room, then a word table and a text table for each room with
+    doors, then the texts. All image."""
+    if not world.doors:
+        return
+    by_room: dict[int, list[int]] = {}
+    for index, door in enumerate(world.doors):
+        by_room.setdefault(door.room, []).append(index)
+
+    b.label("DOORTAB")
+    for room in range(len(world.rooms)):
+        if room in by_room:
+            b.fixup_word(f"DOORW{room}")
+            b.fixup_word(f"DOORT{room}")
+        else:
+            b.d24(0)
+            b.d24(0)
+        b.db(0)
+        b.db(0)                      # pad to eight, so the row is three shifts
+
+    for room, indices in by_room.items():
+        _emit_word_table(b, f"DOORW{room}",
+                         [(world.doors[i].name.upper(), local)
+                          for local, i in enumerate(indices)])
+        b.label(f"DOORT{room}")
+        for i in indices:
+            b.fixup_word(f"DDESC{i}")
+    for index, door in enumerate(world.doors):
+        b.label(f"DDESC{index}")
+        b.ascii(door.text)
+        b.db(0)
 
 
 def _emit_save_restore(b: EZ80Builder, world: World) -> None:
@@ -2001,6 +2137,8 @@ def _emit_tables(b: EZ80Builder, world: World,
         for topic in world.topics:
             b.db(int(topic.starts_sealed))
 
+    _emit_door_tables(b, world)
+
     if world.people and world.topics:
         # The dialogue, in the order the author wrote it. The scan is linear
         # and first-match-wins, which is what makes ordering the whole of the
@@ -2148,7 +2286,7 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
     for name in scratch:
         b.label(name)
         b.db(0)
-    for name in ("PTMP", "LKPTR", "RULEPTR", "RU_CUR", "SPDST"):
+    for name in ("PTMP", "LKPTR", "RULEPTR", "RU_CUR", "SPDST", "DOORROW"):
         b.label(name)
         b.d24(0)
 

@@ -159,8 +159,8 @@ def test_the_landing_says_what_opens_off_it(db):
     landing = next(r for r in world.rooms
                    if r.name == f"Level {DEPARTMENT_LEVEL}")
     assert DEPARTMENT in landing.description
-    ring = next(r for r in world.rooms if r.name == f"Level {FLOOR}")
-    assert "12 dwellings" in ring.description
+    landing = next(r for r in world.rooms if r.name == f"Level {FLOOR}")
+    assert "12 dwellings" in landing.description
 
 
 def test_the_start_is_the_top_of_the_stair(db):
@@ -174,65 +174,68 @@ def test_the_terminal_stands_in_it(db):
     assert world.rooms[world.terminal].name == "IT"
 
 
-# --- the ring, which is the part that was already stored ----------------------
+# --- the ring, which is one room and a door a dwelling ---------------------------
 
 
-def test_next_along_becomes_east_and_its_inverse_west(db):
+def doors_on(world, floor: int) -> dict[str, str]:
+    """The doors on a floor's ring, as `word -> what knocking says`."""
+    ring = next(i for i, r in enumerate(world.rooms)
+                if r.name == f"Level {floor}, the ring")
+    return {d.name: d.text for d in world.doors if d.room == ring}
+
+
+def test_a_floor_is_one_room_with_a_door_a_dwelling(db):
     world = buildworld.build(db, (FLOOR,))
-    first = f"Apartment {schema.address(FLOOR, 0, 'A')}"
-    second = f"Apartment {schema.address(FLOOR, 30, 'A')}"
-    assert exits(world, first)[buildworld.ALONG] == second
-    assert exits(world, second)[buildworld.AGAINST] == first
+    assert sum(1 for r in world.rooms if "the ring" in r.name) == 1
+    assert set(doors_on(world, FLOOR)) == {
+        buildworld.door_word(schema.address(FLOOR, b, r))
+        for b in BEARINGS for r in schema.RINGS}
+    assert len(world.doors) == len(BEARINGS) * len(schema.RINGS)
 
 
-def test_next_out_becomes_outward_and_its_inverse_inward(db):
+def test_a_door_is_its_bearing_and_ring_and_not_its_floor(db):
+    """`42 600 A` is painted `600A`: every floor has one, and `KNOCK` looks
+    only at the doors of the ring the player is on."""
+    assert buildworld.door_word("42 600 A") == "600A"
+    assert buildworld.door_word("2 1230 C") == "1230C"
+
+
+def test_the_ring_is_off_the_landing_and_the_stair_is_off_the_ring(db):
+    """The one join the database does not carry, and says it does not."""
     world = buildworld.build(db, (FLOOR,))
-    inner = f"Apartment {schema.address(FLOOR, 0, 'A')}"
-    middle = f"Apartment {schema.address(FLOOR, 0, 'B')}"
-    assert exits(world, inner)[buildworld.OUT] == middle
-    assert exits(world, middle)[buildworld.IN] == inner
+    ring = f"Level {FLOOR}, the ring"
+    assert exits(world, f"Level {FLOOR}")[buildworld.ONTO] == ring
+    assert exits(world, ring) == {buildworld.OFF: f"Level {FLOOR}"}
 
 
-def test_the_ring_wraps_because_the_edge_table_wraps(db):
-    """`(bearing + 30) % 720` is done once, in the generator, and shipped."""
+def test_the_doors_are_read_from_the_apartment_table(db):
+    """A flat walled off is a door that is not there. The compiler reads the
+    dwellings and does not count bearings, which is the only way to tell it
+    from one that does."""
+    db.execute("DELETE FROM apartment WHERE source = ? AND floor = ? "
+               "AND bearing = 90 AND ring = 'C'", (SOURCE, FLOOR))
     world = buildworld.build(db, (FLOOR,))
-    last = f"Apartment {schema.address(FLOOR, BEARINGS[-1], 'A')}"
-    assert exits(world, last)[buildworld.ALONG] == \
-        f"Apartment {schema.address(FLOOR, 0, 'A')}"
-
-
-def test_the_geometry_is_read_rather_than_recomputed(db):
-    """The test that separates this compiler from one that looks the same.
-
-    A compiler doing its own arithmetic over `bearing` would produce exactly
-    the world the tests above assert, on this data and on the real corpus.
-    Deleting one edge is the only way to tell the two apart - and a corpus
-    where a flat has been walled off is a thing the generator can produce.
-    """
-    here = schema.address(FLOOR, 0, "A")
-    db.execute("DELETE FROM edge WHERE source = ? AND subject = ? "
-               "AND relation = 'next_along'", (SOURCE, here))
-    world = buildworld.build(db, (FLOOR,))
-    assert buildworld.ALONG not in exits(world, f"Apartment {here}")
-    assert buildworld.OUT in exits(world, f"Apartment {here}")
-
-
-def test_the_innermost_ring_opens_onto_the_stair(db):
-    """The one join the database does not carry, and says it does not.
-
-    `next_out` stops at ring A rather than pointing inward at the stairwell,
-    so without this a floor is a ring nobody can get onto.
-    """
-    world = buildworld.build(db, (FLOOR,))
-    inner = f"Apartment {schema.address(FLOOR, 0, 'A')}"
-    assert exits(world, inner)[buildworld.IN] == f"Level {FLOOR}"
-    assert exits(world, f"Level {FLOOR}")["WEST"] == f"Apartment {inner[10:]}"
+    assert "130C" not in doors_on(world, FLOOR)
+    assert "1230A" in doors_on(world, FLOOR)
+    assert len(world.doors) == len(BEARINGS) * len(schema.RINGS) - 1
 
 
 def test_every_room_can_be_walked_to(db):
     """A world compiled out of a database is past reading by hand."""
     world = buildworld.build(db, (FLOOR,))
     assert len(world.reachable()) == len(world.rooms)
+
+
+def test_all_opens_every_floor_with_a_dwelling(db):
+    world = buildworld.build(db, buildworld.ALL)
+    assert [r.name for r in world.rooms if "the ring" in r.name] == \
+        [f"Level {FLOOR}, the ring"]
+
+
+def test_the_whole_silo_fits_in_one_byte():
+    """The arithmetic the issue was about, on the shipped corpus's shape:
+    144 landings, 14 departments and 29 rings of 72 doors is 187 rooms."""
+    assert buildworld.NOWHERE > 144 + 14 + 29
 
 
 # --- the prose is quoted, not written -----------------------------------------
@@ -254,9 +257,22 @@ def test_a_room_says_what_the_article_says(db):
 
 def test_the_name_beside_the_door_is_whoever_lives_there_now(db):
     world = buildworld.build(db, (FLOOR,))
-    lived_in = next(r for r in world.rooms
-                    if r.name == f"Apartment {schema.address(FLOOR, 0, 'A')}")
-    assert "Juliette Nichols" in lived_in.description
+    lived_in = doors_on(world, FLOOR)["1200A"]
+    assert "Juliette Nichols" in lived_in
+    assert lived_in.startswith(f"Apartment {schema.address(FLOOR, 0, 'A')} is")
+
+
+def test_a_household_is_every_name_beside_the_door(db):
+    """The shipped corpus puts three Butlers behind one door. A door that
+    named the last one written would be quietly wrong about the others."""
+    db.execute("INSERT INTO residence (source, person, floor, bearing, "
+               "ring, since, until) VALUES (?, 'Lukas Kyle', ?, 0, 'A', "
+               "210, NULL)", (SOURCE, FLOOR))
+    world = buildworld.build(db, (FLOOR,))
+    assert doors_on(world, FLOOR)["1200A"].endswith(
+        "The names beside the door are Juliette Nichols and Lukas Kyle.")
+    assert buildworld.beside_the_door(["A", "B", "C"]) == \
+        "The names beside the door are A, B and C."
 
 
 def test_a_flat_whose_tenant_has_moved_out_is_empty(db):
@@ -267,10 +283,9 @@ def test_a_flat_whose_tenant_has_moved_out_is_empty(db):
     programs exist to draw.
     """
     world = buildworld.build(db, (FLOOR,))
-    empty = next(r for r in world.rooms
-                 if r.name == f"Apartment {schema.address(FLOOR, 30, 'A')}")
-    assert "Holston Becker" not in empty.description
-    assert "Nobody has the key" in empty.description
+    empty = doors_on(world, FLOOR)["1230A"]
+    assert "Holston Becker" not in empty
+    assert "Nobody has the key" in empty
 
 
 # --- the wall, which is not memory --------------------------------------------
@@ -334,10 +349,13 @@ def test_the_case_fills_the_holes_from_the_corpus(db):
 def test_each_thing_names_the_next_place_to_stand(db):
     """The chain, which is the point of the seed being one case rather than
     ten props: the notice names a person, the key names their flat, and the
-    photograph in it names who they married."""
+    photograph outside it names who they married. The flat is a door on the
+    ring, and the photograph lies in the corridor beside it."""
     world = buildworld.build(db, (FLOOR,))
     flat = carried(world, "key").subject
-    assert world.rooms[carried(world, "photo").at].name == f"Apartment {flat}"
+    assert world.rooms[carried(world, "photo").at].name == \
+        f"Level {flat.split()[0]}, the ring"
+    assert buildworld.door_word(flat) in doors_on(world, FLOOR)
     assert carried(world, "photo").subject == CLEANED_FACTS["spouse"]
 
 
@@ -418,8 +436,8 @@ def test_a_turn_in_the_compiled_world_still_reads_nothing(db):
     """
     world = buildworld.build(db, (FLOOR,))
     game = buildif.build(world).build()
-    host = AgonHost(stdin=["down", "west", "east", "north", "south", "quit"],
-                    files={})
+    host = AgonHost(stdin=["down", "west", "knock 1200A", "knock 1230A",
+                           "east", "quit"], files={})
     out = host.run(game, max_cycles=100_000_000)
     assert host.io_bytes == 0
     # `PRWRAP` decides where the lines break, which is its business and not
@@ -483,9 +501,9 @@ def played(tmp_path_factory):
         "up", "east",                            # Level 3, IT: the terminal
         "consult notice", "consult key",
         "west", "up",                            # back out and up to Level 2
-        "west", "east", "east",                  # onto ring A, round to 1:00
+        "west", "knock 100A",                    # onto the ring, the flat's door
         "take photo",
-        "west", "west", "south",                 # back to the stair
+        "east",                                  # back to the stair
         "down", "east", "consult photo",
         "!",
     ]
@@ -505,12 +523,13 @@ def test_the_key_names_a_flat_the_card_knows(played):
     assert f"{flat} is an entry in the archive" in " ".join(out.split())
 
 
-def test_the_flat_the_key_named_is_a_room_with_the_photograph_in_it(played):
+def test_the_flat_the_key_named_is_a_door_with_the_photograph_outside_it(played):
     """Link two, and the one that makes it a chain rather than two lookups:
-    the address the archive just read out is somewhere the player can stand."""
+    the address the archive just read out is a door the player can knock
+    on, and the photograph is lying in the corridor beside it."""
     out, _host, _game, _files = played
     flat = schema.address(FLOOR, 60, "A")
-    assert f"Apartment {flat}" in out
+    assert f"Apartment {flat} is a dwelling" in " ".join(out.split())
     assert "Taken." in out
 
 
@@ -535,8 +554,8 @@ def test_the_chain_costs_three_questions_and_the_walk_costs_nothing(played):
                "down", "down", "east", "take notice", "west",
                "up", "east", "take key", "west", "up", "east",
                "consult notice", "consult key", "west", "up",
-               "west", "east", "east", "take photo",
-               "west", "west", "south", "down", "east", "consult photo",
+               "west", "knock 100A", "knock 1200A", "knock 1230A",
+               "take photo", "east", "down", "east", "consult photo",
                "!"],
         files=files)
     wandered.run(game, max_cycles=2_000_000_000)

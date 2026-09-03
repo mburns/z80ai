@@ -590,28 +590,73 @@ the difference — it deletes one edge and checks the exit went with it.
 Nothing here writes prose either. Every description is a lead the corpus
 already carries, so editing an article moves a room.
 
-### The wall is the room id, not the memory
+### The wall was the room id, and a dwelling is not a room
 
 The section above measured 505 KB of SRAM free and observed that at 12 bytes a
-room, that is more rooms than anybody will write. It is, and **it is not what
-stops you**: `libworld.NOWHERE` is `0xFF`, so a room id is one byte.
+room, that is more rooms than anybody will write. It is, and **it was not what
+stopped you**: `libworld.NOWHERE` is `0xFF`, so a room id is one byte.
 
 ```
-144 landings + 14 departments        158 rooms    12,347 bytes
-one residential floor                 72 rooms    24,492 bytes
+144 landings + 14 departments        158 rooms
+one residential floor                 72 rooms
                                      ---
                                      230 rooms, and 255 is the ceiling
 ```
 
-One floor fits and two do not — 302 rooms, refused rather than truncated,
-because a world quietly missing its bottom forty levels walks perfectly well.
-The silo has twenty-nine opened floors. Reaching all of them wants a two-byte
-room id, which costs every exit a byte in the image, or a world that streams
-floors off the card, which costs a turn the one thing a turn must never cost.
+One floor fit and two did not. The silo has twenty-nine opened floors, and
+the two ways out this file named — a two-byte room id, which costs every
+exit a byte, or paging floors off the card, which costs a turn the one thing
+a turn must never cost — were both answers to the wrong question. What a
+player wants from a dwelling is the name beside the door, and a one-sentence
+room they cannot enter is not a room.
 
-A 230-room world still reads nothing: `io_bytes == 0` holds at two hundred
-rooms exactly as it did at six, because a move is a table lookup whatever the
-size of the table.
+So a dwelling is a **door**: a word and a sentence on its floor's ring, in
+the image, with no overlay byte because nothing about a door ever changes.
+
+```
+> west
+Level 2, the ring
+The corridor runs all the way round the stair: 72 doors on 3 rings, a number
+painted on every one. The stair is east.
+
+> knock 600A
+Apartment 2 600 A is a dwelling on Level 2 of Silo 18, ring A, in Up Top.
+The names beside the door are Edward Y. Butler, Michelle U. Patterson and
+William N. Butler.
+```
+
+That is the shipped corpus, and the three names are the reason a door says
+*names*: a flat is a household, and the first version of this named whoever
+`residence` happened to list last.
+
+`KNOCK` scans only the doors of the room the player is in — `DOORTAB` has a
+row a room — so `600A` on every floor is the design rather than a collision,
+and the scan is bounded by one floor however many there are. `EXAMINE`
+reaches a door too, after the nouns. `libworld.Door` and `World.check` hold
+a door to one word the parser can carry, unique on its ring, and not also a
+thing or a person.
+
+```
+python data/silo/buildworld.py --floors all
+187 rooms, 2088 doors, 10 things (7 of them name something on the card)
+  302,677 bytes of image, 82 of overlay
+  0 rooms nothing leads to
+  room ids left: 68
+```
+
+**The whole silo walks**, with 68 room ids to spare for whatever an author
+adds, and a knock on a door of a 72-door ring costs 6,689 instructions and
+no card bytes — against a move's ~4,700 and a question's ~480,000. What it gives up is walking *round* the
+ring: `next_along` and `next_out` are still the card's business, where "who
+lives next door" is a question, but a world no longer turns them into
+`EAST` and `NORTH`. The doors still come out of the `apartment` table in
+bearing order, and `test_the_doors_are_read_from_the_apartment_table` is
+the test that can tell: it walls off one flat and checks the door went with
+it.
+
+A 187-room world still reads nothing: `io_bytes == 0` holds on the whole
+silo exactly as it did at six rooms, because a move is a table lookup
+whatever the size of the table.
 
 ### Ten things, and nine of them are one case
 

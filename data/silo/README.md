@@ -1964,9 +1964,14 @@ and turns out to be exactly what a turn loop wants:
 python data/silo/buildworld.py --floors 2 -o SILO.bin
 ```
 
-144 landings, 14 departments and one ring of 72 dwellings is 230 rooms, and
-`libworld.NOWHERE` caps it at 255. That, rather than the half-megabyte of free
-SRAM, is what stops a world holding all twenty-nine opened floors.
+144 landings, 14 departments and one ring of 72 dwellings was 230 rooms, and
+`libworld.NOWHERE` caps it at 255 — which is why a dwelling is now a *door*
+on its floor's ring rather than a room. 144 landings, 14 departments and 29
+rings is 187 rooms and 2,088 doors, and the whole silo walks:
+
+```bash
+python data/silo/buildworld.py --floors all -o SILO.bin
+```
 
 **And the world reaches back into this corpus through one verb.** A thing the
 player is carrying may name an entry — `Thing.subject` — and `CONSULT LEDGER`
