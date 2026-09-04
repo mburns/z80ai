@@ -36,8 +36,10 @@ generator is last because it is what the rest is for.
       `RESTORE n` move the overlay in one write, neither is a turn, and the
       archive's log is the series memory: a game opens knowing what the card
       was asked before. [#104](../../issues/104)
-- [ ] **The archive as records** - `LOOKUP` on the card, and a name index that
-      does not cost a byte per article. [#105](../../issues/105)
+- [x] **The archive as records** - `LOOKUP <name>` on the card: a name index
+      of two 24-bit hashes a title, binary-searched, and the record printed
+      from the graph with no search and no classifier. 12,904 instructions
+      against a question's 465,179. [#105](../../issues/105)
 - [ ] **Two subjects on the eZ80** - the second search, a `SHARED` step, a walk
       that runs twice. [#106](../../issues/106)
 - [ ] **Testimony from records** - two-hop knowledge and a register per

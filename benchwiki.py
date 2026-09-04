@@ -83,12 +83,13 @@ def found(text: str, query: str) -> str:
 def card_files(stem: Path) -> tuple[bytes, dict[str, bytes]]:
     """The binary and the card, read the way the machine would see them.
 
-    `.GRF` is optional: a card built without `--relations` is a search card and
-    has none, and the program is a different and much smaller one.
+    `.GRF` and `.NAM` are optional: a card built without `--relations` is a
+    search card and has neither, and the program is a different and much
+    smaller one.
     """
     binary = stem.with_suffix(".bin").read_bytes()
     files: dict[str, bytes] = {}
-    for suffix in (".IDX", ".DAT", ".GRF"):
+    for suffix in (".IDX", ".DAT", ".GRF", ".NAM"):
         path = stem.with_suffix(suffix)
         if path.exists():
             files[path.name] = path.read_bytes()

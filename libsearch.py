@@ -463,6 +463,14 @@ MAX_BLOB = 4096
 MAX_PACKED_ARTICLE = 2048
 MAX_ARTICLE = 2 * MAX_PACKED_ARTICLE
 
+#: What `READ_TITLE` reads when only the title is wanted - a record listing
+#: prints a title an edge, and reading a whole `CHUNK` for each would cost a
+#: lookup six questions' worth of card. The packed title has to end inside
+#: this, and `write_text` refuses one that does not for the same reason it
+#: refuses an article past `MAX_PACKED_ARTICLE`: the device cannot see the
+#: end of it and does not know that.
+MAX_PACKED_TITLE = 256
+
 
 def free_codes(raw: bytes) -> list[int]:
     """Byte values the text never uses, which are therefore free to mean a pair.
@@ -599,6 +607,10 @@ def write_text(index: Index, path: Path) -> dict[str, int]:
                 f"per article and unpacks into {MAX_ARTICLE}. Shorten the "
                 f"lead: the device cannot see the end of this one, and does "
                 f"not know that")
+        if one.index(0) >= MAX_PACKED_TITLE:
+            raise ValueError(
+                f"{index.titles[doc]!r} packs to {one.index(0)} bytes of title, "
+                f"and a record listing reads {MAX_PACKED_TITLE} for a title")
         packed += one
 
     header = len(TEXT_MAGIC) + 2 + len(slots) + len(blob) + 4 + 4 * len(offsets)

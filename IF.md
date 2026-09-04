@@ -837,6 +837,61 @@ a different instrument for two hundred.
 Shifts, and where ten thousand people are at a given hour, are the next two
 steps of [#101](../../issues/101) and are not here. See [ROADMAP.md](ROADMAP.md).
 
+## The archive as records
+
+```
+archive> lookup edward y butler
+Edward Y. Butler
+  born: Year 203
+  born on: Level 2
+  schooled with: Class of 203
+  crew: Mechanical First Crew 3
+  father: William N. Butler
+  generation: Generation 6
+  ...
+```
+
+That is the name a door on Level 2 gave the player, looked up at the
+terminal, and nothing in the answer was guessed. `LOOKUP <name>` runs no
+search and no classifier: the typed name is normalised and hashed the way
+`libnames` does it, binary-searched in `SILO.NAM` — nine-byte records, two
+24-bit hashes and a document id, fourteen probes for ten thousand names —
+and the record is the forward edge table's lower bound for that document
+and a scan while the subject holds, a title read per edge. `libgraph.record`
+on the device, and `liboracle.HELD`'s own words for the labels.
+
+The classifier is 62% of a question and wrong one time in three on a wording
+it has not seen. In a mystery a wrong answer is indistinguishable from a lie,
+so the deterministic surface has to exist beside it: a name gets the record,
+a question gets the Voice, and the player learns which to trust. Measured on
+the shipped silo card:
+
+| | instructions | card bytes |
+|---|---:|---:|
+| `lookup alexander e wong` | 12,904 | 4,031 |
+| `lookup amanda wilson` — four of them, listed | 5,505 | 1,238 |
+| `lookup zzqqxx` | 2,024 | 144 |
+| *who is alexander e wong's father*, for scale | 465,179 | 2,494 |
+
+Thirty-six times fewer instructions than a question, and no accumulator at
+all — the search's byte per article is what made a name cost the corpus, and
+the index costs it nothing. The card bytes are higher, and the reason is
+plain: a record is thirteen edges and each object's title is read off the
+card, 256 packed bytes at a time. A title table beside the text would take
+that to a few hundred bytes, and is the obvious next thing if it matters.
+
+**A name that is not enough is listed, not guessed.** `First M. Last` also
+keys under `FIRST LAST`, because that is how people say names, and 2,264 of
+the ten thousand share one. The device prints who shares it under a heading
+and stops — the honest answer to the middle-initial problem #56 measured,
+where two people were one document and the graph was right about the wrong
+person.
+
+**And the Voice hears it.** In the merged binary a lookup goes through the
+same `NOTICE` a question does: the subject is marked asked, charged its
+attention, logged, and a sealed or altered record is what the archive says
+instead. Without that a lookup would be the way round the Voice.
+
 ## The Voice, which does things to the record
 
 ```

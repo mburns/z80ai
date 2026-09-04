@@ -31,6 +31,7 @@ import buildwikibin
 # Only for the climb-limit default. The rest of the graph modules stay inside
 # `build_graph`, which is where the ones that want numpy belong.
 import libgraphcard
+import libnames
 import libsearch
 
 DB_PATH = Path(__file__).resolve().parent / "data" / "simple_english_wikipedia.db"
@@ -142,6 +143,14 @@ def build_graph(args: argparse.Namespace, stem: Path,
     print(f"{' ' * len(str(grf_path))}  {sum(1 for p in paths if p)} of "
           f"{len(paths)} phrases are a path this can walk")
 
+    # The name index beside the graph: a typed name to a document with no
+    # search in it, for `LOOKUP <name>`. Built from the same titles, so its
+    # ids mean the same articles the graph's do.
+    nam_path = stem.with_suffix(".NAM")
+    names = libnames.write(libnames.build(titles), nam_path)
+    print(f"{nam_path}  {names['bytes'] / 1e6:>8.1f} MB   "
+          f"{names['records']:,} names, exact or absent")
+
     assert graph.digest == libgraphcard.corpus_digest(titles)
     return buildwikibin.OracleSpec(
         graph_name=grf_path.name.upper(), forward_at=stats["forward_at"],
@@ -152,7 +161,9 @@ def build_graph(args: argparse.Namespace, stem: Path,
         paths=paths,
         climb_limit=args.climb_limit,
         model=libinfer.load_for_build(str(args.relations),
-                                      report_io=False))
+                                      report_io=False),
+        names_name=nam_path.name.upper(), num_names=names["records"],
+        relations=relations)
 
 
 def report_ceiling(num_docs: int, image_bytes: int, what: str) -> None:
@@ -253,7 +264,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"{bin_path}  {size / 1024:>8.1f} KB   "
           f"(reads {idx_path.name.upper()} and {dat_path.name.upper()} by name)")
     report_ceiling(index.num_docs, size, "this image")
-    print(f"\nCopy all {'four' if spec else 'three'} onto the card. The binary "
+    print(f"\nCopy all {'five' if spec else 'three'} onto the card. The binary "
           f"carries no corpus, so rebuilding\nthe database and re-running this "
           f"replaces the card without touching it.")
 

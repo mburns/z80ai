@@ -44,7 +44,7 @@ tools/mostest.py and the note in EZ80.md.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import buildif
@@ -61,6 +61,7 @@ from libsearch import (
     MAX_ARTICLE,
     MAX_BLOB,
     MAX_PACKED_ARTICLE,
+    MAX_PACKED_TITLE,
     MAX_QUERY_TERMS,
     MAX_WEIGHT,
     NUM_BUCKETS,
@@ -107,6 +108,14 @@ class OracleSpec:
     #: the choice costs nothing in bytes and shows up only as probes on the
     #: climbs that use it.
     climb_limit: int = libgraphcard.CLIMB_LIMIT
+    #: The name index, for `LOOKUP <name>`: its card file and how many
+    #: records it holds. `None` builds a card that answers questions and
+    #: cannot be asked for a record.
+    names_name: str | None = None
+    num_names: int = 0
+    #: Relation id -> name, so a record can label its lines. The graph file
+    #: carries these too; the binary needs them at build time to emit text.
+    relations: list[str] = field(default_factory=list)
 
 
 MAX_INPUT_LEN = 120
@@ -246,6 +255,12 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
         b.or_a()
         b.jp_z("NOCARD")
         b.ld_mem_label_a("GRFH")
+        if oracle.names_name is not None:
+            b.ld_hl_label("NAMNAME")
+            b.call("OPEN")
+            b.or_a()
+            b.jp_z("NOCARD")
+            b.ld_mem_label_a("NAMH")
         b.call("CHECKGRAPH")
         b.or_a()
         b.jp_nz("BADCARD")
@@ -305,6 +320,12 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
         b.jp("MAINLOOP")
         b.label("ML_ASK")
 
+    if oracle is not None and oracle.names_name is not None:
+        # `LOOKUP <name>` is answered from the name index and the graph, with
+        # no search and no classifier in it. Checked here, after LEAVE and
+        # before the scan, so a lookup never pays for a search.
+        b.call("NM_TRY")
+        b.jp_c("MAINLOOP")
     b.call("CLEAR_ACC")
     b.call("SCORE_QUERY")
     if world is None:
@@ -329,6 +350,9 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     b.call("CLOSE")
     b.ld_a_mem_label("DATH")
     b.call("CLOSE")
+    if oracle is not None and oracle.names_name is not None:
+        b.ld_a_mem_label("NAMH")
+        b.call("CLOSE")
     b.call("PRNL")
     b.ret()
 
@@ -593,6 +617,13 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
                  oracle is not None or world is not None)
     if oracle is not None:
         _emit_oracle(b, oracle)
+        if oracle.names_name is not None:
+            import buildnames
+
+            buildnames.emit_lookup(
+                b, oracle.num_names, oracle.num_edges, oracle.forward_at,
+                buildnames.labels_for(oracle.relations),
+                notice_label="NOTICE" if world is not None else None)
         _emit_classifier(b, oracle)
     _emit_console(b)
     if world is not None:
@@ -1326,10 +1357,27 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
     b.call("PRNL")
     b.ret()
 
+    # READ_TITLE: HL is a document id; leave its title alone in TEXTBUF.
+    # `MAX_PACKED_TITLE` bytes rather than a CHUNK, and one NUL rather than
+    # two, because a record listing reads a title an edge and a whole chunk
+    # each would cost a lookup six questions' worth of card. `libsearch`
+    # refuses a title that packs past what this reads.
+    b.label("READ_TITLE")
+    b.ld_a_n(1)
+    b.ld_mem_label_a("NULSEEN")
+    b.ld_de_nn(MAX_PACKED_TITLE)
+    b.ld_mem_label_de("RA_LEN")
+    b.jr("RA_GO")
+
     # READ_ARTICLE: HL is a document id; leave its title and lead in TEXTBUF.
     # Split out of SHOW_ONE because an oracle wants the title of an article it
     # walked to, which is not one of the three the search scored.
     b.label("READ_ARTICLE")
+    b.ld_a_n(2)
+    b.ld_mem_label_a("NULSEEN")      # a title and a lead
+    b.ld_de_nn(CHUNK)
+    b.ld_mem_label_de("RA_LEN")
+    b.label("RA_GO")
     # The offset table sits after the pair table, whose size depends on the
     # corpus - so the base is read from the card at startup rather than built
     # in. A binary that knew it would need rebuilding whenever the text did.
@@ -1359,21 +1407,20 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
     b.ld_a_mem_label("DATH")
     b.ld_c_a()
     b.ld_hl_label("PACKBUF")
-    b.ld_de_nn(CHUNK)
+    b.ld_de_mem_label("RA_LEN")
     b.call("READ")
     # Fall through: what came off the card is packed, and everything
     # downstream wants a title and a lead it can print.
 
-    # UNPACK: PACKBUF -> TEXTBUF, stopping once the lead's NUL has been
-    # written. A byte with a zero length in the table stands for itself;
+    # UNPACK: PACKBUF -> TEXTBUF, stopping once NULSEEN NULs have been
+    # written - the caller says whether that is a title or a title and a
+    # lead. A byte with a zero length in the table stands for itself;
     # anything else is a block move out of the expansion blob. No shifts, no
     # escape, no recursion - the codes are byte values the corpus never uses,
     # so a literal can never be mistaken for one.
     b.label("UNPACK")
     b.ld_ix_label("PACKBUF")
     b.ld_iy_label("TEXTBUF")
-    b.ld_a_n(2)
-    b.ld_mem_label_a("NULSEEN")      # a title and a lead
 
     b.label("UP_ONE")
     b.ld_a_ixd(0)
@@ -1590,6 +1637,12 @@ def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
     b.ld_a_mem_label("BESTSC")
     b.or_a()
     b.jp_z("RP_SHOW")                # nothing matched at all
+    if spec.model is None:
+        # A graph and no classifier: records can be looked up by name, and a
+        # question gets the article list, because nothing here can tell what
+        # it asked.
+        b.jp("RP_SHOW")
+        return
 
     b.call("TOKENIZE")
     b.call("INFER")
@@ -1741,7 +1794,13 @@ def _emit_classifier(b: EZ80Builder, spec: OracleSpec) -> None:
     import libagon
     import libinfer
 
-    assert spec.model is not None
+    if spec.model is None:
+        # The walk alone, for a card with a graph and no classifier.
+        buildgraphwalk.emit_walk(
+            b, spec.num_edges, spec.types_at, spec.num_types,
+            handle_label="GRFH", buffer_label="IOBUF",
+            seekoff_label="SEEKOFF", climb_limit=spec.climb_limit)
+        return
     model = spec.model
     plat = libagon.AgonPlatform()
 
@@ -1787,9 +1846,10 @@ def _emit_classifier(b: EZ80Builder, spec: OracleSpec) -> None:
 def _emit_classifier_data(b: EZ80Builder, spec: OracleSpec) -> None:
     """Buffers the borrowed emitters address by name."""
     import buildez80
-    import buildgraphwalk
 
-    assert spec.model is not None
+    if spec.model is None:
+        _emit_graph_data(b, spec)
+        return
 
     model = spec.model
     layer_sizes = model.layer_sizes
@@ -1858,6 +1918,16 @@ def _emit_classifier_data(b: EZ80Builder, spec: OracleSpec) -> None:
         assert len(row) <= PATH_STRIDE, f"path too long: {steps}"
         b.emit(*row, *([0] * (PATH_STRIDE - len(row))))
 
+    _emit_graph_data(b, spec)
+
+
+def _emit_graph_data(b: EZ80Builder, spec: OracleSpec) -> None:
+    """The graph file's name and handle, the walk's cells, and the name
+    index's - everything a card with a graph needs whether or not it has a
+    classifier in front of it."""
+    import buildgraphwalk
+    import buildnames
+
     b.label("GRFMAGIC")
     b.emit(*GRAPH_MAGIC)
     b.label("GRFNAME")
@@ -1866,6 +1936,13 @@ def _emit_classifier_data(b: EZ80Builder, spec: OracleSpec) -> None:
     b.label("GRFH")
     b.db(0)
     buildgraphwalk.emit_cells(b)
+    if spec.names_name is not None:
+        b.label("NAMNAME")
+        b.ascii(spec.names_name)
+        b.db(0)
+        b.label("NAMH")
+        b.db(0)
+        buildnames.emit_cells(b)
 
 
 def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, pages: int,
@@ -1932,6 +2009,8 @@ def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, pages: int,
     b.ds(MAX_TOKEN_LEN + 1)
     b.label("INPBUF")
     b.ds(MAX_INPUT_LEN + 1)
+    b.label("RA_LEN")                # what READ_ARTICLE or READ_TITLE reads
+    b.d24(0)
     b.label("IOBUF")
     b.ds(CHUNK + 16)
     # The four unpacking buffers live above the program rather than in it, so
