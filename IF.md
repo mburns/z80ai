@@ -837,6 +837,59 @@ a different instrument for two hundred.
 Shifts, and where ten thousand people are at a given hour, are the next two
 steps of [#101](../../issues/101) and are not here. See [ROADMAP.md](ROADMAP.md).
 
+## Testimony from records
+
+```
+> ask 600A about 630A
+'Robert N. Cook? Next door to us.' says a voice on the other side of the
+door, in the flat tone of somebody from Mechanical.
+
+> ask 600A about notice
+'Alexandra H. Anderson? Not a name I know.' says a voice on the other side
+of the door, in the flat tone of somebody from Mechanical.
+```
+
+Four people have lines written for them. This is how the other 9,996
+answer. A door's household is a person on the card, the name the player
+holds up is another — a topic's title, a carried thing's subject, or the
+door beside it — and what the first says about the second is *which path
+on the graph joins them*, if one does. A father is one hop; a sibling is a
+hop up and a scan down; next door is my flat, the flat beside it, and
+whoever lives there. Nothing is written per person. `libtestimony.PATHS` is
+seventeen sentences, one a path, and the graph fills in who.
+
+**Two hops is what a witness knows.** Parents, children, a spouse, the
+people under the same roof and next door, the crew, the class, the
+committee — every one of those is within a few steps of anybody, and beyond
+them a household says it does not know the name, which is the refuse class
+in a voice. A player who wants more about somebody has to find somebody
+closer, which is what an investigation is.
+
+**The register is the department.** One more hop, to `works_in`, picks how
+the household sounds — `REGISTERS` has a line for each — so the same fact
+comes back in fourteen voices, which is what makes a corpus of ten thousand
+feel populated rather than templated.
+
+Both titles go through the name index, so the world never learns a document
+id and a door in a world with no card says nobody answers and is right. On
+the shipped card, the whole silo carried by the oracle binary:
+
+| | instructions | card bytes |
+|---|---:|---:|
+| `ask 600A about 630A` — next door, three steps | 32,965 | 2,997 |
+| `ask 600A about 600B` — across the corridor | 40,750 | 3,795 |
+| `ask 600A about 100A` — a stranger, every path tried | 93,076 | 9,558 |
+| a question, for scale | 465,179 | 2,494 |
+
+The stranger is the expensive one, because every path is walked before the
+door gives up, and it is still a fifth of a question. `tests/test_testimony.py`
+holds the device to `libtestimony.testify`, the same walk over the plain
+edge list, for every person against one household.
+
+What is not here is presence — a household is behind its door whether or
+not anybody is home, because the corpus has no clock. That is step three of
+[#101](../../issues/101), and the doors are what it will move.
+
 ## The archive as records
 
 ```

@@ -319,7 +319,7 @@ def emit_reset(b: EZ80Builder, world: World) -> None:
 
 
 def emit_world_routines(b: EZ80Builder, world: World,
-                        ask_label: str) -> None:
+                        ask_label: str, testify_label: str | None = None) -> None:
     """Everything a turn needs, and nothing about how the program starts.
 
     Split out so the oracle binary can hold a world as well. That direction
@@ -332,7 +332,19 @@ def emit_world_routines(b: EZ80Builder, world: World,
     says there is no terminal in the standalone one. Passed in rather than
     defined twice, because `Z80Builder.label` overwrites silently and
     `test_the_two_programs_define_no_label_twice` exists to say so.
+
+    `testify_label` is where `ASK <door> ABOUT <name>` goes with both titles
+    in `TS_WHOBUF` and `TS_WHOMBUF`: the card's testimony in a merged binary
+    with a name index, and otherwise a stub emitted here that says nobody
+    answers - which is true of every door in a world with no card.
     """
+    if testify_label is None:
+        testify_label = "TS_NOCARD"
+        b.label("TS_NOCARD")
+        b.ld_hl_label("MSGNOANSWER")
+        b.call("PRWRAP")
+        b.call("PRNL")
+        b.jp("TURN")
     _emit_go(b, world)
     _emit_take_drop(b, world, ask_label)
     _emit_describe(b, world)
@@ -346,7 +358,7 @@ def emit_world_routines(b: EZ80Builder, world: World,
     _emit_subj_row(b)
     _emit_where_ptr(b)
     _ldptr(b)
-    _emit_ask(b, world)
+    _emit_ask(b, world, testify_label)
     _emit_attention(b, world)
     _emit_rules(b, world)
     _emit_save_restore(b, world)
@@ -1023,7 +1035,7 @@ def _emit_take_drop(b: EZ80Builder, world: World,
     b.jp("TURN")
 
 
-def _emit_ask(b: EZ80Builder, world: World) -> None:
+def _emit_ask(b: EZ80Builder, world: World, testify_label: str) -> None:
     """`ASK <person> ABOUT <topic>` - the oracle's shape, in the image.
 
     Three lookups and a linear scan, and every byte of it is resident. That is
@@ -1038,9 +1050,9 @@ def _emit_ask(b: EZ80Builder, world: World) -> None:
     dialogue nobody can ever hear.
     """
     b.label("DO_ASK")
-    if not world.people or not world.topics:
-        # Nobody to ask, or nothing to ask about. Said plainly rather than
-        # left as an unknown verb, because `ASK` is in the table either way.
+    if not world.people and not world.doors:
+        # Nobody to ask. Said plainly rather than left as an unknown verb,
+        # because `ASK` is in the table either way.
         b.ld_hl_label("MSGNOASK")
         b.call("PRWRAP")
         b.call("PRNL")
@@ -1050,39 +1062,138 @@ def _emit_ask(b: EZ80Builder, world: World) -> None:
     b.ld_a_mem_label("W2LEN")
     b.or_a()
     b.jp_z("ASK_WHO")
-    b.ld_hl_label("PEOPLEW")
-    b.ld_de_label("W2")
-    b.ld_a_mem_label("W2LEN")
-    b.call("LOOKUP")
-    b.jp_c("ASK_NOBODY")
-    b.ld_mem_label_a("ASKWHO")
+    if world.people and world.topics:
+        b.ld_hl_label("PEOPLEW")
+        b.ld_de_label("W2")
+        b.ld_a_mem_label("W2LEN")
+        b.call("LOOKUP")
+        b.jp_c("ASK_DOOR")           # not a person: a door, before giving up
+        b.ld_mem_label_a("ASKWHO")
 
-    b.call("PWHEREPTR")
+        b.call("PWHEREPTR")
+        b.ld_a_hl()
+        b.ld_hl_label("HERE")
+        b.cp_hl()
+        b.jp_nz("ASK_ABSENT")
+
+        b.ld_a_mem_label("W3LEN")
+        b.or_a()
+        b.jp_z("ASK_WHAT")
+        b.ld_hl_label("TOPICW")
+        b.ld_de_label("W3")
+        b.ld_a_mem_label("W3LEN")
+        b.call("LOOKUP")
+        b.jp_c("ASK_NOTOPIC")
+        b.ld_mem_label_a("ASKTOP")
+
+        # Marked asked before the answer is chosen, and marked whatever the
+        # answer turns out to be. `C_ASKED` records that the subject came up,
+        # not that it was productively answered - a deflection is a thing
+        # the player learned.
+        b.call("MARK_ASKED")
+        b.call("SAY")
+        b.jp("TURN")
+
+    # `ASK <door> ABOUT <topic | thing | door>`: the household behind a door,
+    # about a name. Both sides resolve to a *title* here - the door's subject
+    # and the topic's first title, the thing's subject, or the other door's
+    # subject - and the card turns titles into records and records into an
+    # answer. The world never learns a document id, which is why a door in a
+    # world with no card can say nobody answers and be right.
+    b.label("ASK_DOOR")
+    b.call("DOORID")
+    b.jp_c("ASK_NOBODY")
+    b.ld_mem_label_a("ASKDOOR")
+    b.call("DOORSUBJ")
     b.ld_a_hl()
-    b.ld_hl_label("HERE")
-    b.cp_hl()
-    b.jp_nz("ASK_ABSENT")
+    b.or_a()
+    b.jp_z("ASK_NOANSWER")           # an empty flat
+    b.ld_de_label("TS_WHOBUF")
+    b.call("COPYSTR")
 
     b.ld_a_mem_label("W3LEN")
     b.or_a()
     b.jp_z("ASK_WHAT")
-    b.ld_hl_label("TOPICW")
+    if world.topics:
+        b.ld_hl_label("TOPICW")
+        b.ld_de_label("W3")
+        b.ld_a_mem_label("W3LEN")
+        b.call("LOOKUP")
+        b.jr_c("AD_THING")
+        b.ld_mem_label_a("ASKTOP")
+        b.call("MARK_ASKED")         # a topic raised at a door is still raised
+        b.ld_a_mem_label("ASKTOP")
+        b.ld_hl_nn(0)
+        b.ld_l_a()
+        b.push_hl()
+        b.pop_de()
+        b.add_hl_hl()
+        b.add_hl_de()                # x3, a pointer a topic
+        b.ld_de_label("TOPICSUBJ")
+        b.add_hl_de()
+        b.call("LDPTR")
+        b.jp("AD_WHOM")
+    b.label("AD_THING")
+    # `NOUNID` reads the second word; the thing named here is the third.
+    b.ld_hl_label("NOUNS")
     b.ld_de_label("W3")
     b.ld_a_mem_label("W3LEN")
     b.call("LOOKUP")
+    b.jr_c("AD_OTHERDOOR")
+    b.ld_c_a()
+    b.call("WHEREPTR")
+    b.ld_a_hl()
+    b.cp_n(CARRIED)
+    b.jp_nz("TK_HAVENOT")            # a name you hold up, not one lying about
+    b.ld_a_c()
+    b.call("SUBJROW")
+    b.call("LDPTR")
+    b.jp("AD_WHOM")
+    b.label("AD_OTHERDOOR")
+    # The other door has to be in this room too, and DOORID reads W2 -
+    # so the third word takes its place for the lookup.
+    b.ld_hl_label("W3")
+    b.ld_de_label("W2")
+    b.ld_bc_nn(MAX_WORD_LEN + 1)
+    b.ldir()
+    b.ld_a_mem_label("W3LEN")
+    b.ld_mem_label_a("W2LEN")
+    b.call("DOORID")
     b.jp_c("ASK_NOTOPIC")
-    b.ld_mem_label_a("ASKTOP")
+    b.call("DOORSUBJ")
 
-    # Marked asked before the answer is chosen, and marked whatever the answer
-    # turns out to be. `C_ASKED` records that the subject came up, not that it
-    # was productively answered - a deflection is a thing the player learned.
-    b.call("MARK_ASKED")
-    b.call("SAY")
-    b.jp("TURN")
+    b.label("AD_WHOM")               # HL: the subject's title, or 0
+    b.ld_a_hl()
+    b.or_a()
+    b.jp_z("ASK_NOSUBJECT")
+    b.ld_de_label("TS_WHOMBUF")
+    b.call("COPYSTR")
+    b.jp(testify_label)
+
+    # COPYSTR: the NUL-terminated string at HL to DE, capped at the console
+    # width, which is the cap `World.check` already holds a subject to.
+    b.label("COPYSTR")
+    b.ld_c_n(0)
+    b.label("CS_LP")
+    b.ld_a_hl()
+    b.ld_de_a()
+    b.or_a()
+    b.ret_z()
+    b.inc_hl()
+    b.inc_de()
+    b.inc_c()
+    b.ld_a_c()
+    b.cp_n(MAX_INPUT_LEN)
+    b.jr_c("CS_LP")
+    b.xor_a()
+    b.ld_de_a()
+    b.ret()
 
     for label, message in (("ASK_WHO", "MSGASKWHO"),
                            ("ASK_ABSENT", "MSGASKGONE"),
-                           ("ASK_WHAT", "MSGASKWHAT")):
+                           ("ASK_WHAT", "MSGASKWHAT"),
+                           ("ASK_NOANSWER", "MSGNOANSWER"),
+                           ("ASK_NOSUBJECT", "MSGNOSUBJ")):
         b.label(label)
         b.ld_hl_label(message)
         b.call("PRWRAP")
@@ -1101,6 +1212,9 @@ def _emit_ask(b: EZ80Builder, world: World) -> None:
         b.ld_hl_label("MSGQUOTE")
         b.call("PRSTR")
         b.jp("TURN")
+
+    if not world.people or not world.topics:
+        return
 
     # SAY: the line for (ASKWHO, ASKTOP), or the person's default.
     #
@@ -1742,6 +1856,7 @@ MESSAGES: dict[str, str] = {
     "MSGBADSAVE": "That is not a saved game for this silo.",
     "MSGNOWRITE": "The card would not take it.",
     "MSGKNOCKWHAT": "Knock on which door?",
+    "MSGNOANSWER": "Nobody answers.",
     "MSGNODOOR": "There is no door marked '",
     "MSGHERE": "' here.\r\n",
 }
@@ -1795,7 +1910,8 @@ def _emit_doors(b: EZ80Builder, world: World) -> None:
         b.ld_l_a()
         b.add_hl_hl()
         b.add_hl_hl()
-        b.add_hl_hl()                # x8, the DOORTAB stride
+        b.add_hl_hl()
+        b.add_hl_hl()                # x16, the DOORTAB stride
         b.ld_de_label("DOORTAB")
         b.add_hl_de()
         b.ld_mem_label_hl("DOORROW")
@@ -1810,6 +1926,28 @@ def _emit_doors(b: EZ80Builder, world: World) -> None:
     b.label("DI_FAIL")               # no such door here, or no doors at all
     b.scf()
     b.ret()
+
+    # DOORSUBJ: A, a door id within this room -> HL, the household's title,
+    # or 0 when nobody has the key. Reads the row DOORID left in DOORROW.
+    b.label("DOORSUBJ")
+    if not world.doors:
+        b.ld_hl_nn(0)
+        b.ret()
+    else:
+        b.ld_hl_nn(0)
+        b.ld_l_a()
+        b.push_hl()
+        b.pop_de()
+        b.add_hl_hl()
+        b.add_hl_de()                # x3, a pointer a door
+        b.push_hl()
+        b.ld_hl_mem_label("DOORROW")
+        b.ld_de_nn(6)
+        b.add_hl_de()
+        b.call("LDPTR")              # the room's subject table
+        b.pop_de()
+        b.add_hl_de()
+        b.jp("LDPTR")
 
     # DOORSAY: A, a door id within this room -> its text printed, and the
     # turn ended.
@@ -1848,11 +1986,12 @@ def _emit_door_tables(b: EZ80Builder, world: World) -> None:
         if room in by_room:
             b.fixup_word(f"DOORW{room}")
             b.fixup_word(f"DOORT{room}")
+            b.fixup_word(f"DOORS{room}")
         else:
             b.d24(0)
             b.d24(0)
-        b.db(0)
-        b.db(0)                      # pad to eight, so the row is three shifts
+            b.d24(0)
+        b.ds(16 - 9)                 # pad to sixteen, so the row is four shifts
 
     for room, indices in by_room.items():
         _emit_word_table(b, f"DOORW{room}",
@@ -1861,10 +2000,22 @@ def _emit_door_tables(b: EZ80Builder, world: World) -> None:
         b.label(f"DOORT{room}")
         for i in indices:
             b.fixup_word(f"DDESC{i}")
+        # Who answers: the household's title for the card, or 0 for a flat
+        # nobody has the key to.
+        b.label(f"DOORS{room}")
+        for i in indices:
+            if world.doors[i].subject is None:
+                b.d24(0)
+            else:
+                b.fixup_word(f"DSUBJ{i}")
     for index, door in enumerate(world.doors):
         b.label(f"DDESC{index}")
         b.ascii(door.text)
         b.db(0)
+        if door.subject is not None:
+            b.label(f"DSUBJ{index}")
+            b.ascii(door.subject)
+            b.db(0)
 
 
 def _emit_save_restore(b: EZ80Builder, world: World) -> None:
@@ -2136,6 +2287,20 @@ def _emit_tables(b: EZ80Builder, world: World,
         b.label("INITSEALED")
         for topic in world.topics:
             b.db(int(topic.starts_sealed))
+        # A topic's first title, so that a household can be asked about a
+        # topic as well as about a name on a piece of paper. Zero for a topic
+        # that names no article.
+        b.label("TOPICSUBJ")
+        for index, topic in enumerate(world.topics):
+            if topic.titles:
+                b.fixup_word(f"TTITLE{index}")
+            else:
+                b.d24(0)
+        for index, topic in enumerate(world.topics):
+            if topic.titles:
+                b.label(f"TTITLE{index}")
+                b.ascii(topic.titles[0])
+                b.db(0)
 
     _emit_door_tables(b, world)
 
@@ -2280,7 +2445,8 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
     # Everything below is scratch that does not outlive a turn.
     scratch = ["VERB", "W1LEN", "W2LEN", "W3LEN", "LKLEN", "NCARRIED",
                "RU_ONCE", "RU_NC", "RU_NA", "RU_OP", "RU_ARG", "RU_ARG2",
-               "RU_CNT", "ATTERM", "ASKWHO", "ASKTOP", "LOGTOP", "SAVEH"]
+               "RU_CNT", "ATTERM", "ASKWHO", "ASKTOP", "LOGTOP", "SAVEH",
+               "ASKDOOR"]
     if not shared_console:
         scratch += ["WRAPCOL", "INPLEN"]
     for name in scratch:
@@ -2315,6 +2481,12 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
     b.ds(world.overlay_bytes)
     b.label("LOGREC")
     b.ds(2)
+    # Two titles for the card to turn into people: the household asked, and
+    # the name it is asked about.
+    b.label("TS_WHOBUF")
+    b.ds(MAX_INPUT_LEN + 1)
+    b.label("TS_WHOMBUF")
+    b.ds(MAX_INPUT_LEN + 1)
 
 
 def overlay_at(builder: EZ80Builder, world: World) -> tuple[int, int]:

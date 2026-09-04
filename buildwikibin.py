@@ -624,6 +624,11 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
                 b, oracle.num_names, oracle.num_edges, oracle.forward_at,
                 buildnames.labels_for(oracle.relations),
                 notice_label="NOTICE" if world is not None else None)
+            if world is not None:
+                import buildtestimony
+
+                buildtestimony.emit_testimony(
+                    b, oracle.relations, oracle.forward_at, oracle.num_edges)
         _emit_classifier(b, oracle)
     _emit_console(b)
     if world is not None:
@@ -638,7 +643,10 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
         # here, which is the same place a line typed at the screen goes. The
         # player never sat down: they held up a piece of paper and the archive
         # read it.
-        buildif.emit_world_routines(b, world, ask_label="ML_ASK")
+        buildif.emit_world_routines(
+            b, world, ask_label="ML_ASK",
+            testify_label=("TS_ENTRY" if oracle is not None
+                           and oracle.names_name is not None else None))
         buildif.emit_world_tables(b, world)
         _emit_notice(b, world)
         b.label("LEAVEWORD")
@@ -1943,6 +1951,9 @@ def _emit_graph_data(b: EZ80Builder, spec: OracleSpec) -> None:
         b.label("NAMH")
         b.db(0)
         buildnames.emit_cells(b)
+        import buildtestimony
+
+        buildtestimony.emit_cells(b)
 
 
 def _emit_data(b: EZ80Builder, num_docs: int, acc_base: int, pages: int,

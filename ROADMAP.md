@@ -42,9 +42,10 @@ generator is last because it is what the rest is for.
       against a question's 465,179. [#105](../../issues/105)
 - [ ] **Two subjects on the eZ80** - the second search, a `SHARED` step, a walk
       that runs twice. [#106](../../issues/106)
-- [ ] **Testimony from records** - two-hop knowledge and a register per
-      department, so ten thousand people answer without ten thousand lines.
-      [#107](../../issues/107)
+- [x] **Testimony from records** - `ASK <door> ABOUT <name>`: the household
+      behind any door answers about any name from the graph within two hops,
+      in its department's voice, or says it does not know. Nothing is written
+      per person. [#107](../../issues/107)
 - [ ] **The VDP is idle** - status line, the stair, the wall screen, sound.
       [#111](../../issues/111)
 

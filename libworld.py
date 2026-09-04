@@ -209,6 +209,11 @@ class Door:
     #: What knocking says. The whole sentence: the compiler writes it from
     #: the corpus, and the engine prints it.
     text: str
+    #: Who answers when the door is *asked* - the title of the household's
+    #: article on the card, resolved on the device through the name index.
+    #: `None` is an empty flat: nobody answers. A door that can be asked is
+    #: how ten thousand people on the card become people who talk.
+    subject: str | None = None
 
 
 #: Condition opcodes. Every condition in a rule must hold, which is the point:
@@ -593,6 +598,11 @@ class World:
             if not door.text.strip():
                 raise ValueError(f"door {door.name!r} says nothing when "
                                  f"knocked on")
+            if door.subject is not None and not (
+                    door.subject.strip() and len(door.subject) <= MAX_INPUT_LEN):
+                raise ValueError(f"door {door.name!r} has a subject that is "
+                                 f"empty or longer than {MAX_INPUT_LEN}, "
+                                 f"which the card could not be asked for")
         for room, words in per_room.items():
             if len(words) > 255:
                 raise ValueError(f"{len(words)} doors on "
