@@ -93,6 +93,29 @@ def measure(stem: Path, names: list[str]) -> list[tuple[int, int, str]]:
     return out
 
 
+def lookups(stem: Path, names: list[str]) -> list[tuple[int, int, int]]:
+    """`LOOKUP <name>` for each name: (instructions, card bytes, lines).
+
+    The deterministic surface beside the classifier, and the one the
+    classifier's share of a question was the argument for: a name resolved
+    through the index and a record read off the graph, with no search and no
+    forward pass in it. `lines` is how many edges the record printed, so a
+    reader can see what the card bytes bought.
+    """
+    binary, files = benchwiki.card_files(stem)
+    if "SILO.NAM" not in files and not any(n.endswith(".NAM") for n in files):
+        return []
+    idle = benchwiki.run(binary, files, "")
+    out: list[tuple[int, int, int]] = []
+    for name in names:
+        instructions, io_bytes, _, text = benchwiki.run(
+            binary, files, f"lookup {name.lower()}")
+        answer = text.split(f"? lookup {name.lower()}", 1)[-1]
+        lines = sum(1 for line in answer.splitlines() if line.startswith("  "))
+        out.append((instructions - idle[0], io_bytes - idle[1], lines))
+    return out
+
+
 def entity_lookup(stem: Path, db: sqlite3.Connection, sample: int,
                   seed: int) -> tuple[int, int, int, int]:
     """(first, in the top three, missing, people sharing a first and last name).
@@ -204,6 +227,21 @@ def main() -> None:
           f"be dropped at both ends,\n  so those were not similar queries - "
           f"they were the same one. `libsearch.tokenize`\n  glues an initial to "
           f"the name after it now, which is what the rows above measure.")
+
+    looked = lookups(args.card, cohorts[3][:args.subjects])
+    if looked:
+        asked = measure(args.card, cohorts[3][:args.subjects])
+        print(f"\nLOOKUP <name>, {len(looked)} names: the record, with no "
+              f"search and no classifier")
+        print(f"  {'':14}{'instructions':>15}{'card bytes':>12}{'lines':>7}")
+        print(f"  {'a lookup':14}{statistics.mean(r[0] for r in looked):>15,.0f}"
+              f"{statistics.mean(r[1] for r in looked):>12,.0f}"
+              f"{statistics.mean(r[2] for r in looked):>7.1f}")
+        print(f"  {'a question':14}{statistics.mean(r[0] for r in asked):>15,.0f}"
+              f"{statistics.mean(r[1] for r in asked):>12,.0f}")
+        print("  The bytes are a title read per edge, 256 packed bytes each; "
+              "the instructions\n  are what a name costs without an "
+              "accumulator in front of it.")
 
     import libgraph
     import libgraphcard

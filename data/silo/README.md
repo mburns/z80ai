@@ -359,6 +359,7 @@ python data/silo/benchcard.py        # runs it in the emulator, ~2 min
 | `SILO.IDX` | 5.0 MB — 6,565 terms, 355,630 postings |
 | `SILO.DAT` | 1.3 MB — titles and leads, byte-pair packed |
 | `SILO.GRF` | 2.1 MB — 142,749 edges over 21 relations |
+| `SILO.NAM` | 0.2 MB — 23,302 names, two 24-bit hashes and a document each |
 | accumulator | 13 KB resident, one byte per article |
 
 26 of the 27 phrases the classifier knows are paths the card can walk. The
@@ -1887,7 +1888,25 @@ entry can never be the subject of a fabricated fact**, because there is nothing
 there to fabricate from. Giving written entries their own edges would take that
 away, which is the argument against doing it.
 
-### Two different ways of saying no
+### A name gets the record, and nothing is guessed
+
+```
+? lookup edward y butler
+Edward Y. Butler
+  born: Year 203
+  father: William N. Butler
+  ...
+```
+
+`LOOKUP <name>` is the third way in, and the only one with no classifier in
+it. `SILO.NAM` holds every title under two 24-bit hashes of its normalised
+form — and `First M. Last` under `FIRST LAST` too — so a typed name is
+fourteen probes of nine bytes, then the forward table's run for that
+document, a line an edge. 12,904 instructions against a question's 465,179,
+and no accumulator. A name several people share is listed, not picked.
+[`IF.md`](../../IF.md) has the measurement and the argument.
+
+### Three different ways of saying no
 
 Worth keeping apart when writing dialogue for the machine, because they mean
 different things and the order they fire in is fixed:
@@ -1896,6 +1915,7 @@ different things and the order they fire in is fixed:
 |---|---|
 | `Nothing on the card matches that.` | it does not know **who** you mean |
 | `I do not know that one.` | it knows who, but not **that question** |
+| `No record under that name.` | a `LOOKUP` for a name the index does not hold — 144 card bytes, the cheapest thing the card does |
 
 The search runs before the classifier, so a refusal only fires once a subject
 has resolved. `how many cousins does zzqqxx have` gets the first message, not
@@ -2285,6 +2305,7 @@ The card is seven files in this directory, in the order they run:
 | `relationpaths.py` | templated questions, labelled with the path they mean |
 | `plant.py` | contradictions to find, and the key that says which |
 | `buildcard.py` | classifier and card — the one place that knows the order |
+| `../../libnames.py` | the name index the card is looked up by, and its reference reader |
 | `benchcard.py` | the emulator, and what a hop costs |
 
 `sweep.py` is beside them but not part of a build: it makes its own corpora, at
