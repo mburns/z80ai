@@ -120,6 +120,9 @@ V_RESTORE = V_SAVE + 1
 #: and nothing about it changes - so it has its own table and its own verb,
 #: and `EXAMINE` reaches it too once the nouns have been tried.
 V_KNOCK = V_RESTORE + 1
+#: Name the culprit. Once: the genre gives a detective one accusation, and
+#: `ACCUSED` in the overlay is what makes a restore not give it back.
+V_ACCUSE = V_KNOCK + 1
 
 #: Stack margin below the top of SRAM, matching every other Agon build here.
 STACK_MARGIN = 0x1000
@@ -147,7 +150,7 @@ def _words(world: World) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
               ("READ", V_EXAMINE),
               ("ASK", V_ASK), ("TALK", V_ASK),
               ("SAVE", V_SAVE), ("RESTORE", V_RESTORE), ("LOAD", V_RESTORE),
-              ("KNOCK", V_KNOCK)]
+              ("KNOCK", V_KNOCK), ("ACCUSE", V_ACCUSE)]
 
     nouns = [(thing.name.upper(), index)
              for index, thing in enumerate(world.things)]
@@ -288,6 +291,8 @@ def emit_dispatch(b: EZ80Builder, quit_label: str) -> None:
     b.jp_z("DO_RESTORE")
     b.cp_n(V_KNOCK)
     b.jp_z("DO_KNOCK")
+    b.cp_n(V_ACCUSE)
+    b.jp_z("DO_ACCUSE")
     b.jp("DO_GO")                    # below LOOK: the id is a direction
 
     b.label("DO_LOOK")
@@ -363,6 +368,7 @@ def emit_world_routines(b: EZ80Builder, world: World,
     _emit_rules(b, world)
     _emit_save_restore(b, world)
     _emit_doors(b, world)
+    _emit_accuse(b, world)
 
 
 def emit_world_tables(b: EZ80Builder, world: World) -> None:
@@ -1859,7 +1865,133 @@ MESSAGES: dict[str, str] = {
     "MSGNOANSWER": "Nobody answers.",
     "MSGNODOOR": "There is no door marked '",
     "MSGHERE": "' here.\r\n",
+    "MSGNOACCUSE": "There is nobody here to accuse of anything.",
+    "MSGACCUSEWHO": "Accuse whom?",
+    "MSGACCUSED": "You have made your accusation.",
 }
+
+
+def _emit_accuse(b: EZ80Builder, world: World) -> None:
+    """`ACCUSE <person | door>`: one shot, and a flag either way.
+
+    A person by name from anywhere; a household by its door, in the room the
+    door is on, compared by title. The comparison is a byte for a person and
+    a string for a door, and the verdict is a flag, so the rules and the
+    goal read it the way they read anything else - which is how a world says
+    what winning meant without the engine knowing.
+    """
+    b.label("DO_ACCUSE")
+    if world.culprit is None:
+        b.ld_hl_label("MSGNOACCUSE")
+        b.call("PRWRAP")
+        b.call("PRNL")
+        b.jp("TURN")
+        return
+    assert world.won is not None and world.lost is not None
+    person = next((i for i, p in enumerate(world.people)
+                   if p.name.upper() == world.culprit.upper()), None)
+
+    b.ld_a_mem_label("W2LEN")
+    b.or_a()
+    b.jp_z("AC_WHO")
+    b.ld_a_mem_label("ACCUSED")
+    b.or_a()
+    b.jp_nz("AC_DONE")               # the one shot has been taken
+    if world.people:
+        b.ld_hl_label("PEOPLEW")
+        b.ld_de_label("W2")
+        b.ld_a_mem_label("W2LEN")
+        b.call("LOOKUP")
+        b.jr_c("AC_DOOR")
+        # A person: guilty if their id is the culprit's, and no person is
+        # if the culprit is a household.
+        if person is None:
+            b.jp("AC_LOSE")
+        else:
+            b.cp_n(person)
+            b.jp_z("AC_WIN")
+            b.jp("AC_LOSE")
+    b.label("AC_DOOR")
+    b.call("DOORID")
+    b.jp_c("BADNOUN")
+    b.call("DOORSUBJ")
+    b.ld_a_hl()
+    b.or_a()
+    b.jp_z("ASK_NOANSWER")           # nobody behind it to accuse
+    b.ld_de_label("CULPRIT")
+    b.call("STREQ")
+    b.jp_z("AC_WIN")
+
+    b.label("AC_LOSE")
+    b.ld_a_n(1)
+    b.ld_mem_label_a("ACCUSED")
+    b.ld_a_n(world.lost)
+    b.call("FLAGPTR")
+    b.ld_a_n(1)
+    b.ld_hl_a()
+    b.ld_hl_label("LOSETEXT")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("TURN")
+
+    b.label("AC_WIN")
+    b.ld_a_n(1)
+    b.ld_mem_label_a("ACCUSED")
+    b.ld_a_n(world.won)
+    b.call("FLAGPTR")
+    b.ld_a_n(1)
+    b.ld_hl_a()
+    b.ld_hl_label("WINTEXT")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("TURN")
+
+    b.label("AC_WHO")
+    b.ld_hl_label("MSGACCUSEWHO")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("NOTURN")
+
+    b.label("AC_DONE")
+    b.ld_hl_label("MSGACCUSED")
+    b.call("PRWRAP")
+    b.call("PRNL")
+    b.jp("NOTURN")
+
+    # STREQ: zero flag set when the NUL-terminated strings at HL and DE are
+    # the same, case-insensitively - a door's subject as written against the
+    # culprit as written, which an author may have cased differently.
+    b.label("STREQ")
+    b.ld_a_de()
+    b.call("UPCASE")
+    b.ld_c_a()
+    b.ld_a_hl()
+    b.call("UPCASE")
+    b.cp_c()
+    b.ret_nz()
+    b.or_a()
+    b.ret_z()
+    b.inc_hl()
+    b.inc_de()
+    b.jr("STREQ")
+
+    b.label("UPCASE")
+    b.cp_n(ord("a"))
+    b.ret_c()
+    b.cp_n(ord("z") + 1)
+    b.ret_nc()
+    b.sub_n(0x20)
+    b.ret()
+
+    b.label("CULPRIT")
+    b.ascii(world.culprit)
+    b.db(0)
+    b.label("WINTEXT")
+    b.ascii(world.win_text)
+    b.db(0)
+    b.label("LOSETEXT")
+    b.ascii(world.lose_text)
+    b.db(0)
 
 
 def _emit_doors(b: EZ80Builder, world: World) -> None:
@@ -2345,8 +2477,10 @@ def _emit_tables(b: EZ80Builder, world: World,
                 b.db(arg2)
         b.db(0)                      # the table ends with a zero length
 
+    # The label whether or not there are messages: `MSGROW` names it, and a
+    # world with rules and nothing to print is a legal world.
+    b.label("MSGTAB")
     if world.messages:
-        b.label("MSGTAB")
         for index in range(len(world.messages)):
             b.fixup_word(f"RMSG{index}")
         for index, text in enumerate(world.messages):
@@ -2433,6 +2567,10 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
     b.ds(max(1, len(world.topics)))
     b.label("ALTERED")
     b.ds(max(1, len(world.topics)))
+    # The one accusation, taken or not. Overlay, so a restore does not hand
+    # it back - the genre gives a detective one and this is where it lives.
+    b.label("ACCUSED")
+    b.db(0)
     b.label("PWHERE")
     b.ds(max(1, len(world.people)))
 

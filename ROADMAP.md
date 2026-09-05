@@ -51,9 +51,13 @@ generator is last because it is what the rest is for.
 
 ## Tooling
 
-- [ ] **Fair play at scale** - the flag graph as the primary checker, a
-      bounded-horizon exact search, unique culprit, difficulty.
-      [#108](../../issues/108)
+- [x] **The accusation** - `ACCUSE <person | door>`, one shot, `won` and
+      `lost` as flags the goal reads. The mystery is won by accusing the
+      mayor, and not by guessing. [#112](../../issues/112), first step
+- [~] **Fair play at scale** - `libplan` builds a walkthrough backwards from
+      the goal and steps it through the exact model: 200 rooms in under a
+      second where `explore` refuses. Unique culprit and difficulty are the
+      generator's, still to come. [#108](../../issues/108)
 - [x] **Wordings from strangers** - `tools/wordings.py` asks a model for
       wordings in character and writes a review file. Playtest telemetry is
       the other half. [#109](../../issues/109)
