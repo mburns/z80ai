@@ -82,6 +82,8 @@ F_BEEN_DEEP = 1
 F_ALLISON_WAS_IT = 2       # Marnes said where she worked
 F_SCREEN_ALONE = 3         # Walk said she fitted one by herself
 F_DEPUTY_CAME = 4          # attention reached five and something happened
+F_WON = 5                  # the accusation named the right person
+F_LOST = 6                 # it did not, and there was only the one
 
 
 def mystery() -> World:
@@ -280,8 +282,24 @@ def mystery() -> World:
     return World(rooms=rooms, things=things, people=people, topics=topics,
                  lines=lines, start=LANDING, terminal=IT_OFFICE,
                  rules=rules, messages=messages,
-                 # Winning is holding the badge and having put the two clues
-                 # together. `explore` is what proves that is reachable, and
+                 # Somebody signed off a screen fitted by one person, and it
+                 # was not Walk. The mayor has one accusation coming, and the
+                 # player has one to make.
+                 culprit="jahns", won=F_WON, lost=F_LOST,
+                 win_text="Jahns looks at the hills for a long time. 'She "
+                          "asked to do it alone,' she says. 'And I let her. "
+                          "You can write that down.' Marnes already is.",
+                 lose_text="Marnes looks at you the way he looked at the "
+                           "badge. 'That is a serious thing to say about "
+                           "somebody,' he says, 'and it is the only one you "
+                           "get to say.' The case is closed with the wrong "
+                           "name on it.",
+                 # Winning is the accusation, made *after* both clues are in
+                 # hand: an accusation on turn one is legal and wins the
+                 # game, and a goal that did not name the clues would let
+                 # `solve` report a walkthrough that never found them.
+                 # `explore` is what proves this is reachable, and
                  # `test_mystery.py` is where it is asserted rather than hoped.
                  goal=[(libworld.C_FLAG, F_SCREEN_ALONE),
-                       (libworld.C_HAVE, BADGE)])
+                       (libworld.C_HAVE, BADGE),
+                       (libworld.C_FLAG, F_WON)])

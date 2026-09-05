@@ -139,9 +139,10 @@ the only thing it can do.
 | `CLOCK` | how many turns have been taken — **1 byte, in RAM** |
 | `SEALED[]` | which records the archive is declining — **1 byte a topic, in RAM** |
 | `ALTERED[]` | which records it is serving rewritten — **1 byte a topic, in RAM** |
+| `ACCUSED` | whether the one accusation has been made — **1 byte, in RAM** |
 | `PWHERE[]` | where each person is now — **1 byte each, in RAM** |
 
-Only the bottom nine change. The image is identical on every copy, so a saved
+Only the bottom ten change. The image is identical on every copy, so a saved
 game is the overlay and nothing else: **13 bytes** for the six-room world as it
 was, **85** for the mystery with its four people and five topics, one
 contiguous run so that writing it is a single `mos_fwrite` rather than three
@@ -352,7 +353,7 @@ python buildif.py --world mystery -o MYST.bin
 ```
 MYST.bin  7,335 bytes   6 rooms, 4 things, 4 people, 8 lines
   overlay 85 bytes - the whole saved game
-  30,688 reachable states
+  92,064 reachable states
   solved in 6: down, ask marnes about allison, down, take badge, east,
                ask walk about allison
 ```
@@ -383,12 +384,12 @@ which floor it is lying on is a distinction the rule language cannot make.
 
 So drops are modelled for exactly the things some `C_HERE` observes. On the
 mystery, which has none, that is the difference between not finishing and
-30,688 states in under a second.
+92,064 states in under a second.
 
 | | states |
 |---|---:|
 | `worlds.silo()` — six rooms, four things | 108 |
-| `worlds_mystery.mystery()` — plus four people, five topics, a counter | 30,688 |
+| `worlds_mystery.mystery()` — plus four people, five topics, a counter, and one accusation | 92,064 |
 
 ### What it finds
 
@@ -539,7 +540,7 @@ in the standalone one. Passed in rather than defined twice, because
 world with a terminal inside it. The world is 4,050 bytes and the oracle
 program is 38,912, so the terminal is not the small thing — the world is, and
 `buildwikibin.build(..., world=...)` is what carries it. A world costs the
-oracle binary about 5.5 KB, [re-measured below](#what-a-world-costs-the-oracle-binary-re-measured).
+oracle binary about 6 KB, [re-measured below](#what-a-world-costs-the-oracle-binary-re-measured).
 
 ### What "the two input paths can coexist" turned out to mean
 
@@ -777,16 +778,16 @@ sentence and is impossible because `where[k]` is `CARRIED` *or* a room.
 
 | | bytes | |
 |---|---:|---:|
-| the search program, no world | 4,812 | |
-| carrying `worlds.silo()` | 10,458 | +5,646 |
-| carrying `worlds_mystery.mystery()` | 13,155 | +8,343 |
+| the search program, no world | 4,842 | |
+| carrying `worlds.silo()` | 10,959 | +6,117 |
+| carrying `worlds_mystery.mystery()` | 14,534 | +9,692 |
 
 The first delta was 4,434 for as long as this file claimed a world costs the
 oracle binary under 5 KB. Save, restore and the archive's log took it to
 5,512 — a kilobyte, most of it the four routines that talk to the card and
-the buffer a save goes through — and the Voice's four actions and two
-conditions another 134. The claim is now "about 5.5 KB", which is still the
-small half by a factor of seven. The second is what people,
+the buffer a save goes through — the Voice's four actions and two conditions
+another 134, and doors, testimony and the accusation the rest. The claim is
+now "about 6 KB", which is still the small half by a factor of six. The second is what people,
 topics, dialogue and the attention counter add on top, and most of it is
 prose rather than code.
 
@@ -830,12 +831,61 @@ can check by reading their own source.
 The price is the state space. `explore` clamps the clock at the latest
 deadline any condition reads, exactly as it clamps attention, so a world with
 no deadline has a clock that never leaves zero and `worlds_mystery` is still
-30,688 states. A world with a deadline at turn N multiplies its space by about
+92,064 states. A world with a deadline at turn N multiplies its space by about
 N. That is fine for six rooms and the reason [#108](../../issues/108) wants
 a different instrument for two hundred.
 
 Shifts, and where ten thousand people are at a given hour, are the next two
 steps of [#101](../../issues/101) and are not here. See [ROADMAP.md](ROADMAP.md).
+
+## The accusation, and a walkthrough for a world too large to search
+
+```
+> accuse jahns
+Jahns looks at the hills for a long time. 'She asked to do it alone,' she
+says. 'And I let her. You can write that down.' Marnes already is.
+```
+
+`ACCUSE <person | door>` names the culprit, once. `World.culprit` is a
+person's name or the household on a door, the verdict is a flag either way
+— `won` or `lost` — and `ACCUSED` is a byte in the overlay so that a restore
+does not hand the one shot back. The engine does not gate an accusation on
+evidence: an accusation on turn one is legal, and it wins. What stops
+`solve` reporting that as the walkthrough is the goal, which names the
+clues beside `won`; the mystery's is *screen fitted alone, badge in hand,
+mayor accused*, and its shortest solution is eight commands, not one. The
+generator will prove the clues are enough. The engine only keeps the count.
+
+It tripled the mystery's state space — 30,688 to 92,064, every state not
+accused, won, or lost — which is a fact about `explore` and the reason the
+second half of this section exists.
+
+### `libplan`: built backwards, checked forwards
+
+`explore` is exact and pays an exponential search for it, and the whole
+silo passes its cap in the first corridor. A fair-play mystery on 187 rooms
+still has to be proved winnable, and a proof needs a *witness* — a
+walkthrough the emulator can replay — rather than a state count.
+
+`libplan.plan` builds one by asking the goal what it needs. A flag needs
+the rule or the line that sets it; a rule needs its conditions; a line needs
+the person, their room and the gate; a thing needs the room it lies in and
+a `take`; a room needs a route; an accusation needs the culprit. Each need
+becomes a few commands, and **every command is stepped through the exact
+model** — `World.step` is the transition `explore` follows — so what comes
+out is not a plan that ought to work but a sequence that did.
+
+| | `explore` | `libplan` |
+|---|---:|---:|
+| the mystery, six rooms | 92,064 states, shortest walkthrough | a walkthrough, 8 commands |
+| 200 landings, 13 things, a chain of flags | refuses at 200,000 states | under a second |
+
+Sound, not complete. A walkthrough it returns reaches the goal, and
+`tests/test_plan.py` replays it through the emulator to hold the model to
+the device. A need it cannot express comes back named — *flag 7: no rule or
+line sets it*, *no route to the Vault* — which is a report and not a
+verdict. `explore` is still the verdict where it fits, and this is the
+instrument where it does not.
 
 ## Testimony from records
 
@@ -994,7 +1044,7 @@ the stair and the pump report is sealed — a record that was never about
 Allison, because the Voice reacts to the *asking*. With both clues in hand
 the standing order is rewritten. Neither costs the search a state: both
 ride on rules that already fired in states the search already told apart,
-so `worlds_mystery` is still 30,688 states, and `tests/test_voice.py` pins
+so `worlds_mystery` is still 92,064 states, and `tests/test_voice.py` pins
 that beside a world of its own where the clock drives all four actions in
 a fixed order.
 

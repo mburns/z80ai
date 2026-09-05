@@ -106,10 +106,12 @@ def test_a_deadline_is_a_question_about_time_not_reachability():
 
 def test_a_world_that_never_reads_the_clock_has_no_bigger_a_state_space():
     """The cap is zero when nothing tests the clock, so it never leaves zero
-    and `worlds_mystery` is exactly the 30,688 states it was."""
+    and `worlds_mystery` is exactly the size it is without one: 30,688
+    before the accusation, and three times that since - not accused, won,
+    lost - which is the accusation's doing and not the clock's."""
     search = worlds_mystery.mystery().explore()
     assert all(state.turn == 0 for state in search.states)
-    assert len(search.states) == 30_688
+    assert len(search.states) == 92_064
 
 
 def test_the_clock_stops_at_the_latest_deadline():

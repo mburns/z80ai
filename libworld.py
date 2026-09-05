@@ -344,6 +344,18 @@ class World:
     #: text of its own. One sentence for the whole world, because a seal is
     #: the archive being *consistent* about what it will not say.
     seal: str = "RECORD SEALED. THIS ACCESS HAS BEEN LOGGED."
+    #: Who did it: a person's name, or the household title on a door. `ACCUSE
+    #: <name>` compares against this once and only once - the genre's one
+    #: shot - and sets `won` or `lost`, which are flags the rules and the
+    #: goal read like any other. The engine does not gate an accusation on
+    #: evidence; an author who wants the clues found first puts them in the
+    #: goal beside `won`, and the generator proves they are enough.
+    culprit: str | None = None
+    won: int | None = None
+    lost: int | None = None
+    win_text: str = "That is the whole of it, and nobody in the room says otherwise."
+    lose_text: str = ("The deputy shakes his head. You had one accusation, and "
+                      "that was it.")
 
     @property
     def stamp(self) -> int:
@@ -466,6 +478,7 @@ class World:
         self._check_topics()
         self._check_lines()
         self._check_doors(set(names) | {p.name.upper() for p in self.people})
+        self._check_case()
         self._check_rules()
 
         for op, arg in self.goal:
@@ -609,6 +622,31 @@ class World:
                                  f"{self.rooms[room].name!r}, and a door's id "
                                  f"within its room is one byte")
 
+    def _check_case(self) -> None:
+        """A culprit who can be accused, and two flags to record the verdict."""
+        if self.culprit is None:
+            if self.won is not None or self.lost is not None:
+                raise ValueError("won and lost flags without a culprit: nothing "
+                                 "can set them")
+            return
+        accusable = ({p.name.upper() for p in self.people}
+                     | {d.subject.upper() for d in self.doors
+                        if d.subject is not None})
+        if self.culprit.upper() not in accusable:
+            raise ValueError(f"the culprit {self.culprit!r} is neither a person "
+                             f"here nor a household behind a door, so nobody "
+                             f"could ever accuse them")
+        if self.won is None or self.lost is None:
+            raise ValueError("a culprit needs a won flag and a lost flag")
+        for name, flag in (("won", self.won), ("lost", self.lost)):
+            if not 0 <= flag < self.flags:
+                raise ValueError(f"the {name} flag is {flag}, and the world "
+                                 f"reserves {self.flags}")
+        if self.won == self.lost:
+            raise ValueError("won and lost are the same flag")
+        if not self.win_text.strip() or not self.lose_text.strip():
+            raise ValueError("an accusation has to be answered in words")
+
     def _check_rules(self) -> None:
         """Every argument, against what it indexes.
 
@@ -740,6 +778,7 @@ class World:
                 + 1                            # HEAT
                 + 1                            # CLOCK
                 + 2 * max(1, len(self.topics))  # SEALED, ALTERED
+                + 1                            # ACCUSED
                 + max(1, len(self.people)))    # PWHERE
 
     @property
@@ -805,6 +844,12 @@ class World:
         at: list[set[int]] = [{thing.at} for thing in self.things]
         flags: set[int] = {line.sets for line in self.lines
                            if line.sets != NONE}
+        # The accusation sets one of two flags, and a player can make it on
+        # turn one - so both are settable, in the safe direction this
+        # analysis errs in.
+        if self.culprit is not None:
+            assert self.won is not None and self.lost is not None
+            flags |= {self.won, self.lost}
         fired: set[int] = set()
 
         while True:
@@ -991,6 +1036,45 @@ class World:
         return Search(world=self, parents=parents, states=order,
                       printed=seen_msgs, spoken=spoken)
 
+    # --- the exact model, one command at a time ---------------------------------
+
+    def start_state(self) -> _State:
+        """The state the game opens in, after the opening rule pass.
+
+        `explore` builds the same thing; this is it on its own, for a caller
+        that wants to *step* rather than search - `libplan`, which builds a
+        walkthrough and checks each command against the model as it goes.
+        """
+        state = _State(
+            here=self.start, at_terminal=False,
+            where=tuple(t.at for t in self.things),
+            flags=(0,) * self.flags,
+            fired=(0,) * len(self.rules),
+            asked=(0,) * len(self.topics),
+            heat=0,
+            pwhere=tuple(p.at for p in self.people),
+            turn=-1,
+            sealed=tuple(int(t.starts_sealed) for t in self.topics),
+            altered=(0,) * len(self.topics))
+        return self._settle(state, self._heat_cap(), set(), self._clock_cap())
+
+    def step(self, state: _State, command: str) -> _State | None:
+        """The state after `command`, or None if it is not a legal turn here.
+
+        Exactly what `explore` would have followed, so a walkthrough built
+        step by step is one `explore` would have found - the same rule pass,
+        the same clamps. Commands are the names `explore` uses: `down`,
+        `take badge`, `ask marnes about allison`, `use`, `archive pump`,
+        `leave`, `accuse jahns`, `look`.
+        """
+        moves = dict(self._moves(state, self._heat_cap(), set(), set(),
+                                 self._clock_cap(), self._logged_cap()))
+        return moves.get(command)
+
+    def satisfied(self, state: _State, conditions: list[tuple[int, int]]) -> bool:
+        """Whether every condition holds in `state`."""
+        return all(self._holds_in(state, op, arg) for op, arg in conditions)
+
     def droppable(self) -> set[int]:
         """Things whose being *put down somewhere* any rule can notice.
 
@@ -1111,6 +1195,19 @@ class World:
         if self.terminal is not None and state.here == self.terminal:
             turn("use", state._replace(at_terminal=True))
 
+        # The accusation, once. Anyone with a name can be accused from
+        # anywhere; a door only from the room it is on.
+        if self.culprit is not None and not state.accused:
+            assert self.won is not None and self.lost is not None
+            names = [(p.name, p.name) for p in self.people]
+            names += [(d.name, d.subject) for d in self.doors
+                      if d.room == state.here and d.subject is not None]
+            for word, name in names:
+                guilty = name.upper() == self.culprit.upper()
+                flag = self.won if guilty else self.lost
+                turn(f"accuse {word.lower()}",
+                     state._replace(accused=1, flags=_set(state.flags, flag, 1)))
+
         return out
 
     def _line_for(self, person: int, topic: int,
@@ -1229,6 +1326,8 @@ class _State(NamedTuple):
     #: Which topics the archive is sealing, and which it is serving altered.
     sealed: tuple[int, ...] = ()
     altered: tuple[int, ...] = ()
+    #: Whether the one accusation has been made.
+    accused: int = 0
 
 
 def _set(values: tuple[int, ...], index: int, value: int) -> tuple[int, ...]:

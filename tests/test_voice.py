@@ -209,7 +209,9 @@ def test_what_the_voice_has_done_survives_a_save(mystery):
 def test_the_mysterys_voice_costs_it_no_states(mystery):
     """Both actions ride on rules that already fired in distinct states, so
     the search is the size it was before the Voice could act."""
-    assert len(worlds_mystery.mystery().explore().states) == 30_688
+    # 30,688 before the accusation, and exactly three times that since:
+    # every state not accused, won, or lost.
+    assert len(worlds_mystery.mystery().explore().states) == 92_064
 
 
 # --- the standalone world, and the model --------------------------------------------
