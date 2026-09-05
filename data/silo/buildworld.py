@@ -229,10 +229,15 @@ def build(db: sqlite3.Connection, floors: tuple[int, ...] | str = (),
                     f"{len(addresses)} doors on {len(schema.RINGS)} rings, "
                     f"a number painted on every one. The stair is east.")
         occupied = _occupants(db, floor)
+        # The household answers as its first-named tenant, who is the one
+        # the card is asked about when the door is: everything the flat
+        # says comes off that person's record.
         doors.extend(
             Door(ring, door_word(address),
                  leads.get(address, f"Apartment {address}.") + " "
-                 + beside_the_door(occupied.get(address, [])))
+                 + beside_the_door(occupied.get(address, [])),
+                 subject=(occupied[address][0] if address in occupied
+                          else None))
             for address in addresses)
 
     if len(rooms) >= NOWHERE:

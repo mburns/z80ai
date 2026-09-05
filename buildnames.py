@@ -159,19 +159,26 @@ def emit_lookup(b: EZ80Builder, num_names: int, num_edges: int,
     # drop the rest. A pending space is only fed once something has been,
     # so leading and trailing spaces vanish the way the Python does it.
     b.label("NM_HASH")
+    b.ld_a_mem_label("INPLEN")
+    b.sub_n(len(WORD) + 1)
+    b.ld_b_a()
+    b.ld_ix_label("INPBUF")
+    b.ld_de_nn(len(WORD) + 1)
+    b.add_ix_de()
+    # Fall through: IX the text, B its length.
+
+    # NM_HASHAT: B bytes at IX -> NM_H1, NM_H2. The entry the world uses,
+    # for a title it holds in a buffer rather than a line the player typed.
+    b.label("NM_HASHAT")
     b.ld_hl_nn(0)
     b.ld_mem_label_hl("NM_H1")
     b.ld_mem_label_hl("NM_H2")
     b.xor_a()
     b.ld_mem_label_a("NM_PEND")
     b.ld_mem_label_a("NM_SEEN")
-    b.ld_a_mem_label("INPLEN")
-    b.sub_n(len(WORD) + 1)
+    b.ld_a_b()
+    b.or_a()
     b.ret_z()
-    b.ld_b_a()
-    b.ld_ix_label("INPBUF")
-    b.ld_de_nn(len(WORD) + 1)
-    b.add_ix_de()
 
     b.label("NMH_LP")
     b.ld_a_ixd(0)

@@ -1993,9 +1993,13 @@ rings is 187 rooms and 2,088 doors, and the whole silo walks:
 python data/silo/buildworld.py --floors all -o SILO.bin
 ```
 
-**And the world reaches back into this corpus through one verb.** A thing the
+**And the world reaches back into this corpus through two verbs.** A thing the
 player is carrying may name an entry — `Thing.subject` — and `CONSULT LEDGER`
-at the terminal types that name at the archive on their behalf. So the entries
+at the terminal types that name at the archive on their behalf. Every door
+on a ring is a household on the card too: `ASK 600A ABOUT NOTICE` asks it
+what it is to the name on the notice, and the answer is the graph path that
+joins them, in its department's register — see
+[`IF.md`](../../IF.md#testimony-from-records). So the entries
 reachable in play are the ones somebody has physically found a reference to,
 which is a constraint on the author rather than on the card: a person nothing
 points at is a person nobody can look up.
