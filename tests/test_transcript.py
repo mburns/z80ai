@@ -46,6 +46,26 @@ def test_the_shipped_transcript_still_plays_the_same():
     assert was == now, transcript.diff(SILO, was, now)
 
 
+CASE = transcript.TRANSCRIPTS / "case7.txt"
+
+
+def test_the_first_generated_case_still_plays_the_same():
+    """Case Zero, pinned: the generator's own walkthrough for seed 7 on the
+    whole silo, as the game said it. It comes out of `data/silo.db`, which
+    is not in git, so a machine without the database skips this rather
+    than failing it - and a machine with it sees every word of the case."""
+    try:
+        was, now = transcript.replay(CASE)
+    except FileNotFoundError as why:
+        pytest.skip(str(why))
+    assert was == now, transcript.diff(CASE, was, now)
+
+
+def test_a_case_is_named_by_seed():
+    assert transcript.header(CASE.read_text())["world"] == "cases:world_for_seed:7"
+    assert transcript.commands(CASE.read_text())[-2].startswith("accuse ")
+
+
 def test_the_transcript_walks_the_whole_world():
     """A golden file over four rooms would pin four rooms.
 
