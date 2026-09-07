@@ -136,7 +136,7 @@ the only thing it can do.
 | `FLAGS[]` | one bit a proposition — **in RAM** |
 | `ASKED[]` | what has been asked about — **1 byte a topic, in RAM** |
 | `HEAT` | how much attention that has cost — **1 byte, in RAM** |
-| `CLOCK` | how many turns have been taken — **1 byte, in RAM** |
+| `CLOCK` | how many turns have been taken — **2 bytes in a 3-byte cell, in RAM** |
 | `SEALED[]` | which records the archive is declining — **1 byte a topic, in RAM** |
 | `ALTERED[]` | which records it is serving rewritten — **1 byte a topic, in RAM** |
 | `ACCUSED` | whether the one accusation has been made — **1 byte, in RAM** |
@@ -779,8 +779,8 @@ sentence and is impossible because `where[k]` is `CARRIED` *or* a room.
 | | bytes | |
 |---|---:|---:|
 | the search program, no world | 4,842 | |
-| carrying `worlds.silo()` | 10,959 | +6,117 |
-| carrying `worlds_mystery.mystery()` | 14,534 | +9,692 |
+| carrying `worlds.silo()` | 10,989 | +6,147 |
+| carrying `worlds_mystery.mystery()` | 14,567 | +9,725 |
 
 The first delta was 4,434 for as long as this file claimed a world costs the
 oracle binary under 5 KB. Save, restore and the archive's log took it to
@@ -799,12 +799,15 @@ the thing that happens because turns passed, whether or not anybody was
 there. The cleaning is at the end of the week. The suspect leaves on the
 next shift.
 
-`CLOCK` is one byte in the overlay and `C_TURN n` is one condition: the
+`CLOCK` is two bytes in the overlay and `C_TURN n` is one condition: the
 clock stands at `n` or above. It reads as **the number of commands already
 taken** - the opening pass sees zero, the pass after the third command sees
-three - and `RULES_RUN` ticks it after the pass, saturating at 255 for the
-reason `HEAT` saturates: a clock that rolled over would hand back every
-deadline that had passed.
+three - and `RULES_RUN` ticks it after the pass, saturating at 65,535 for
+the reason `HEAT` saturates: a clock that rolled over would hand back every
+deadline that had passed. It was a byte, and a silo is 144 levels tall: the
+first generated case crossed it in 132 commands and could not be given a
+deadline at all. A condition's argument in the rule table is two bytes to
+carry a deadline that size, and zero in its high byte for everything else.
 
 ```
 > look

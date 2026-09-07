@@ -253,7 +253,6 @@ def test_the_suspects_answer_at_their_own_doors(world, case):
 def test_the_walkthrough_ends_in_the_right_accusation_and_wins_on_the_device(world, case):
     assert case.walkthrough[-1].startswith("accuse ")
     assert case.deadline == cases.deadline_for(len(case.walkthrough))
-    assert case.deadline is not None
     game = buildif.build(world).build()
     out = AgonHost(stdin=[*case.walkthrough, "quit"], files={}).run(
         game, max_cycles=400_000_000)
@@ -278,13 +277,12 @@ def test_the_wrong_accusation_loses_and_the_deadline_closes_the_file(world, case
     assert "closes the file" in " ".join(out.split())
 
 
-def test_a_walkthrough_the_clock_cannot_hold_gets_no_deadline():
-    """A silo is 144 levels tall and the clock is a byte. Twice a
-    walkthrough that crosses it is past 255, and a tighter deadline than
-    twice would be a speedrun rather than a mystery."""
+def test_a_deadline_is_three_walkthroughs_and_the_clock_holds_it():
+    """A silo is 144 levels tall; a byte of clock ran out in one crossing,
+    and the first version had to give a long case no deadline at all."""
     assert cases.deadline_for(20) == 60
-    assert cases.deadline_for(100) == 255
-    assert cases.deadline_for(128) is None
+    assert cases.deadline_for(132) == 396
+    assert cases.deadline_for(30_000) == 65535
 
 
 def test_the_clues_are_collected_down_the_stair_not_in_file_order(world, case):

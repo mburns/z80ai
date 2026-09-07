@@ -65,13 +65,22 @@ def test_the_clock_still_reads_nothing_from_the_card():
     assert host.io_bytes == 0
 
 
-def test_the_clock_saturates_rather_than_wrapping():
+def test_the_clock_does_not_wrap_at_a_byte():
     """A clock that rolled over would hand back every deadline that had
-    passed. A standing rule past 254 keeps firing through the wrap point."""
+    passed. A standing rule past 254 keeps firing through the old byte's
+    wrap point, and the count says the clock kept counting."""
     game = buildif.build(deadline_world(254, once=False)).build()
     out, _ = play(game, *(["look"] * 300))
     # Passes after commands 254..300 inclusive, and none after.
     assert out.count("boots on the stair") == 300 - 254 + 1
+
+
+def test_the_overlay_carries_two_bytes_of_clock():
+    world = deadline_world(1)
+    builder = buildif.build(world)
+    _start, length = buildif.overlay_at(builder, world)
+    assert length == world.overlay_bytes
+    assert builder.labels["PWHERE"] - builder.labels["CLOCK"] >= 3
 
 
 # --- the count, in the model -----------------------------------------------------
@@ -133,9 +142,20 @@ def test_a_deadline_of_zero_is_refused():
 
 def test_a_deadline_past_the_clock_is_refused():
     world = deadline_world(1)
-    world.rules[0].when = [(libworld.C_TURN, 256)]
-    with pytest.raises(ValueError, match="TURN 256"):
+    world.rules[0].when = [(libworld.C_TURN, 65536)]
+    with pytest.raises(ValueError, match="TURN 65536"):
         world.check()
+
+
+def test_a_deadline_past_a_byte_fires_on_its_turn():
+    """The clock was a byte and a silo is 144 levels tall. Three hundred
+    looks, and the rule on turn 300 fires on the three-hundredth and not
+    on the forty-fourth."""
+    game = buildif.build(deadline_world(300)).build()
+    early, _ = play(game, *(["look"] * 299))
+    late, _ = play(game, *(["look"] * 300))
+    assert "boots on the stair" not in early
+    assert late.count("boots on the stair") == 1
 
 
 def test_a_deadline_rule_is_never_dead_on_the_clocks_account():

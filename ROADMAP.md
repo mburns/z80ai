@@ -77,9 +77,11 @@ generator is last because it is what the rest is for.
       over the shipped card and plays its own walkthrough; `tests/transcripts/
       case7.txt` pins every word of the first generated mystery. Case Zero,
       closed - short of a boot on hardware.
+- [x] **A two-byte clock** - `C_TURN` to 65,535, a condition's argument two
+      bytes in the rule table, and every generated case has a deadline
+      again: seed 7's is turn 396.
 - [ ] **A wider generator** - more lie shapes than the duty list, motives
-      that discriminate, a two-byte clock so a deadline fits a 144-level
-      silo, and presence so that somebody is out.
+      that discriminate, and presence so that somebody is out.
 
 ## How it stays honest
 

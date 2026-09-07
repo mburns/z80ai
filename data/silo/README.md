@@ -2241,7 +2241,7 @@ seed 7: the death of Brittney T. Crawford, Farms (Third Shift), 107 1030 A
   the clues (7): notice in Cafeteria, file in Judicial, roster in the
     Sheriff's Office, log in IT, three notes on two rings
   survivors after every clue: Lisa V. Morris
-  walkthrough: 132 commands, no deadline - the silo is taller than a one-byte clock
+  walkthrough: 132 commands, deadline turn 396
 ```
 
 A Golden Age puzzle is a victim, a closed circle, motive, opportunity and
@@ -2282,9 +2282,10 @@ the database — every word of the first generated mystery, pinned.
 
 What version one is not: one lie shape; alibis by the duty list or a note;
 documents from templates with holes; nobody ever out, because the corpus
-has no clock; and no deadline on a case whose walkthrough crosses the silo,
-because the clock is a byte and 144 levels is most of it. Each of those is
-the next measurement against the same proof.
+has no clock. Each of those is the next measurement against the same
+proof. (The first version also had no deadline on a case whose walkthrough
+crossed the silo, because the clock was a byte; it is two now, and seed 7
+closes its file on turn 396, three walkthroughs in.)
 
 ## Something to find
 

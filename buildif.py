@@ -1394,11 +1394,17 @@ def _emit_rules(b: EZ80Builder, world: World) -> None:
     b.label("RULES_RUN")
     if world.rules:
         b.call("RULES_PASS")
-    b.ld_a_mem_label("CLOCK")
-    b.cp_n(255)
-    b.ret_z()
-    b.inc_a()
-    b.ld_mem_label_a("CLOCK")
+    # Two bytes of clock in a three-byte cell, so the tick and the compare
+    # are 24-bit arithmetic with the top byte always zero. It saturates at
+    # 65,535 - a silo is 144 levels tall and a byte ran out in one crossing.
+    b.ld_hl_mem_label("CLOCK")
+    b.ld_de_nn(0xFFFF)
+    b.or_a()
+    b.sbc_hl_de()
+    b.ret_nc()                       # already at the top
+    b.ld_hl_mem_label("CLOCK")
+    b.inc_hl()
+    b.ld_mem_label_hl("CLOCK")
     b.ret()
     if not world.rules:
         return
@@ -1464,6 +1470,9 @@ def _emit_rules(b: EZ80Builder, world: World) -> None:
     b.inc_hl()
     b.ld_a_hl()
     b.ld_mem_label_a("RU_ARG")
+    b.inc_hl()
+    b.ld_a_hl()                      # the high byte, zero for all but TURN
+    b.ld_mem_label_a("RU_ARG", 1)
     b.inc_hl()
     b.ld_mem_label_hl("RU_CUR")
     b.call("RU_TEST")
@@ -1584,9 +1593,10 @@ def _emit_rule_test(b: EZ80Builder, world: World) -> None:
     b.label("RT_TURN")
     b.cp_n(libworld.C_TURN)
     b.jr_nz("RT_LOGGED")
-    b.ld_a_mem_label("CLOCK")
-    b.ld_hl_label("RU_ARG")
-    b.cp_hl()
+    b.ld_hl_mem_label("CLOCK")
+    b.ld_de_mem_label("RU_ARG")      # all three bytes: the deadline is wide
+    b.or_a()
+    b.sbc_hl_de()
     b.jp_c("RT_NO")                  # not yet
     b.jp("RT_YES")
 
@@ -2460,7 +2470,7 @@ def _emit_tables(b: EZ80Builder, world: World,
     if world.rules:
         b.label("RULETAB")
         for rule in world.rules:
-            length = 4 + 2 * len(rule.when) + 3 * len(rule.then)
+            length = 4 + 3 * len(rule.when) + 3 * len(rule.then)
             if length > 0xFF:
                 raise ValueError(f"a rule of {length} bytes does not fit its "
                                  f"one-byte length; split it")
@@ -2468,9 +2478,13 @@ def _emit_tables(b: EZ80Builder, world: World,
             b.db(1 if rule.once else 0)
             b.db(len(rule.when))
             b.db(len(rule.then))
+            # A condition's argument is two bytes, because a deadline is a
+            # turn count and a silo is 144 levels tall; every other
+            # condition indexes a table and its high byte is zero.
             for op, arg in rule.when:
                 b.db(op)
-                b.db(arg)
+                b.db(arg & 0xFF)
+                b.db(arg >> 8)
             for op, arg, arg2 in rule.then:
                 b.db(op)
                 b.db(arg)
@@ -2559,7 +2573,7 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
     # The clock is overlay for the same reason `ASKED` is: a restore that put
     # it back to zero would give the player every deadline a second time.
     b.label("CLOCK")
-    b.db(0)
+    b.ds(3)                          # 24-bit, saturating at 65,535
     # What the archive is doing to each record. Overlay, because a restore
     # that unsealed everything the Voice had closed would be the Voice
     # forgetting it had been threatened.
@@ -2582,7 +2596,7 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
 
     # Everything below is scratch that does not outlive a turn.
     scratch = ["VERB", "W1LEN", "W2LEN", "W3LEN", "LKLEN", "NCARRIED",
-               "RU_ONCE", "RU_NC", "RU_NA", "RU_OP", "RU_ARG", "RU_ARG2",
+               "RU_ONCE", "RU_NC", "RU_NA", "RU_OP", "RU_ARG2",
                "RU_CNT", "ATTERM", "ASKWHO", "ASKTOP", "LOGTOP", "SAVEH",
                "ASKDOOR"]
     if not shared_console:
@@ -2593,6 +2607,11 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
     for name in ("PTMP", "LKPTR", "RULEPTR", "RU_CUR", "SPDST", "DOORROW"):
         b.label(name)
         b.d24(0)
+    # A condition's argument, three bytes so that `RT_TURN` can compare it
+    # against the clock with one 24-bit subtract. The low byte is what every
+    # other condition reads, and the top byte is never written.
+    b.label("RU_ARG")
+    b.d24(0)
 
     b.label("W1")
     b.ds(MAX_WORD_LEN + 1)
