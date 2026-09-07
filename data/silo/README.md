@@ -2226,6 +2226,7 @@ chain, never the middle.** `cousin` was originally written in terms of the
 python data/silo/cases.py --seed 7              # the case sheet
 python data/silo/cases.py --seed 7 -o CASE.bin  # the whole silo, with it in
 python data/silo/cases.py --seeds 100           # the baseline
+python data/silo/buildcard.py --skip-train --case 7   # on the shipped card
 ```
 
 ```
@@ -2263,6 +2264,21 @@ accusation, and the deadline is set from it. Over a hundred seeds none was
 refused, the circle averages five, and **the spouse did it 5% of the time**
 — which is the baseline the genre is measured against, and the number that
 would make this a generator of one story if it were fifty.
+
+**And it is on the card.** `buildcard.py --case 7` writes `CASE7.bin`, the
+oracle binary carrying the whole silo and the case over `SILO.*` — 412 KB,
+inside SRAM beside the accumulator — and plays its own walkthrough:
+
+| | |
+|---|---:|
+| the walkthrough | 132 commands |
+| instructions | 401,577 — less than one question |
+| card bytes | 1,982 — the start-up reads, and not one for a move or a clue |
+| the ending | won |
+
+`tests/transcripts/case7.txt` is that walkthrough as the game said it, 573
+lines, and `tests/test_transcript.py` replays it on any machine that has
+the database — every word of the first generated mystery, pinned.
 
 What version one is not: one lie shape; alibis by the duty list or a note;
 documents from templates with holes; nobody ever out, because the corpus

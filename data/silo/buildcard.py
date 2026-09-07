@@ -219,6 +219,10 @@ def main() -> None:
                          "this default came from")
     ap.add_argument("--skip-train", action="store_true",
                     help="Reuse the model already in --out")
+    ap.add_argument("--case", type=int, default=None,
+                    help="Also build CASE<seed>.bin: the whole silo with the "
+                         "case for this seed in it, over this card, and play "
+                         "its walkthrough")
     args = ap.parse_args()
 
     if not args.db.exists():
@@ -258,6 +262,33 @@ def main() -> None:
     if args.climb_limit is not None:
         argv += ["--climb-limit", str(args.climb_limit)]
     buildwikisearch.main(argv)
+
+    if args.case is not None:
+        # Step five, when asked: the case on the card. A second binary over
+        # the same four files, carrying the whole silo and the case, and
+        # its own walkthrough played once so the build says what it costs.
+        import sqlite3
+
+        import cases
+
+        db = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
+        try:
+            case = cases.generate(db, args.case)
+            world = cases.build_world(db, case)
+        finally:
+            db.close()
+        stem = args.out / args.stem
+        image = cases.merged(stem, world, model)
+        out = args.out / f"CASE{args.case}.bin"
+        out.write_bytes(image)
+        print(f"\n{out}  {len(image) / 1024:>8.1f} KB   the whole silo and "
+              f"the case for seed {args.case}, over {stem.name}.*")
+        print(case.sheet())
+        instructions, io_bytes, won = cases.play(
+            image, cases.card_files(stem), case.walkthrough, world.win_text)
+        print(f"  its walkthrough: {len(case.walkthrough)} commands, "
+              f"{instructions:,} instructions, {io_bytes:,} card bytes, "
+              f"{'won' if won else 'DID NOT WIN'}")
 
     print(f"\n  python benchwiki.py --card {args.out / args.stem}")
 

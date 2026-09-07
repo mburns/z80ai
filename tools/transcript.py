@@ -59,6 +59,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "data" / "silo"))
 
 import buildif
 import libworld
@@ -87,13 +88,20 @@ class Hung(RuntimeError):
 
 
 def load_world(spec: str) -> libworld.World:
-    """`worlds:silo` -> the world it names. Imports, which is the point."""
-    module, _, function = spec.partition(":")
+    """`worlds:silo` -> the world it names. Imports, which is the point.
+
+    `cases:world_for_seed:7` names a generated case: a third part is an
+    integer argument. That world comes out of `data/silo.db`, which is not
+    in git, so on a machine without it the maker raises `FileNotFoundError`
+    and `tests/test_transcript.py` skips rather than fails.
+    """
+    module, _, rest = spec.partition(":")
+    function, _, argument = rest.partition(":")
     if not function:
         raise ValueError(f"{spec!r} is not module:function")
-    maker: Callable[[], libworld.World] = getattr(
+    maker: Callable[..., libworld.World] = getattr(
         importlib.import_module(module), function)
-    return maker()
+    return maker(int(argument)) if argument else maker()
 
 
 def commands(text: str) -> list[str]:

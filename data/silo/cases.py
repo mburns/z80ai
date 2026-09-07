@@ -56,6 +56,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from random import Random
+from typing import TYPE_CHECKING
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -67,6 +68,9 @@ import buildif
 import libplan
 import libworld
 from libworld import Rule, Thing, World
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import buildwikibin
 
 DB_PATH = Path(__file__).resolve().parent.parent / "silo.db"
 
@@ -457,6 +461,82 @@ def _door_flat(world: World, door: libworld.Door) -> str | None:
     return f"{floor} {bearing} {ring}"
 
 
+# --- the case on the card ---------------------------------------------------------
+
+
+def world_for_seed(seed: int, db_path: Path = DB_PATH) -> World:
+    """The whole silo with the case for `seed` in it, from the shipped
+    database. `tools/transcript.py` names a case this way, and a machine
+    without the database - CI - gets `FileNotFoundError` rather than a
+    world that is not the one on the card."""
+    if not db_path.exists():
+        raise FileNotFoundError(f"no database at {db_path}; "
+                                f"python data/silo/generate.py")
+    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        return build_world(db, generate(db, seed))
+    finally:
+        db.close()
+
+
+def card_spec(stem: Path, model: Path | None) -> buildwikibin.OracleSpec:
+    """The oracle spec for a card already on disk, read back off its files
+    the way the build wrote them - graph, names, relations, and the
+    classifier if there is one. What `buildwikisearch.build_graph` returns,
+    reconstructed, so a case can be put on a card that was built without
+    one."""
+    import buildwikibin
+    import libgraphcard
+    import libinfer
+    import libnames
+
+    graph = libgraphcard.CardGraph(stem.with_suffix(".GRF"))
+    names = libnames.CardNames(stem.with_suffix(".NAM"))
+    try:
+        return buildwikibin.OracleSpec(
+            graph_name=stem.with_suffix(".GRF").name.upper(),
+            forward_at=graph.forward_at, num_edges=graph.num_edges,
+            types_at=graph._types_at - 8 * len(graph.type_names),
+            num_types=len(graph.type_names), num_docs=graph.num_docs,
+            digest=graph.digest, paths=graph.paths,
+            model=(libinfer.load_for_build(str(model), report_io=False)
+                   if model is not None and model.exists() else None),
+            names_name=stem.with_suffix(".NAM").name.upper(),
+            num_names=names.count, relations=graph.relations)
+    finally:
+        graph.close()
+        names.close()
+
+
+def merged(stem: Path, world: World, model: Path | None) -> bytes:
+    """The oracle binary carrying `world`, over the card at `stem`."""
+    import buildwikibin
+
+    spec = card_spec(stem, model)
+    return buildwikibin.build(
+        spec.num_docs, stem.with_suffix(".IDX").name.upper(),
+        stem.with_suffix(".DAT").name.upper(), oracle=spec, world=world).build()
+
+
+def play(binary: bytes, files: dict[str, bytes], commands: list[str],
+         win_text: str) -> tuple[int, int, bool]:
+    """The walkthrough through the emulator: (instructions, card bytes,
+    whether it won). The last command quits, so the run ends."""
+    from libhost import AgonHost
+
+    quit_word = "!" if files else "quit"
+    host = AgonHost(stdin=[*commands, quit_word], files=files)
+    out = host.run(binary, max_cycles=2_000_000_000)
+    won = " ".join(win_text.split()) in " ".join(out.split())
+    return host.cpu.instructions, host.io_bytes, won
+
+
+def card_files(stem: Path) -> dict[str, bytes]:
+    return {stem.with_suffix(s).name.upper(): stem.with_suffix(s).read_bytes()
+            for s in (".IDX", ".DAT", ".GRF", ".NAM")
+            if stem.with_suffix(s).exists()}
+
+
 # --- the baseline ----------------------------------------------------------------
 
 
@@ -492,6 +572,14 @@ def main() -> int:
     ap.add_argument("--seeds", type=int, default=0,
                     help="run this many seeds and print the baseline instead")
     ap.add_argument("-o", "--out", type=Path, help="write the eZ80 binary")
+    ap.add_argument("--card", type=Path,
+                    help="a card stem such as dist/SILO: carry the case on "
+                         "the oracle binary over it rather than standalone")
+    ap.add_argument("--model", type=Path, default=None,
+                    help="the card's classifier; default beside --card")
+    ap.add_argument("--play", action="store_true",
+                    help="run the walkthrough in the emulator and say what "
+                         "it cost")
     args = ap.parse_args()
 
     db = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
@@ -510,11 +598,27 @@ def main() -> int:
 
     print(case.sheet())
     print("  " + " / ".join(case.walkthrough))
-    if args.out:
+    files: dict[str, bytes] = {}
+    if args.card:
+        model = args.model or args.card.parent / (
+            f"{args.card.name.lower()}-relations.npz")
+        image = merged(args.card, world, model)
+        files = card_files(args.card)
+        print(f"  on the card at {args.card}: {len(image):,} bytes, "
+              f"{'with' if model.exists() else 'without'} the classifier")
+    else:
         image = buildif.build(world).build()
+        print(f"  standalone: {len(image):,} bytes, {len(world.rooms)} rooms, "
+              f"{len(world.doors)} doors")
+    if args.out:
         args.out.write_bytes(image)
-        print(f"  wrote {args.out}: {len(image):,} bytes, "
-              f"{len(world.rooms)} rooms, {len(world.doors)} doors")
+        print(f"  wrote {args.out}")
+    if args.play:
+        instructions, io_bytes, won = play(image, files, case.walkthrough,
+                                           world.win_text)
+        print(f"  played: {len(case.walkthrough)} commands, "
+              f"{instructions:,} instructions, {io_bytes:,} card bytes, "
+              f"{'won' if won else 'DID NOT WIN'}")
     return 0
 
 

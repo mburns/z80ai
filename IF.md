@@ -896,9 +896,12 @@ the whole-silo world as things with rules that mark them found; proves
 the clues leave one suspect standing and refuses the case otherwise; and
 has `libplan` find the walkthrough that ends in `ACCUSE` at the killer's
 door. Over a hundred seeds none was refused and the spouse did it 5% of
-the time. [`data/silo/README.md`](data/silo/README.md#a-murder-nobody-wrote)
-has the case sheet and the limits of version one; the card build and the
-golden transcript are the next step.
+the time. `buildcard.py --case 7` puts it on the shipped card — 412 KB, the
+walkthrough won in 401,577 instructions and 1,982 card bytes, which is the
+start-up reads and nothing else — and `tests/transcripts/case7.txt` pins
+every word of it. [`data/silo/README.md`](data/silo/README.md#a-murder-nobody-wrote)
+has the case sheet and the limits of version one. What is left of Case
+Zero is a boot on hardware.
 
 ## Testimony from records
 

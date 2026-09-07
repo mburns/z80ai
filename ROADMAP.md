@@ -73,9 +73,10 @@ generator is last because it is what the rest is for.
       standing, and the planner reaches every clue and the accusation. A
       hundred seeds, none refused, the spouse guilty 5% of the time.
       [#112](../../issues/112)
-- [ ] **The case on the card** - `buildcard.py --case <seed>`, the walkthrough
-      played through the emulator as a golden transcript, the cost of a
-      case measured. Step three of Case Zero.
+- [x] **The case on the card** - `buildcard.py --case 7` builds `CASE7.bin`
+      over the shipped card and plays its own walkthrough; `tests/transcripts/
+      case7.txt` pins every word of the first generated mystery. Case Zero,
+      closed - short of a boot on hardware.
 - [ ] **A wider generator** - more lie shapes than the duty list, motives
       that discriminate, a two-byte clock so a deadline fits a 144-level
       silo, and presence so that somebody is out.
