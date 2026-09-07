@@ -887,6 +887,19 @@ line sets it*, *no route to the Vault* — which is a report and not a
 verdict. `explore` is still the verdict where it fits, and this is the
 instrument where it does not.
 
+## Case Zero: a murder nobody wrote
+
+Everything above was for this. `data/silo/cases.py` draws a death, a
+circle, a motive a relation, a duty list with one lie and the log that
+breaks it, out of the corpus by seed; places the clues down the stair of
+the whole-silo world as things with rules that mark them found; proves
+the clues leave one suspect standing and refuses the case otherwise; and
+has `libplan` find the walkthrough that ends in `ACCUSE` at the killer's
+door. Over a hundred seeds none was refused and the spouse did it 5% of
+the time. [`data/silo/README.md`](data/silo/README.md#a-murder-nobody-wrote)
+has the case sheet and the limits of version one; the card build and the
+golden transcript are the next step.
+
 ## Testimony from records
 
 ```

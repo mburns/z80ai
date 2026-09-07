@@ -66,9 +66,19 @@ generator is last because it is what the rest is for.
 
 ## Content
 
-- [ ] **The Fair Play Case Generator** - victim, closed circle, motive, means,
-      one planted contradiction, and a solver that refuses the unfair.
+- [x] **The Fair Play Case Generator, version one** - `data/silo/cases.py`:
+      a death this year, the circle from the views, a motive a relation, a
+      duty list with one lie and the gate log that breaks it, documents
+      placed down the stair, and a proof - the clues leave one suspect
+      standing, and the planner reaches every clue and the accusation. A
+      hundred seeds, none refused, the spouse guilty 5% of the time.
       [#112](../../issues/112)
+- [ ] **The case on the card** - `buildcard.py --case <seed>`, the walkthrough
+      played through the emulator as a golden transcript, the cost of a
+      case measured. Step three of Case Zero.
+- [ ] **A wider generator** - more lie shapes than the duty list, motives
+      that discriminate, a two-byte clock so a deadline fits a 144-level
+      silo, and presence so that somebody is out.
 
 ## How it stays honest
 

@@ -2220,6 +2220,56 @@ chain, never the middle.** `cousin` was originally written in terms of the
 `GROUP BY`, and the whole query fell off a cliff. Both `aunt_or_uncle` and
 `cousin` are now written as chains of `child_of` for that reason.
 
+## A murder nobody wrote
+
+```bash
+python data/silo/cases.py --seed 7              # the case sheet
+python data/silo/cases.py --seed 7 -o CASE.bin  # the whole silo, with it in
+python data/silo/cases.py --seeds 100           # the baseline
+```
+
+```
+seed 7: the death of Brittney T. Crawford, Farms (Third Shift), 107 1030 A
+  recorded as natural causes on the 13th; it was not.
+  the circle (5):
+    Destiny F. Moore    colleague  was next in line for the post ...
+    Glenn M. Bonilla    neighbour  had the water dispute ...
+    Jessica O. Short    colleague  was next in line for the post ...
+    Lisa V. Morris      neighbour  had the water dispute ...  <- the killer
+    Richard T. Green    spouse     stood to keep the flat ...
+  the clues (7): notice in Cafeteria, file in Judicial, roster in the
+    Sheriff's Office, log in IT, three notes on two rings
+  survivors after every clue: Lisa V. Morris
+  walkthrough: 132 commands, no deadline - the silo is taller than a one-byte clock
+```
+
+A Golden Age puzzle is a victim, a closed circle, motive, opportunity and
+one lie, and this corpus holds every part. The victim is a death this year
+the archive calls natural causes. The circle is the spouse, the household,
+the neighbours, colleagues on the same shift and a committee — the views,
+living only. Motive is one a relation. Opportunity is the duty list for the
+night, and the lie is the killer's name on it, which the stair gate log
+contradicts. The clues are documents placed down the stair as things, each
+with a rule that marks it found, and nothing about the death goes into the
+archive: the archive is the Voice, and `LOOKUP` will tell you natural
+causes to your face.
+
+**A case ships only if the clues leave one suspect standing.** `Case.
+survivors` reads them the way a player would — a name on the duty list is
+an alibi unless the gate log breaks it, a neighbour's note is an alibi — and
+`generate` refuses a case where two survive. Then `libplan` finds a
+walkthrough on the whole-silo world, so every clue is reachable before the
+accusation, and the deadline is set from it. Over a hundred seeds none was
+refused, the circle averages five, and **the spouse did it 5% of the time**
+— which is the baseline the genre is measured against, and the number that
+would make this a generator of one story if it were fifty.
+
+What version one is not: one lie shape; alibis by the duty list or a note;
+documents from templates with holes; nobody ever out, because the corpus
+has no clock; and no deadline on a case whose walkthrough crosses the silo,
+because the clock is a byte and 144 levels is most of it. Each of those is
+the next measurement against the same proof.
+
 ## Something to find
 
 ```bash
