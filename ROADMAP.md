@@ -6,22 +6,50 @@ Age shape, an archive with a Voice that is an unreliable narrator on purpose,
 and ten thousand people any of whom can be asked about - on an Agon Light
 with an SD card.
 
-The starting point is measured rather than hoped, and it says where the
+The starting point was measured rather than hoped, and it said where the
 effort goes. A question on the silo card is about 480,000 instructions and
 4,600 card bytes; a move is 4,700 instructions and none. Neither is what a
-player will feel. What they will feel is the classifier being wrong one time
-in three on a wording it has not seen, a world that stops at 255 rooms, and
-four people to talk to. So the roadmap is accuracy, scale and content, and
-the engine changes are the ones those need.
+player will feel. What they would have felt, at the start, was the
+classifier being wrong one time in three on a wording it had not seen, a
+world that stopped at 255 rooms, and four people to talk to. Two of those
+three are now gone, and the third is the one still open.
 
 Each item is an issue. The order is roughly dependency order; the case
 generator is last because it is what the rest is for.
 
+## Where it stands
+
+**Case Zero is closed.** `data/silo/cases.py` draws a murder out of the
+corpus by seed, proves the clues leave one suspect standing, and refuses
+the case otherwise; `libplan` finds the walkthrough; `buildcard.py --case 7`
+puts the whole silo and the case on the shipped card as `CASE7.bin`, 412 KB,
+and plays it. `tests/transcripts/case7.txt` pins every word of it.
+
+    100 seeds, none refused, circle 4.9, the spouse guilty 5% of the time
+    132 commands, 401,577 instructions, 1,982 card bytes, won
+    187 rooms, 2,088 doors, 99 bytes of overlay
+
+**Everything is emulator-verified and nothing has run on hardware.** The
+surfaces a real Agon would be the first to exercise are the MOS file calls
+a save and the archive log make (`tools/mostest.py`'s `WRITTEN` probe,
+`FA_OPEN_APPEND`) and `CASE7.bin` itself. `tools/mostest.py` is kept
+current so that one boot covers the lot; its `WRITTEN` line has no
+hardware answer beside it yet.
+
+**One pull request is open:** the two-byte clock. Everything else on this
+page that is ticked is on `main`.
+
+**The next thing** is a wider generator: version one turns on alibis alone,
+because every suspect has a motive. Motives that discriminate and a second
+lie shape are what make the puzzle a puzzle, and both are generator-only
+work measured against the same uniqueness proof.
+
 ## Engine
 
-- [x] **A clock the world can read** - `C_TURN`, one overlay byte, a deadline
-      the solver can be held to. Step one of [#101](../../issues/101) is in
-      this tree; shifts and presence by schedule are steps two and three.
+- [x] **A clock the world can read** - `C_TURN` and a deadline the solver
+      can be held to. Step one of [#101](../../issues/101); shifts and
+      presence by schedule are steps two and three, and are what would make
+      a household sometimes out when its door is knocked on.
 - [x] **The Voice acts** - `A_SEAL`, `A_UNSEAL`, `A_ALTER`, `A_TRUTH`, and
       rules that read what it has done; the mystery seals a record and
       rewrites another. [#102](../../issues/102)
@@ -79,7 +107,8 @@ generator is last because it is what the rest is for.
       closed - short of a boot on hardware.
 - [x] **A two-byte clock** - `C_TURN` to 65,535, a condition's argument two
       bytes in the rule table, and every generated case has a deadline
-      again: seed 7's is turn 396.
+      again: seed 7's is turn 396. Open as
+      [#121](../../pull/121) at the time of writing.
 - [ ] **A wider generator** - more lie shapes than the duty list, motives
       that discriminate, and presence so that somebody is out.
 
