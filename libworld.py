@@ -229,7 +229,7 @@ C_CARRYING = 5  # the player is carrying at least `arg` things
 C_ASKED = 6     # topic `arg` has been asked about, of the archive or a person
 C_HEAT = 7      # attention stands at `arg` or above
 C_WITH = 8      # person `arg` is in the room the player is in
-C_TURN = 9      # the clock stands at `arg` or above: `arg` turns have been taken
+C_TURN = 9      # the clock stands at `arg` or above: `arg` turns taken, up to 65,535
 C_LOGGED = 10   # the archive's log holds `arg` questions or more, this game or before
 C_SEALED = 11   # topic `arg` is sealed at the archive
 C_ALTERED = 12  # topic `arg` is served altered at the archive
@@ -747,12 +747,12 @@ class World:
             # every turn - the same mistake as a rule with no conditions.
             raise ValueError(f"{where}: HEAT 0 always holds, so the rule "
                              f"fires before the player has done anything")
-        if name == "TURN" and not 1 <= arg <= 255:
-            # Zero for the same reason as HEAT 0, and 255 because the clock
-            # saturates there: a deadline the clock can never reach is a rule
-            # that can never fire, and `dead_rules` would not see it.
+        if name == "TURN" and not 1 <= arg <= 65535:
+            # Zero for the same reason as HEAT 0, and 65,535 because the
+            # clock saturates there: a deadline the clock can never reach is
+            # a rule that can never fire, and `dead_rules` would not see it.
             raise ValueError(f"{where}: TURN {arg}, and the clock counts "
-                             f"from 1 to 255")
+                             f"from 1 to 65535")
         if name == "LOGGED" and not 1 <= arg <= 255:
             raise ValueError(f"{where}: LOGGED {arg}, and the log is counted "
                              f"from 1 to 255")
@@ -776,7 +776,7 @@ class World:
                 + max(1, len(self.rules))
                 + max(1, len(self.topics))     # ASKED, one byte a topic
                 + 1                            # HEAT
-                + 1                            # CLOCK
+                + 3                            # CLOCK, 16 bits in a 24-bit cell
                 + 2 * max(1, len(self.topics))  # SEALED, ALTERED
                 + 1                            # ACCUSED
                 + max(1, len(self.people)))    # PWHERE

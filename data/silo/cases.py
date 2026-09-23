@@ -105,19 +105,11 @@ PLACES: dict[str, str] = {NOTICE: "Cafeteria", FILE: "Judicial",
 #: found. Three is generous; one would be a speedrun.
 SLACK = 3
 
-#: The clock is a byte. A silo is 144 levels tall, so a walkthrough that
-#: crosses it twice cannot be given even twice its length before the clock
-#: saturates - and a deadline tighter than that is a speedrun, not a
-#: mystery. Below this slack the case has no deadline, and says so.
-LEAST_SLACK = 2
-
-
-def deadline_for(commands: int) -> int | None:
-    """Turns before the file closes, or None when the clock cannot hold a
-    fair one. A two-byte clock is the fix, and this is where it would go."""
-    if LEAST_SLACK * commands > 255:
-        return None
-    return min(255, SLACK * commands)
+def deadline_for(commands: int) -> int:
+    """Turns before the file closes. The clock is two bytes, so a silo
+    crossed twice still fits three times over; the first version of this
+    had a byte and had to give a long case no deadline at all."""
+    return min(65535, SLACK * commands)
 
 
 class Unfair(ValueError):
@@ -157,8 +149,8 @@ class Case:
     killer: str
     clues: list[Clue] = field(default_factory=list)
     walkthrough: list[str] = field(default_factory=list)
-    #: Turns before the file closes, or None when the clock cannot hold one.
-    deadline: int | None = None
+    #: Turns before the file closes.
+    deadline: int = 0
 
     def survivors(self) -> set[str]:
         """Who the clues do not eliminate. Read the way a player reads them:
@@ -181,9 +173,8 @@ class Case:
         lines.extend(f"    {c.word:8} in {c.place:20} {c.text}" for c in documents)
         lines.append(f"  survivors after every clue: "
                      f"{', '.join(sorted(self.survivors()))}")
-        when = (f"deadline turn {self.deadline}" if self.deadline is not None
-                else "no deadline - the silo is taller than a one-byte clock")
-        lines.append(f"  walkthrough: {len(self.walkthrough)} commands, {when}")
+        lines.append(f"  walkthrough: {len(self.walkthrough)} commands, "
+                     f"deadline turn {self.deadline}")
         return "\n".join(lines)
 
 
@@ -420,15 +411,14 @@ def build_world(db: sqlite3.Connection, case: Case) -> World:
                      + libplan.explain(world))
     case.walkthrough = walkthrough
     case.deadline = deadline_for(len(walkthrough))
-    if case.deadline is not None:
-        world.rules.append(Rule(
-            when=[(libworld.C_TURN, case.deadline)],
-            then=[(libworld.A_PRINT, len(world.messages) - 1, 0),
-                  (libworld.A_SET, world.lost, 0)]))
-        world.check()
-        if libplan.plan(world) is None:
-            raise Unfair("the deadline cut the walkthrough: "
-                         + libplan.explain(world))
+    world.rules.append(Rule(
+        when=[(libworld.C_TURN, case.deadline)],
+        then=[(libworld.A_PRINT, len(world.messages) - 1, 0),
+              (libworld.A_SET, world.lost, 0)]))
+    world.check()
+    if libplan.plan(world) is None:
+        raise Unfair("the deadline cut the walkthrough: "
+                     + libplan.explain(world))
     return world
 
 
