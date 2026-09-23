@@ -339,6 +339,10 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
         # halves of the binary are two programs that happen to share `INPBUF`;
         # with it, what the player wanted to know is state the rules can read.
         b.call("REPORT")
+        # Before NOTICE, not after: a plot that advanced on the lower of two
+        # tied ids would be advancing on a coin the player cannot see.
+        b.call("AMBIG")
+        b.jp_c("MAINLOOP")           # two records tied, and AMBIG has said so
         b.call("NOTICE")
         b.or_a()
         b.jp_nz("MAINLOOP")          # sealed, and NOTICE has said so
@@ -615,8 +619,10 @@ def build(num_docs: int, index_name: str = "WIKI.IDX",
     _emit_score_term(b, acc_base)
     _emit_report(b, num_docs, acc_base, pages,
                  oracle is not None or world is not None)
+    if oracle is not None or world is not None:
+        _emit_ambig(b, world)
     if oracle is not None:
-        _emit_oracle(b, oracle)
+        _emit_oracle(b, oracle, world)
         if oracle.names_name is not None:
             import buildnames
 
@@ -1160,7 +1166,14 @@ def _emit_notice(b: EZ80Builder, world: libworld.World) -> None:
 
     b.label("NT_NONE")
     b.call("LOGAPPEND")
+    b.xor_a()
+    b.ret()
+
+    # Nothing matched: not about anything the card holds, which makes it
+    # exactly the question worth keeping the words of. Not logged - the log
+    # is what the archive was asked about, and this was about nothing.
     b.label("NT_QUIET")
+    b.call("ASKAPPEND")
     b.xor_a()
     b.ret()
 
@@ -1554,6 +1567,95 @@ def _emit_report(b: EZ80Builder, num_docs: int, acc_base: int,
     b.ret()
 
 
+def _emit_ambig(b: EZ80Builder, world: libworld.World | None) -> None:
+    """AMBIG: carry set when the search cannot tell its best two apart.
+
+    A tie is the one verdict the scorer can give with no judgment in it:
+    two records earned the same score from the same words, and there is
+    nothing in the query that prefers either. The listing build shows all
+    three and lets the reader choose, so it never needs this. An answer or a
+    plot hook takes `BESTID[0]`, which on a tie is the lower id - a coin the
+    player cannot see. So the machine names the tied records and asks
+    instead, which is a Voice teaching its query language rather than
+    guessing at it.
+
+    Only an exact tie. A near miss is a judgment, and the score is quantized
+    BM25 from `libsearch` - the host reference orders ties by id the same
+    way `RP_OFFER` does, so the two agree on what tied.
+
+    With a world the question is logged as about nothing, `0xFF`, since the
+    archive did see it, and its words are kept: a query two records answer
+    equally is one the author did not foresee.
+    """
+    b.label("AMBIG")
+    b.ld_a_mem_label("BESTSC", 1)
+    b.or_a()
+    b.ret_z()                        # one match or none; OR left carry clear
+    b.ld_c_a()
+    b.ld_a_mem_label("BESTSC")
+    b.cp_c()
+    b.ret_nz()                       # strictly better; CP left carry clear
+    b.call("PRNL")
+    b.ld_hl_label("MSGAMBIG")
+    b.call("PRSTR")
+    b.xor_a()
+    b.ld_mem_label_a("SHOWN")
+
+    b.label("AM_ITEM")
+    b.ld_a_mem_label("SHOWN")
+    b.cp_n(TOP_K)
+    b.jr_nc("AM_DONE")
+    b.ld_hl_label("BESTSC")
+    b.ld_de_nn(0)
+    b.ld_e_a()
+    b.add_hl_de()
+    b.ld_a_hl()
+    b.ld_c_a()
+    b.ld_a_mem_label("BESTSC")
+    b.cp_c()
+    b.jr_nz("AM_DONE")               # scores descend: the first lower ends it
+    b.ld_hl_label("BESTID")
+    b.ld_a_mem_label("SHOWN")
+    b.ld_bc_nn(0)
+    b.ld_c_a()
+    b.add_hl_bc()
+    b.add_hl_bc()
+    b.add_hl_bc()                    # 3 bytes per id
+    b.push_hl()
+    b.pop_ix()
+    b.ld_hl_ixd(0)
+    b.call("READ_TITLE")
+    b.ld_hl_label("TEXTBUF")
+    b.call("PRSTR")
+    b.call("PRNL")
+    b.ld_a_mem_label("SHOWN")
+    b.inc_a()
+    b.ld_mem_label_a("SHOWN")
+    b.jr("AM_ITEM")
+
+    b.label("AM_DONE")
+    b.ld_hl_label("MSGSPECIFY")
+    b.call("PRSTR")
+    if world is not None:
+        b.ld_a_n(0xFF)
+        b.ld_mem_label_a("LOGTOP")
+        b.call("LOGAPPEND")
+        b.call("ASKAPPEND")
+    b.scf()
+    b.ret()
+
+    b.label("MSGAMBIG")
+    b.ascii("More than one record matches:")
+    b.db(13)
+    b.db(10)
+    b.db(0)
+    b.label("MSGSPECIFY")
+    b.ascii("Specify.")
+    b.db(13)
+    b.db(10)
+    b.db(0)
+
+
 def _emit_console(b: EZ80Builder) -> None:
     """The four console routines, shared with any other Agon program.
 
@@ -1576,7 +1678,8 @@ PATH_STRIDE = 16
 GRAPH_MAGIC = libgraphcard.MAGIC
 
 
-def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
+def _emit_oracle(b: EZ80Builder, spec: OracleSpec,
+                 world: libworld.World | None = None) -> None:
     """Answer from the fact graph, and fall back to the search when it cannot.
 
     The four stages, each already measured on its own:
@@ -1639,6 +1742,8 @@ def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
 
     b.label("ORACLE")
     b.call("REPORT")                 # scan only: fills BESTID and BESTSC
+    b.call("AMBIG")
+    b.ret_c()                        # two records tied: asked to specify
     # A world hooks in between the scan and the answer, so that what was asked
     # about is recorded before anything is said about it.
     b.label("ORACLE_SCANNED")
@@ -1723,6 +1828,8 @@ def _emit_oracle(b: EZ80Builder, spec: OracleSpec) -> None:
     # never empty and offering it would be the fluent wrong answer wearing a
     # different hat. The machine says it does not know, and says nothing else.
     b.label("RP_IDK")
+    if world is not None:
+        b.call("ASKAPPEND")          # a refusal is the parser's own verdict
     b.call("PRNL")
     b.ld_hl_label("MSGIDK")
     b.call("PRSTR")

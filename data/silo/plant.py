@@ -22,8 +22,9 @@ written down as tests.
     impossible_father   a father who died before his child was born
     purge               a committee whose members were all sent to clean
     altered_parentage   the fact table and the graph name different fathers
+    outdated_residence  a dead tenant the census still houses
 
-The last is the one worth having. `libgraph` walks edges and the `person` view
+The third is the one worth having. `libgraph` walks edges and the `person` view
 reads facts, and until now they could not disagree - they are written from one
 pass over one simulation. Here they do, for a handful of people, which is what
 a falsified record looks like from the inside: the card answers confidently,
@@ -74,7 +75,7 @@ class Anomaly:
 
 def plant(rng: Random, world: World, count: int) -> list[Anomaly]:
     """Plant ``count`` anomalies, in roughly equal parts of each kind."""
-    kinds = (_impossible_father, _purge, _altered_parentage)
+    kinds = (_impossible_father, _purge, _altered_parentage, _outdated_residence)
     out: list[Anomaly] = []
     used: set[str] = set()
     attempts = 0
@@ -202,6 +203,34 @@ def _altered_parentage(rng: Random, world: World,
             f"The record gives {child.name}'s father as {stand_in.name}; "
             f"the relations still lead to {real.name}.",
             (real.name, stand_in.name))
+    return None
+
+
+def _outdated_residence(rng: Random, world: World,
+                        used: set[str]) -> Anomaly | None:
+    """Leave a dead person on the census.
+
+    The other three kinds are somebody's doing. This one is nobody's: the
+    death was recorded and the housing list was not told, so the graph still
+    houses the tenant and the residence row is still open. A reader who asks
+    who lives at the door gets a name; asking when that name died gets a
+    year. Two questions, one contradiction, and the commonest kind of wrong
+    a record can be - true once, and never updated.
+
+    Only the dead are eligible, and only ones who died after moving in, so
+    the tenancy the census keeps open is one that really was theirs.
+    """
+    for _ in range(80):
+        p = rng.choice(world.people)
+        if (p.died is None or p.home is None or p.name in used
+                or p.died < p.moved):
+            continue
+        p.stale = True
+        used.add(p.name)
+        return Anomaly(
+            "outdated_residence", p.name,
+            f"{p.name} is recorded as dying in year {p.died}; the census "
+            f"still houses them at {p.address}, with the tenancy open.")
     return None
 
 

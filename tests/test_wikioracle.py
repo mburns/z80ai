@@ -189,6 +189,16 @@ def test_a_question_the_graph_cannot_answer_still_gets_the_article(card, binary)
     assert "central Europe" in out
 
 
+def test_a_tie_between_records_asks_the_player_to_specify(card, binary):
+    """Three fillers share every term of the query and the same length, so
+    the scan cannot prefer one. An answer would take the lowest id, which is
+    a guess; the machine names them and asks instead."""
+    out = ask(card, binary, "england filler")
+    assert "More than one record matches:" in out and "Specify." in out
+    assert out.count("England filler") == 3
+    assert "United Kingdom" not in out               # no article was chosen
+
+
 def test_a_query_matching_no_article_says_so(card, binary):
     """Nothing scored, so there is no entity to ask a question about."""
     out = ask(card, binary, "zzzzqqq")

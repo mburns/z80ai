@@ -1130,6 +1130,50 @@ the largest count any condition reads. A rule keyed on it is therefore one
 the solver reaches by asking, and one the device may also fire on the opening
 pass — both are what the author meant.
 
+### The questions file, which is the other log
+
+| | |
+|---|---|
+| `SILO.ASK` | the line as typed, one a line, for every line nothing could do anything with |
+
+Four things qualify: a word the parser has no entry for, a question no
+record on the card matched, one the classifier refused, and one the search
+could not tell two records apart on. Each is a line the author did not
+foresee, and together they are the only training data in this repository
+that nobody wrote — `tools/wordings.py` asks a model for strangers'
+phrasings because one hand cannot vary its own register, and this is what
+an actual stranger typed. A question the card answered is not kept: the
+file is what the machine could not do, not what the player did.
+
+It is not the log and does not count toward `LOGGED`. The log is what the
+archive was asked *about*, two bytes a question, and a question about
+nothing has no topic to record. `tests/test_voice.py` holds the two apart.
+
+### A tie is a question back
+
+```
+archive> standing order
+More than one record matches:
+Standing Order 11
+Standing Order 12
+Specify.
+```
+
+Two records that earn the same score from the same words are two records
+the query does not tell apart, and the scan's first-wins tie rule hands the
+lower id to whatever runs next. In the listing build that is harmless —
+all three are printed and the reader chooses. In a world it is a plot hook
+firing on a coin the player cannot see, and in an oracle it is an answer
+about somebody the player may not have meant. So `AMBIG` runs between the
+scan and `NOTICE`, names the tied records, and asks. Nothing is marked
+asked, the log gets a question about nothing, and the words go to
+`SILO.ASK`.
+
+Only an exact tie. A near miss is a judgment, and `libsearch` orders ties
+by id exactly as the card does, so the two agree on what tied. An author
+whose two records share every rare word has made a query the card will
+always bounce, and `tests/test_specify.py` is the shape of that mistake.
+
 ## What it does not do yet
 
 No daemons, no containers, no ranking. No screen mode and no status line:

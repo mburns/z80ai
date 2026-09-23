@@ -2307,12 +2307,21 @@ quietly changed the data under a measurement would be worse than no flag.
 | `impossible_father` | a father recorded as dying before his child was born |
 | `purge` | a committee whose members were all sent to clean, within three years |
 | `altered_parentage` | the `fact` table and the graph name different fathers |
+| `outdated_residence` | a dead tenant the census still houses: `lives_at` kept, residence row open |
 
 Each inverts an invariant `tests/test_silo.py` already asserted, which is the
 design rather than a coincidence: a corpus is interesting exactly where it
 violates something a reader assumes, and the assumptions were already written
 down as tests. The test that says *no parent died before their child was born*
-is the detector.
+is the detector; for the fourth kind it is the test that says *the graph
+carries the present and the table carries the history*.
+
+The fourth is nobody's doing, which is what makes it worth planting beside the
+three that are. The death was recorded and the housing list was not told, so
+asking who lives at the door gets a name and asking when that name died gets a
+year. True once and never updated is the commonest kind of wrong a record can
+be, and a corpus whose only errors were forgeries would teach a player that
+every contradiction is a conspiracy.
 
 The third is the one worth having. `libgraph` walks edges and the `person` view
 reads facts, and everywhere else they are written from one pass and **cannot**

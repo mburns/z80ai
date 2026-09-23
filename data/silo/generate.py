@@ -255,6 +255,11 @@ class Person:
     #: pass and cannot disagree, which is exactly why a disagreement is worth
     #: being able to plant.
     recorded_father: str | None = None
+    #: Set only by `plant.py`: the census was never told this person died.
+    #: The graph keeps `lives_at` and the residence row stays open, while
+    #: the biography and the `died` fact say otherwise - a record that was
+    #: right once and nobody updated, which is the commonest kind of wrong.
+    stale: bool = False
 
     @property
     def name(self) -> str:
@@ -890,7 +895,9 @@ def _person_edges(world: World, p: Person) -> Iterator[tuple[str, str]]:
     yield "works_in", p.department
     yield "job_is", p.job
     yield "shift_is", p.shift
-    if p.alive:
+    # `stale` is the planter's outdated census: a dead tenant the graph still
+    # houses, which the invariant test on `lives_at` would otherwise catch.
+    if p.alive or p.stale:
         yield "lives_at", p.address
         # The year the tenancy started, which `residence` has carried all
         # along and the graph could not be asked for. Only for the living, for
@@ -1045,7 +1052,8 @@ def write(db: sqlite3.Connection, world: World, seed: int,
     db.executemany("INSERT INTO residence (source, person, floor, bearing, ring, "
                    "since, until) VALUES (?, ?, ?, ?, ?, ?, ?)",
                    [(SOURCE, p.name, *p.home, p.moved,
-                     max(p.died, p.moved) if p.died is not None else None)
+                     max(p.died, p.moved)
+                     if p.died is not None and not p.stale else None)
                     for p in world.people if p.home])
     db.executemany("INSERT INTO cohort (source, name, kind, formed, floor) "
                    "VALUES (?, ?, ?, ?, ?)",
