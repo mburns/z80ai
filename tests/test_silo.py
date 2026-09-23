@@ -72,7 +72,7 @@ def planted(tmp_path_factory):
 
     rng = Random(SEED)
     world = generate.populate(rng, SEED, PEOPLE)
-    anomalies = plant.plant(rng, world, 3)
+    anomalies = plant.plant(rng, world, 4)     # one of each kind
     db_path = tmp_path_factory.mktemp("planted") / "silo.db"
     db = schema.connect(db_path, migrate=True)
     generate.write(db, world, SEED, planted=len(anomalies))
@@ -147,6 +147,22 @@ def test_an_altered_record_disagrees_with_the_graph_and_nothing_else_does(plante
         "ON e.source = 'silo' AND e.subject = p.name AND e.relation = 'father_is' "
         "WHERE p.father <> e.object")}
     assert found == want
+
+
+def test_an_outdated_residence_is_a_dead_tenant_the_census_still_houses(planted):
+    """`test_the_graph_carries_the_present_and_the_table_carries_the_history`
+    is the detector: the dead have no `lives_at` edge and a closed residence
+    row. Here exactly one of them has both, and it is the one in the key."""
+    anomalies, db = planted
+    want = {a.subject for a in anomalies if a.kind == "outdated_residence"}
+    housed = {r["name"] for r in db.execute(
+        "SELECT p.name FROM person p JOIN edge e ON e.source = p.source "
+        "AND e.subject = p.name AND e.relation = 'lives_at' "
+        "WHERE p.died IS NOT NULL")}
+    open_rows = {r["name"] for r in db.execute(
+        "SELECT p.name FROM person p JOIN residence r ON r.source = p.source "
+        "AND r.person = p.name WHERE p.died IS NOT NULL AND r.until IS NULL")}
+    assert housed == want and open_rows == want and len(want) == 1
 
 
 def test_the_key_is_beside_the_database_and_not_in_it(planted, tmp_path):

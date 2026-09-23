@@ -161,6 +161,25 @@ def test_a_sealed_or_altered_question_is_still_a_question(voice):
     assert len(host.files["SILO.LOG"]) == 2 * (len(SCRIPT) - 1)
 
 
+def test_a_question_no_record_matches_is_kept_word_for_word(voice):
+    """The one kind of training data nobody can write from the armchair:
+    what a player actually typed that the card could do nothing with. Not
+    logged, since the log is what the archive was asked *about*."""
+    _, host = visit(voice, "use", "zzzz qqqq", "pump")
+    assert host.files["SILO.ASK"] == b"zzzz qqqq\r\n"
+    assert len(host.files["SILO.LOG"]) == 2          # the pump, not the noise
+
+
+def test_a_word_the_parser_has_no_entry_for_is_kept_too(voice):
+    _, host = visit(voice, "xyzzy", "use", "pump")
+    assert host.files["SILO.ASK"].upper() == b"XYZZY\r\n"
+
+
+def test_a_question_the_card_answers_is_not_kept(voice):
+    _, host = visit(voice, "use", "pump")
+    assert "SILO.ASK" not in host.files
+
+
 def test_the_rules_can_read_what_the_archive_is_doing(voice):
     """`C_SEALED` holds on the opening pass, because the pump starts sealed;
     `C_ALTERED` holds on the pass after the alteration, before the player

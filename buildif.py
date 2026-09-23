@@ -300,6 +300,7 @@ def emit_dispatch(b: EZ80Builder, quit_label: str) -> None:
     b.jp("TURN")
 
     b.label("BADVERB")
+    b.call("ASKAPPEND")              # a word nobody wrote: kept for whoever will
     b.ld_hl_label("MSGVERB")
     b.call("PRSTR")
     b.ld_hl_label("W1")
@@ -895,6 +896,7 @@ def _emit_take_drop(b: EZ80Builder, world: World,
     b.ld_a_mem_label("W2LEN")
     b.or_a()
     b.jr_z("BN_NONE")
+    b.call("ASKAPPEND")
     b.ld_hl_label("MSGNOUN")
     b.call("PRSTR")
     b.ld_hl_label("W2")
@@ -2376,6 +2378,41 @@ def _emit_save_restore(b: EZ80Builder, world: World) -> None:
     b.ld_mem_label_a("LOGGED")
     b.ret()
 
+    # ASKAPPEND: the line in INPBUF onto the end of the questions file, as
+    # typed, with a line ending. Called only for a line nothing could do
+    # anything with - a word the parser has no entry for, a question no
+    # record matched, one the classifier refused, one the search could not
+    # tell two records apart on. Those are the lines an author cannot write
+    # from the armchair and the only training data that is not synthetic,
+    # so the card keeps them. A card that will not take the file loses the
+    # line and says nothing, like the log.
+    b.label("ASKAPPEND")
+    b.ld_hl_label("ASKNAME")
+    b.ld_c_n(FA_WRITE | FA_OPEN_APPEND)
+    b.ld_a_n(MOS_FOPEN)
+    b.rst(MOS_API)
+    b.or_a()
+    b.ret_z()
+    b.ld_mem_label_a("SAVEH")
+    b.ld_c_a()
+    b.ld_hl_label("INPBUF")
+    b.ld_de_nn(0)
+    b.ld_a_mem_label("INPLEN")
+    b.ld_e_a()
+    b.ld_a_n(MOS_FWRITE)
+    b.rst(MOS_API)
+    b.ld_a_mem_label("SAVEH")
+    b.ld_c_a()
+    b.ld_hl_label("ASKEOL")
+    b.ld_de_nn(2)
+    b.ld_a_n(MOS_FWRITE)
+    b.rst(MOS_API)
+    b.jp("SAVECLOSE")
+
+    b.label("ASKEOL")
+    b.db(13)
+    b.db(10)
+
     # The header a save file starts with. `SV`, then the world's stamp.
     b.label("SAVEHDR")
     b.db(ord("S"))
@@ -2631,6 +2668,9 @@ def _emit_ram(b: EZ80Builder, world: World, shared_console: bool = False) -> Non
     b.db(0)
     b.label("LOGNAME")
     b.ascii(f"{world.save_name}.LOG")
+    b.db(0)
+    b.label("ASKNAME")
+    b.ascii(f"{world.save_name}.ASK")
     b.db(0)
     b.label("SAVEBUF")
     b.ds(4)
