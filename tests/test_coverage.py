@@ -1,6 +1,6 @@
 """The coverage harness, on a graph small enough to count by hand.
 
-`coverage.py` is about to be the evidence for every claim about how much of the
+`walkcoverage.py` is about to be the evidence for every claim about how much of the
 corpus the oracle can walk, which makes its arithmetic load-bearing in a way a
 one-off script's is not. A harness that is wrong in the flattering direction is
 worse than no harness, so these pin the three places it could be:
@@ -25,8 +25,11 @@ import pytest
 import libgraph
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "data" / "wikipedia"))
-import coverage
 import ingest
+
+# Not `coverage`: pytest-cov has already put the PyPI package of that name in
+# sys.modules before this file runs, and no sys.path entry can shadow that.
+import walkcoverage
 
 #: Three independent infoboxes naming France, which is exactly `TYPE_FLOOR`, so
 #: France is a country and nothing else is. Everything below leans on that.
@@ -80,10 +83,10 @@ def test_a_path_is_scored_over_subjects_it_could_start_from(db):
     Scoring over all eleven articles would report 18% and blame the graph for
     the eight articles that are not people.
     """
-    subjects = coverage.head_subjects(db, "w", "born_in")
+    subjects = walkcoverage.head_subjects(db, "w", "born_in")
     assert sorted(subjects) == ["Alice", "Bob", "Carol"]
 
-    scored = coverage.score_path(db, "w", ["born_in", "in_country"], subjects)
+    scored = walkcoverage.score_path(db, "w", ["born_in", "in_country"], subjects)
     assert scored["startable"] == 3
     assert scored["complete"] == 2       # Alice via Paris, Bob directly
     assert scored["rate"] == pytest.approx(2 / 3)
@@ -96,14 +99,14 @@ def test_a_climb_starts_from_the_relation_it_steps(db):
     path through a climb as having no subjects at all - a coverage harness
     reporting 0/0 instead of the number it exists to produce.
     """
-    assert coverage.head_subjects(db, "w", "in_country") == sorted(
+    assert walkcoverage.head_subjects(db, "w", "in_country") == sorted(
         ["France", "Lyon", "Marseille", "Paris", "Springfield"])
 
 
 def test_an_incomplete_walk_is_attributed_to_the_hop_that_broke(db):
     """Which hop failed decides what would fix it, so it is worth counting."""
-    subjects = coverage.head_subjects(db, "w", "born_in")
-    scored = coverage.score_path(db, "w", ["born_in", "in_country"], subjects)
+    subjects = walkcoverage.head_subjects(db, "w", "born_in")
+    scored = walkcoverage.score_path(db, "w", ["born_in", "in_country"], subjects)
     assert scored["stopped_at"] == {"in_country": 1}      # Carol, via London
 
 
@@ -152,9 +155,9 @@ def test_asking_a_band_where_it_was_born_is_not_a_miss(db):
     db.execute("INSERT INTO article (source, title, lead) "
                "VALUES ('w', 'Anthem', '')")
 
-    subjects = coverage.head_subjects(db, "w", "created_by")
+    subjects = walkcoverage.head_subjects(db, "w", "created_by")
     persons = libgraph.people(db, "w")
-    scored = coverage.score_path(db, "w", ["created_by", "born_in"],
+    scored = walkcoverage.score_path(db, "w", ["created_by", "born_in"],
                                  subjects, persons)
 
     assert scored["startable"] == 2
@@ -169,8 +172,8 @@ def test_a_stopped_walk_says_what_kind_of_thing_it_stopped_on(db):
     """`stopped_at` says which hop had no edge; this says what it had no edge
     *from*. That is the difference between coverage that is missing and
     coverage that could never exist, and it was worked out by hand once."""
-    subjects = coverage.head_subjects(db, "w", "born_in")
-    scored = coverage.score_path(db, "w", ["born_in", "in_country"], subjects,
+    subjects = walkcoverage.head_subjects(db, "w", "born_in")
+    scored = walkcoverage.score_path(db, "w", ["born_in", "in_country"], subjects,
                                  libgraph.people(db, "w"))
     # Carol, via London: a place, but nothing in the corpus places it.
     assert scored["stopped_on"] == {"a place nothing places": 1}
@@ -194,7 +197,7 @@ def test_the_kinds_tell_a_missing_edge_from_an_impossible_one(db):
                    [("Poem", "created_by", "Erin"),
                     ("Song", "created_by", "Sonic Boom")])
 
-    scored = coverage.score_path(db, "w", ["created_by", "born_in"],
+    scored = walkcoverage.score_path(db, "w", ["created_by", "born_in"],
                                  ["Poem", "Song"], libgraph.people(db, "w"))
     assert scored["moot"] == 1                       # Song, via the band
     assert scored["stopped_on"] == {"a person": 1}   # Poem, via Erin
@@ -205,7 +208,7 @@ def test_the_country_list_is_printable_with_what_lands_on_it(db):
     Which is the part a person can check: `Baku`, `Victoria`, `CA` and `World`
     are all on the real list, and three automatic rules failed to find them
     without taking China, Angola and Mongolia along."""
-    landings = coverage.countries(db, "w")
+    landings = walkcoverage.countries(db, "w")
     assert set(landings) == {"France"}
     assert landings["France"] == 2       # Alice via Paris, and Bob directly
 
@@ -218,7 +221,7 @@ def test_a_country_nothing_reaches_is_still_listed(db):
                "VALUES ('w', 'Elsewhere', '')")
     db.execute("INSERT OR REPLACE INTO entity_type VALUES "
                "('w', 'country', 'Elsewhere')")
-    landings = coverage.countries(db, "w")
+    landings = walkcoverage.countries(db, "w")
     assert landings["Elsewhere"] == 0
 
 
@@ -238,7 +241,7 @@ def test_a_person_without_a_birthplace_is_still_a_miss(db):
     persons = libgraph.people(db, "w")
     assert "Dave" in persons
 
-    scored = coverage.score_path(db, "w", ["created_by", "born_in"],
+    scored = walkcoverage.score_path(db, "w", ["created_by", "born_in"],
                                  ["Sonata"], persons)
     assert scored["moot"] == 0
     assert scored["stopped_at"] == {"born_in": 1}
@@ -263,15 +266,15 @@ def test_climb_distance_counts_hops_not_nodes(db):
     corpus's birthplaces are already countries - and an off-by-one here would
     report it as one hop and hide that the type test fires first.
     """
-    subjects = coverage.head_subjects(db, "w", "in_country")
-    hist = coverage.climb_distances(db, "w", "in_country", subjects)
+    subjects = walkcoverage.head_subjects(db, "w", "in_country")
+    hist = walkcoverage.climb_distances(db, "w", "in_country", subjects)
     assert hist == {"0": 1, "1": 3, "never": 1}
 
 
 def test_the_histogram_puts_never_last(db):
     """It is read as a distance curve, and a failure is not a distance."""
-    subjects = coverage.head_subjects(db, "w", "in_country")
-    assert list(coverage.climb_distances(db, "w", "in_country",
+    subjects = walkcoverage.head_subjects(db, "w", "in_country")
+    assert list(walkcoverage.climb_distances(db, "w", "in_country",
                                          subjects))[-1] == "never"
 
 
@@ -284,7 +287,7 @@ def test_the_floor_curve_shows_where_the_setting_bites(db):
     `TYPE_FLOOR` is chosen from two hand-counted points; the curve is what
     makes the choice reviewable.
     """
-    assert coverage.type_floors(db, "w") == {
+    assert walkcoverage.type_floors(db, "w") == {
         "1": 1, "2": 1, "3": 1, "4": 0, "5": 0}
 
 
@@ -298,7 +301,7 @@ def test_reach_separates_having_a_fact_from_being_on_the_graph(db):
     every property in this fixture is mapped; in the real corpus the second
     number is far smaller, and that difference is what the harness is for.
     """
-    r = coverage.reach(db, "w")
+    r = walkcoverage.reach(db, "w")
     assert r["articles"] == 11
     assert r["facts"] == len(FACTS)
     assert r["fact_subjects"] == 8
@@ -309,13 +312,13 @@ def test_reach_separates_having_a_fact_from_being_on_the_graph(db):
 
 def test_unmapped_properties_are_ranked_by_use(db):
     """The to-do list for `CANONICAL`, biggest first."""
-    assert [p["name"] for p in coverage.unmapped(db, "w")] == ["name", "clubs"]
+    assert [p["name"] for p in walkcoverage.unmapped(db, "w")] == ["name", "clubs"]
 
 
 def test_measure_reports_every_chain_the_classifier_can_emit(db):
     """A path the model can emit and the harness cannot score is a blind spot."""
     import relations
 
-    measured = coverage.measure(db, "w", sample=0, seed=0)
+    measured = walkcoverage.measure(db, "w", sample=0, seed=0)
     for path in relations.CHAINS:
         assert path in measured["paths"], path

@@ -2,9 +2,9 @@
 """
 What share of the corpus the oracle can actually walk, and where it stops.
 
-    python data/wikipedia/coverage.py
-    python data/wikipedia/coverage.py --json > before.json
-    python data/wikipedia/coverage.py --baseline before.json
+    python data/wikipedia/walkcoverage.py
+    python data/wikipedia/walkcoverage.py --json > before.json
+    python data/wikipedia/walkcoverage.py --baseline before.json
 
 Every coverage claim this project makes is a number in here. They were
 previously measured by hand, quoted in a docstring, and never re-run - so
