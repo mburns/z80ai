@@ -7,7 +7,7 @@ Read birthplaces out of lead text for the people whose infobox has none.
 
 ## Why there is anything to read
 
-`coverage.py` says 78,594 people are in this corpus and 42,288 have a
+`walkcoverage.py` says 78,594 people are in this corpus and 42,288 have a
 `born_in` edge. The other **36,191 have a lead and no birthplace**, and a great
 many of those leads open with the sentence that would settle it - Wikipedia's
 house style puts the birth in the first clause. The infobox is optional; the

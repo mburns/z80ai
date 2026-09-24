@@ -27,7 +27,7 @@ subjects completing to **40.7%**, and ``death_place -> country`` from 1.0% to
 (Those four are the before and after of *that* change alone, kept because the
 gap between them is the argument. They are not the current figures - reading
 value templates, the rank fallback and the categories below have since taken
-the same two chains to 77.7% and 82.3%. `coverage.py` prints today's.)
+the same two chains to 77.7% and 82.3%. `walkcoverage.py` prints today's.)
 
 Every figure in this file is measured on the graph *this module* builds, which
 is the one the facts and categories support. The documented card build adds a
@@ -49,7 +49,7 @@ calls a country, and stops immediately if it already is. That, the value
 templates and the categories below take the share of people for whom a country
 can be named at all to **77.7%**.
 
-Those three shares are printed by `data/wikipedia/coverage.py`, against
+Those three shares are printed by `data/wikipedia/walkcoverage.py`, against
 whichever database is to hand, rather than remembered. They moved once already
 without anyone noticing: the figures here read 26.2/35.7/1.6 when they were
 counted by hand, and the zero-hop share is the one that drifted, because it
@@ -145,7 +145,7 @@ FIELD_RELATION: dict[str, tuple[str, int]] = {
 #: 0.6%. A fixed two-hop path is right for a tenth of them and actively
 #: destroys the answer for the eleventh whose birthplace was already the
 #: country.
-#: `coverage.py --db <db>` prints the curve for whichever corpus is to hand.
+#: `walkcoverage.py --db <db>` prints the curve for whichever corpus is to hand.
 CLIMB: dict[str, tuple[str, str]] = {
     "in_country": ("located_in", "country"),
 }
@@ -192,7 +192,7 @@ SHARED = "shared_"
 #: the corpus to be taken at its word. At 3 that is 193 claims, which `demote`
 #: then cuts to 143 by dropping the ones the containment contradicts; at 1 it
 #: is 371 claims and starts admitting things like "Washington (state)".
-#: `coverage.py` prints the whole curve, which is what makes the choice
+#: `walkcoverage.py` prints the whole curve, which is what makes the choice
 #: reviewable - the floor decides where every `in_country` climb stops.
 TYPE_FLOOR = 3
 
@@ -280,7 +280,7 @@ PERSON_CATEGORY = re.compile(r"^(?:\d{1,4}s? (?:births|deaths)|Living people)$",
 #: Relations whose subject must be a person for the question to mean anything.
 #: Asking where Microsoft was born is not a gap in the graph; it is a question
 #: with no answer, and counting it as a miss understates every chain that ends
-#: in one. See ``coverage.py``, which reports those separately.
+#: in one. See ``walkcoverage.py``, which reports those separately.
 NEEDS_PERSON = frozenset({"born_in", "died_in", "spouse_of"})
 
 #: `in the United States` names an article called "United States". English puts

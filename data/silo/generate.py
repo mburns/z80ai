@@ -21,7 +21,7 @@ database adds on top, and why it is a separate file.
 
 The Wikipedia oracle is limited by **coverage**, not by the walk. 46% of
 articles carry an infobox, so a chain that hops onto one of the other 54%
-cannot continue, and `coverage.py` spends its time measuring where the road
+cannot continue, and `walkcoverage.py` spends its time measuring where the road
 ends. That makes it a poor instrument for the question underneath: given facts
 that *are* all there, how much can a machine that does nothing but compare
 24-bit numbers actually work out?
