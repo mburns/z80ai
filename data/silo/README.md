@@ -29,7 +29,7 @@ with it.
 
 The Wikipedia oracle is limited by **coverage**, not by the walk. 46% of
 articles carry an infobox, so a chain that hops onto one of the other 54%
-stops, and `data/wikipedia/coverage.py` spends its time measuring where the
+stops, and `data/wikipedia/walkcoverage.py` spends its time measuring where the
 road ends rather than how far a machine could travel on it.
 
 That makes it the wrong instrument for the question underneath: *given facts

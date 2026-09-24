@@ -628,7 +628,7 @@ far a walk got rather than only that it failed.
 ### Where the chains were actually breaking
 
 That paragraph was right about the cause and wrong about the remedy, which
-`coverage.py` was written to settle. Of the birthplace climbs that failed,
+`walkcoverage.py` was written to settle. Of the birthplace climbs that failed,
 **41.7% ran out of `located_in` edges and 2.2% hit the hop limit** — so the
 graph was running out of road, not failing to recognise a country when it
 arrived at one. It called 193 entities countries at the time, against the 195
@@ -729,7 +729,7 @@ problem, and two plausible repairs died on measurement before the real cause
 turned up.
 
 **Mapping `nationality` would have made it worse.** It is the largest unmapped
-property that looks like a relation — 10,936 uses, and `coverage.py` scores
+property that looks like a relation — 10,936 uses, and `walkcoverage.py` scores
 86.5% of its values as naming an article. But only 19 of the blocked creators
 carry one, and the values are demonyms: `American` *does* name an article, just
 not the United States. That column checks a title exists, not that it is the
@@ -891,7 +891,7 @@ What is shipped instead is the list, because a person reading 143 names finds
 `World` and `CA` in seconds where no curve does:
 
 ```bash
-python data/wikipedia/coverage.py --countries
+python data/wikipedia/walkcoverage.py --countries
 ```
 
 The floor curve above says how *many* countries a setting yields. This says
@@ -920,7 +920,7 @@ is the fix from the previous section seen from the other side: everything left
 in `created_by born_in` is a person with no recorded birthplace, which is a gap
 worth filing rather than a question worth declining.
 
-That table is now printed by `coverage.py` on every run rather than worked out
+That table is now printed by `walkcoverage.py` on every run rather than worked out
 by hand, which is the whole argument of this file applied to itself.
 
 **The 93 creators with no categories are mostly bands** — Bon Jovi, The Police,
@@ -949,13 +949,13 @@ the harm it would be measuring is fourteen correct answers.
 
 Every number in this section used to be measured by hand and quoted, which is
 how `libgraph.py` came to claim that `birth_place -> country` completes for
-40.7% of subjects with nothing to check it against. `coverage.py` prints them
+40.7% of subjects with nothing to check it against. `walkcoverage.py` prints them
 from whatever database is in front of it:
 
 ```bash
-python data/wikipedia/coverage.py                     # the table
-python data/wikipedia/coverage.py --json > before.json
-python data/wikipedia/coverage.py --baseline before.json   # with a delta column
+python data/wikipedia/walkcoverage.py                     # the table
+python data/wikipedia/walkcoverage.py --json > before.json
+python data/wikipedia/walkcoverage.py --baseline before.json   # with a delta column
 ```
 
 It walks with `libgraph.follow` rather than joining, so it measures the
@@ -1414,7 +1414,7 @@ collecting ninety of them.
 
 ### And in questions answered, which is the number that counts
 
-An edge is an input. `coverage.py` was run against the pre-import database and
+An edge is an input. `walkcoverage.py` was run against the pre-import database and
 then against the imported one, so this is one corpus compared with itself:
 
 | path | answered | | rate | |
