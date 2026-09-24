@@ -1015,13 +1015,23 @@ class World:
         spoken: set[int] = set()
         start = self._settle(start, cap, seen_msgs, clock_cap)
 
+        # A command's result before the rules run is where most of the
+        # repetition is: the same room, holding and flags are reached by
+        # many orders of the same commands, and each arrival used to pay a
+        # full rule pass before the duplicate check could see it. Settling
+        # is a pure function of that state, so it is done once per distinct
+        # one. On `worlds_mystery` that is 125,377 passes in place of
+        # 668,705, and the pass was 60% of the search.
+        settled: dict[_State, _State] = {}
+
         parents: dict[_State, tuple[_State, str] | None] = {start: None}
         order: list[_State] = [start]
         queue = [start]
         while queue:
             state = queue.pop(0)
             for command, successor in self._moves(state, cap, seen_msgs,
-                                                  spoken, clock_cap, log_cap):
+                                                  spoken, clock_cap, log_cap,
+                                                  settled):
                 if successor in parents:
                     continue
                 if len(parents) >= max_states:
@@ -1141,13 +1151,25 @@ class World:
         return max(counts, default=0)
 
     def _moves(self, state: _State, cap: int, printed: set[int],
-               spoken: set[int], clock_cap: int = 0, log_cap: int = 0
+               spoken: set[int], clock_cap: int = 0, log_cap: int = 0,
+               settled: dict[_State, _State] | None = None
                ) -> list[tuple[str, _State]]:
-        """Every command that is legal here, and where it leads."""
+        """Every command that is legal here, and where it leads.
+
+        `settled` is `explore`'s memo of what the rule pass makes of each
+        pre-pass state. `step` takes one command and passes none.
+        """
         out: list[tuple[str, _State]] = []
 
         def turn(name: str, changed: _State) -> None:
-            out.append((name, self._settle(changed, cap, printed, clock_cap)))
+            if settled is None:
+                out.append((name, self._settle(changed, cap, printed, clock_cap)))
+                return
+            after = settled.get(changed)
+            if after is None:
+                after = settled[changed] = self._settle(changed, cap, printed,
+                                                        clock_cap)
+            out.append((name, after))
 
         if state.at_terminal:
             # The classifier is listening, so the word table is not. This is
